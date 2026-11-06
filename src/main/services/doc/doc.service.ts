@@ -88,8 +88,9 @@ export function createDocService(db: DB) {
     const date = input.date ?? todayLocal()
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new BizError('VALIDATION', '单据日期格式应为 yyyy-MM-dd')
-    }
-    if (!input.items || input.items.length === 0) {
+    }    // 收款单/付款单不涉及商品明细，允许空明细；其余单据类型必须有明细行。
+    const needsItems = !['receipt', 'payment'].includes(input.type)
+    if (needsItems && (!input.items || input.items.length === 0)) {
       throw new BizError('VALIDATION', '单据明细不能为空')
     }
     let docId = 0

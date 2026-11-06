@@ -16,7 +16,7 @@ export interface RetailDetail {
  * 零售单（POS 快速开单）：单据（doc/doc_item，type='retail'，编号 LSyyyyMMddNNNN）+ 出库。
  * partner_id 可空 = 散客；account_id 可选，指定收款账户（必须存在于 fund_account）。
  * rate 语义与销售单一致：1 个录入单位 = rate 个基本单位；出库 change_qty = -(qty*rate)。
- * 仅记录单据与库存，资金流水由后续任务（fund_flow）补充。
+ * 仅记录单据与库存；指定 account_id 时同时写入资金流水 fund_flow（direction 'in'，doc_type 'retail'）。
  */
 export function createRetailService(db: DB) {
   const docService: DocService = createDocService(db)
@@ -81,6 +81,19 @@ export function createRetailService(db: DB) {
         }
       })
       inventoryService.applyChanges(changes)
+      // 指定收款账户时记录资金流水（零售收款，流入）。
+      if (input.account_id !== undefined && input.account_id !== null) {
+        db.prepare(
+          `INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark)
+           VALUES (?, 'retail', ?, ?, 'in', ?, ?)`
+        ).run(
+          Number(input.account_id),
+          doc?.id ?? 0,
+          doc?.total_amount ?? 0,
+          doc?.date ?? '',
+          input.remark ?? null
+        )
+      }
     })()
     return doc as DocRow
   }

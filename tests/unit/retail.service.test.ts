@@ -30,7 +30,7 @@ function setup() {
   })
   const whId = warehouseService.create({ name: '主仓', is_default: true })
   const accountId = fundService.create({ name: '现金', type: 'cash', opening_balance: 0 })
-  return { retailService, purchaseService, inventoryService, productId, whId, accountId }
+  return { db, retailService, purchaseService, inventoryService, productId, whId, accountId }
 }
 
 describe('retail.service', () => {
@@ -150,5 +150,34 @@ describe('retail.service', () => {
       items: [{ product_id: ctx.productId, qty: 1, price: 2 }]
     })
     expect(() => ctx.retailService.getDetail(purchase.id)).toThrowError(BizError)
+  })
+
+  it('account_id given: fund_flow row created (direction in, doc_type retail)', () => {
+    stockUp()
+    const doc = ctx.retailService.create({
+      warehouse_id: ctx.whId,
+      account_id: ctx.accountId,
+      remark: '现金收款',
+      items: [{ product_id: ctx.productId, qty: 2, price: 3 }]
+    })
+    const flow = (ctx.db as DB)
+      .prepare("SELECT * FROM fund_flow WHERE doc_id = ? AND doc_type = 'retail'")
+      .get(doc.id) as { direction: string; amount: number; account_id: number }
+    expect(flow.direction).toBe('in')
+    expect(flow.amount).toBeCloseTo(6)
+    expect(flow.account_id).toBe(ctx.accountId)
+  })
+
+  it('no account_id: no fund_flow row', () => {
+    stockUp()
+    const doc = ctx.retailService.create({
+      warehouse_id: ctx.whId,
+      items: [{ product_id: ctx.productId, qty: 1, price: 3 }]
+    })
+    const count = Number(
+      ((ctx.db as DB).prepare('SELECT COUNT(*) AS c FROM fund_flow').get() as { c: number }).c
+    )
+    expect(count).toBe(0)
+    expect(doc.id).toBeGreaterThan(0)
   })
 })

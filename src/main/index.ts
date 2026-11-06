@@ -13,6 +13,7 @@ import { createInventoryService } from './services/inventory/inventory.service'
 import { createPurchaseService } from './services/purchase/purchase.service'
 import { createSaleService } from './services/sale/sale.service'
 import { createRetailService } from './services/retail/retail.service'
+import { createPaymentService } from './services/payment/payment.service'
 import { createTransferService } from './services/transfer/transfer.service'
 import { createStocktakeService } from './services/stocktake/stocktake.service'
 import { createAssembleService } from './services/assemble/assemble.service'
@@ -149,6 +150,15 @@ function getAssembleService(): ReturnType<typeof createAssembleService> {
     assembleService = createAssembleService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return assembleService
+}
+
+let paymentService: ReturnType<typeof createPaymentService> | null = null
+function getPaymentService(): ReturnType<typeof createPaymentService> {
+  if (!paymentService) {
+    const userData = app.getPath('userData')
+    paymentService = createPaymentService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return paymentService
 }
 
 function createWindow(): BrowserWindow {
@@ -293,6 +303,16 @@ app.whenReady().then(() => {
     'retail:create': (_evt, payload) => retailSvc.create(payload as never),
     'retail:getDetail': (_evt, payload) => retailSvc.getDetail(Number(payload)),
     'retail:query': (_evt, payload) => retailSvc.query(payload as never)
+  })
+
+  const paymentSvc = getPaymentService()
+  registerIpc({
+    'payment:createReceipt': (_evt, payload) => paymentSvc.createReceipt(payload as never),
+    'payment:createPayment': (_evt, payload) => paymentSvc.createPayment(payload as never),
+    'payment:getReceiptDetail': (_evt, payload) => paymentSvc.getReceiptDetail(Number(payload)),
+    'payment:getPaymentDetail': (_evt, payload) => paymentSvc.getPaymentDetail(Number(payload)),
+    'payment:queryReceipt': (_evt, payload) => paymentSvc.queryReceipt(payload as never),
+    'payment:queryPayment': (_evt, payload) => paymentSvc.queryPayment(payload as never)
   })
 
   const transferSvc = getTransferService()

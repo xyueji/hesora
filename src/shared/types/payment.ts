@@ -1,0 +1,29 @@
+import type { DocRow } from './doc'
+
+/** 收付款单创建输入（收款单/付款单共用，partner_id 为客户或供应商，可空） */
+export interface PaymentCreateInput {
+  partner_id?: number
+  account_id: number
+  amount: number
+  date?: string
+  remark?: string
+}
+
+/** 资金流水行 */
+export interface FundFlowRow {
+  id: number
+  account_id: number
+  doc_type: string
+  doc_id: number
+  amount: number
+  direction: 'in' | 'out'
+  date: string
+  remark: string | null
+  created_at: string
+}
+
+/** 收付款单详情：单据（无明细行）+ 资金流水 */
+export interface PaymentDetail {
+  doc: DocRow
+  flow: FundFlowRow | null
+}
