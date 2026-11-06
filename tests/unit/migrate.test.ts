@@ -9,7 +9,7 @@ describe('migrations', () => {
   })
   it('is idempotent via user_version', () => {
     const db = openMemDb()
-    expect(db.pragma('user_version', { simple: true })).toBe(4)
+    expect(db.pragma('user_version', { simple: true })).toBe(5)
   })
   it('003 adds product.kind and bom_item table', () => {
     const db = openMemDb()

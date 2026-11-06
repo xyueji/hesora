@@ -1,6 +1,7 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 
 const routes: RouteRecordRaw[] = [
+  { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },
   { path: '/', name: 'home', component: () => import('./views/DashboardView.vue') },
   { path: '/product/list', name: 'product-list', component: () => import('./views/product/ProductListView.vue') },
   { path: '/product/edit/:id?', name: 'product-edit', component: () => import('./views/product/ProductEditView.vue') },
@@ -37,12 +38,28 @@ const routes: RouteRecordRaw[] = [
   { path: '/doc/search', name: 'doc-search', component: () => import('./views/doc/DocSearchView.vue') },
   { path: '/opening', name: 'opening', component: () => import('./views/opening/OpeningView.vue') },
   { path: '/setting', name: 'setting', component: () => import('./views/setting/SettingView.vue') },
+  { path: '/system/users', name: 'system-users', component: () => import('./views/system/UserListView.vue') },
   { path: '/sync', name: 'sync', component: () => import('./views/sync/SyncView.vue') }
 ]
 
 const router = createRouter({
   history: createWebHashHistory(),
   routes
+})
+
+// 登录守卫：未登录一律跳到 /login（登录页除外）
+router.beforeEach(async (to) => {
+  const { currentUser, restoreSession } = await import('./stores/auth')
+  if (currentUser.value === null) {
+    try {
+      await restoreSession()
+    } catch {
+      currentUser.value = null
+    }
+  }
+  if (!currentUser.value && to.path !== '/login') return { path: '/login' }
+  if (currentUser.value && to.path === '/login') return { path: '/' }
+  return true
 })
 
 export default router

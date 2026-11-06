@@ -1,7 +1,10 @@
 import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { openDb } from './db'
-import { registerIpc } from './ipc/register'
+import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
+import { PERMISSION_MAP } from './permissions-map'
+import { setCurrentUser, getCurrentUser, can } from './auth'
+import { createUserService } from './services/user/user.service'
 import { createProductService } from './services/product/product.service'
 import { createCustomerService } from './services/customer/customer.service'
 import { createSupplierService } from './services/supplier/supplier.service'
@@ -220,6 +223,11 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
+  // 通道权限守卫：PERMISSION_MAP 中声明的通道需要对应权限，未声明的通道放行（含 auth:*）
+  setDefaultPermissionGuard((channel) => {
+    const perm = PERMISSION_MAP[channel]
+    return perm === undefined || can(perm)
+  })
   const svc = getProductService()
   registerIpc({
     'product:create': (_evt, payload) => svc.create(payload as never),
@@ -427,6 +435,50 @@ app.whenReady().then(() => {
     'sync:download': () => backupIpc.syncDownload(),
     'sync:restoreFromCloud': (_evt, payload) => backupIpc.restoreFromCloud(String(payload))
   })
+
+  // 用户服务：懒加载 + 启动时确保默认管理员（admin/admin123，仅当无用户时）
+  let userService: ReturnType<typeof createUserService> | null = null
+  function getUserService(): ReturnType<typeof createUserService> {
+    if (!userService) {
+      const userData = app.getPath('userData')
+      userService = createUserService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+    }
+    return userService
+  }
+  getUserService().ensureDefaultAdmin()
+
+  // 登录相关通道本身不需要权限
+  const userSvc = getUserService()
+  registerIpc({
+    'auth:login': (_evt, payload) => {
+      const { username, password } = payload as { username: string; password: string }
+      const user = userSvc.verify(String(username), String(password))
+      if (!user) return null
+      setCurrentUser(user)
+      return user
+    },
+    'auth:current': () => getCurrentUser(),
+    'auth:logout': () => {
+      setCurrentUser(null)
+      return true
+    },
+    'user:query': () => userSvc.query(),
+    'user:get': (_evt, payload) => userSvc.getById(Number(payload)),
+    'user:create': (_evt, payload) =>
+      userSvc.create(payload as { username: string; password: string; role: 'admin' | 'cashier' }),
+    'user:update': (_evt, payload) => {
+      const { id, patch } = payload as {
+        id: number
+        patch: { password?: string; role?: 'admin' | 'cashier'; disabled?: number | boolean }
+      }
+      return userSvc.update(Number(id), patch)
+    },
+    'user:remove': (_evt, payload) => {
+      userSvc.remove(Number(payload))
+      return true
+    }
+  })
+
   createWindow()
 
   app.on('activate', function () {
