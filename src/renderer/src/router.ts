@@ -13,7 +13,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/account/list', name: 'account-list', component: () => import('./views/fund/FundAccountListView.vue') },
   { path: '/account/edit/:id?', name: 'account-edit', component: () => import('./views/fund/FundAccountEditView.vue') },
   { path: '/inventory/statistics', name: 'inventory-statistics', component: () => import('./views/InventoryStatisticsView.vue') },
-  { path: '/setting', name: 'setting', component: () => import('./views/SettingView.vue') }
+  { path: '/setting', name: 'setting', component: () => import('./views/setting/SettingView.vue') }
 ]
 
 const router = createRouter({

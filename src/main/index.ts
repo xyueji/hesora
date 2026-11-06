@@ -7,6 +7,7 @@ import { createCustomerService } from './services/customer/customer.service'
 import { createSupplierService } from './services/supplier/supplier.service'
 import { createWarehouseService } from './services/warehouse/warehouse.service'
 import { createFundService } from './services/fund/fund.service'
+import { createSettingService } from './services/setting/setting.service'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -59,6 +60,15 @@ function getFundService(): ReturnType<typeof createFundService> {
     fundService = createFundService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return fundService
+}
+
+let settingService: ReturnType<typeof createSettingService> | null = null
+function getSettingService(): ReturnType<typeof createSettingService> {
+  if (!settingService) {
+    const userData = app.getPath('userData')
+    settingService = createSettingService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return settingService
 }
 
 function createWindow(): BrowserWindow {
@@ -160,6 +170,17 @@ app.whenReady().then(() => {
     'fund:query': (_evt, payload) => fundSvc.query(payload as never),
     'fund:disable': (_evt, payload) => fundSvc.disable(Number(payload)),
     'fund:enable': (_evt, payload) => fundSvc.enable(Number(payload))
+  })
+
+  const settingSvc = getSettingService()
+  registerIpc({
+    'setting:get': (_evt, payload) => settingSvc.get(String(payload)),
+    'setting:set': (_evt, payload) => {
+      const { key, value } = payload as { key: string; value: string }
+      settingSvc.set(key, value)
+    },
+    'setting:getAll': () => settingSvc.getAll(),
+    'setting:remove': (_evt, payload) => settingSvc.remove(String(payload))
   })
 
   createWindow()
