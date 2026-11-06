@@ -19,6 +19,7 @@ import { createDashboardService } from './services/stats/dashboard.service'
 import { createTransferService } from './services/transfer/transfer.service'
 import { createStocktakeService } from './services/stocktake/stocktake.service'
 import { createAssembleService } from './services/assemble/assemble.service'
+import { createPrintIpc } from './print'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -378,6 +379,15 @@ app.whenReady().then(() => {
     'assemble:getDetail': (_evt, payload) => assembleSvc.getDetail(Number(payload)),
     'assemble:getDisassembleDetail': (_evt, payload) => assembleSvc.getDisassembleDetail(Number(payload)),
     'assemble:query': (_evt, payload) => assembleSvc.query(payload as never)
+  })
+
+  const printIpc = createPrintIpc(openDb(join(app.getPath('userData'), 'zhjs-erp.db'), migrationsDir))
+  registerIpc({
+    'print:receipt': (_evt, payload) => {
+      const { docId, deviceName } = payload as { docId: number; deviceName?: string }
+      return printIpc.printReceipt(Number(docId), deviceName)
+    },
+    'print:a4pdf': (_evt, payload) => printIpc.printA4Pdf(Number(payload))
   })
 
   createWindow()

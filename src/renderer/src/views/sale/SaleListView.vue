@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { printApi } from '../../api/print'
 import { saleApi, type SaleDetail } from '../../api/sale'
 import { customerApi } from '../../api/customer'
 import { productApi } from '../../api/product'
@@ -112,6 +113,21 @@ onMounted(() => {
   void load()
   void loadCustomerOptions()
 })
+
+const printingA4 = ref(false)
+
+async function printA4(): Promise<void> {
+  if (!detail?.value) return
+  printingA4.value = true
+  try {
+    const path = await printApi.a4Pdf(detail.value.doc.id)
+    ElMessage.success(`已保存：${path}`)
+  } catch (e) {
+    ElMessage.error(`打印失败：${(e as Error).message}`)
+  } finally {
+    printingA4.value = false
+  }
+}
 </script>
 
 <template>
@@ -204,6 +220,10 @@ onMounted(() => {
             <template #default="{ row }">{{ fmt(row.amount) }}</template>
           </el-table-column>
         </el-table>
+      </template>
+      <template #footer>
+        <el-button :loading="printingA4" @click="printA4">打印 (A4)</el-button>
+        <el-button @click="detailVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>

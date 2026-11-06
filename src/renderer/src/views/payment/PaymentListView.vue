@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { printApi } from '../../api/print'
 import { paymentApi } from '../../api/payment'
 import type { DocRow } from '../../../../shared/types/doc'
 import type { FundFlowRow } from '../../../../shared/types/payment'
@@ -72,6 +73,21 @@ async function viewDetail(row: DocRow): Promise<void> {
 onMounted(() => {
   void load()
 })
+
+const printingA4 = ref(false)
+
+async function printA4(): Promise<void> {
+  if (!detailDoc?.value) return
+  printingA4.value = true
+  try {
+    const path = await printApi.a4Pdf(detailDoc.value.doc.id)
+    ElMessage.success(`已保存：${path}`)
+  } catch (e) {
+    ElMessage.error(`打印失败：${(e as Error).message}`)
+  } finally {
+    printingA4.value = false
+  }
+}
 </script>
 
 <template>
@@ -152,6 +168,10 @@ onMounted(() => {
         </el-descriptions-item>
         <el-descriptions-item label="流水金额">{{ fmt(detailFlow.amount) }}</el-descriptions-item>
       </el-descriptions>
+      <template #footer>
+        <el-button :loading="printingA4" @click="printA4">打印 (A4)</el-button>
+        <el-button @click="detailDocVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>

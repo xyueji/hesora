@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { retailApi } from '../../api/retail'
 import { productApi } from '../../api/product'
 import { warehouseApi } from '../../api/warehouse'
 import { fundApi } from '../../api/fund'
+import { printApi } from '../../api/print'
 import type { Product } from '../../../../shared/types/product'
 import type { FundAccount } from '../../../../shared/types/fund'
 
@@ -157,15 +158,49 @@ async function savePay(): Promise<void> {
       }))
     })
     payVisible.value = false
+    lastReceiptDocId.value = doc.id
     ElMessage.success(`收款完成，合计 ¥${totalAmount.value.toFixed(2)}，找零 ¥${Math.max(changeAmount.value, 0).toFixed(2)}`)
-    // TODO(P3+): 打印小票
     lines.value = []
     form.remark = ''
     focusBarcode()
+    void offerPrintReceipt(doc.id)
   } catch (e) {
     ElMessage.error((e as Error).message)
   } finally {
     saving.value = false
+  }
+}
+
+const lastReceiptDocId = ref<number | null>(null)
+const printingReceipt = ref(false)
+
+async function offerPrintReceipt(docId: number): Promise<void> {
+  try {
+    await ElMessageBox.confirm('收款完成，是否打印小票？', '打印小票', {
+      confirmButtonText: '打印',
+      cancelButtonText: '不打印',
+      type: 'success'
+    })
+    await doPrintReceipt(docId)
+  } catch {
+    // 用户选择不打印（或确认框关闭），忽略
+  }
+}
+
+async function reprintReceipt(): Promise<void> {
+  if (lastReceiptDocId.value === null) return
+  await doPrintReceipt(lastReceiptDocId.value)
+}
+
+async function doPrintReceipt(docId: number): Promise<void> {
+  printingReceipt.value = true
+  try {
+    await printApi.receipt(docId)
+    ElMessage.success('小票已发送到打印机')
+  } catch (e) {
+    ElMessage.error(`打印失败：${(e as Error).message}`)
+  } finally {
+    printingReceipt.value = false
   }
 }
 
@@ -231,6 +266,7 @@ onMounted(() => {
           合计：<span class="total-num">¥{{ fmt(totalAmount) }}</span>
         </div>
         <el-button type="primary" size="large" class="pay-btn" @click="openPay">收款 (F2)</el-button>
+        <el-button size="large" :disabled="lastReceiptDocId === null" :loading="printingReceipt" @click="reprintReceipt">打印小票</el-button>
       </div>
     </el-card>
 
