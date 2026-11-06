@@ -5,6 +5,8 @@ import { registerIpc } from './ipc/register'
 import { createProductService } from './services/product/product.service'
 import { createCustomerService } from './services/customer/customer.service'
 import { createSupplierService } from './services/supplier/supplier.service'
+import { createWarehouseService } from './services/warehouse/warehouse.service'
+import { createFundService } from './services/fund/fund.service'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -39,6 +41,24 @@ function getSupplierService(): ReturnType<typeof createSupplierService> {
     supplierService = createSupplierService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return supplierService
+}
+
+let warehouseService: ReturnType<typeof createWarehouseService> | null = null
+function getWarehouseService(): ReturnType<typeof createWarehouseService> {
+  if (!warehouseService) {
+    const userData = app.getPath('userData')
+    warehouseService = createWarehouseService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return warehouseService
+}
+
+let fundService: ReturnType<typeof createFundService> | null = null
+function getFundService(): ReturnType<typeof createFundService> {
+  if (!fundService) {
+    const userData = app.getPath('userData')
+    fundService = createFundService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return fundService
 }
 
 function createWindow(): BrowserWindow {
@@ -113,6 +133,33 @@ app.whenReady().then(() => {
     'supplier:query': (_evt, payload) => supplierSvc.query(payload as never),
     'supplier:disable': (_evt, payload) => supplierSvc.disable(Number(payload)),
     'supplier:enable': (_evt, payload) => supplierSvc.enable(Number(payload))
+  })
+
+  const warehouseSvc = getWarehouseService()
+  registerIpc({
+    'warehouse:create': (_evt, payload) => warehouseSvc.create(payload as never),
+    'warehouse:update': (_evt, payload) => {
+      const { id, p } = payload as { id: number; p: Record<string, unknown> }
+      warehouseSvc.update(id, p)
+    },
+    'warehouse:get': (_evt, payload) => warehouseSvc.getById(Number(payload)),
+    'warehouse:query': (_evt, payload) => warehouseSvc.query(payload as never),
+    'warehouse:set-default': (_evt, payload) => warehouseSvc.setDefault(Number(payload)),
+    'warehouse:disable': (_evt, payload) => warehouseSvc.disable(Number(payload)),
+    'warehouse:enable': (_evt, payload) => warehouseSvc.enable(Number(payload))
+  })
+
+  const fundSvc = getFundService()
+  registerIpc({
+    'fund:create': (_evt, payload) => fundSvc.create(payload as never),
+    'fund:update': (_evt, payload) => {
+      const { id, p } = payload as { id: number; p: Record<string, unknown> }
+      fundSvc.update(id, p)
+    },
+    'fund:get': (_evt, payload) => fundSvc.getById(Number(payload)),
+    'fund:query': (_evt, payload) => fundSvc.query(payload as never),
+    'fund:disable': (_evt, payload) => fundSvc.disable(Number(payload)),
+    'fund:enable': (_evt, payload) => fundSvc.enable(Number(payload))
   })
 
   createWindow()

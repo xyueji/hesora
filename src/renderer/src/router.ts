@@ -8,8 +8,10 @@ const routes: RouteRecordRaw[] = [
   { path: '/customer/edit/:id?', name: 'customer-edit', component: () => import('./views/customer/CustomerEditView.vue') },
   { path: '/supplier/list', name: 'supplier-list', component: () => import('./views/supplier/SupplierListView.vue') },
   { path: '/supplier/edit/:id?', name: 'supplier-edit', component: () => import('./views/supplier/SupplierEditView.vue') },
-  { path: '/warehouse/list', name: 'warehouse-list', component: () => import('./views/WarehouseListView.vue') },
-  { path: '/account/list', name: 'account-list', component: () => import('./views/AccountListView.vue') },
+  { path: '/warehouse/list', name: 'warehouse-list', component: () => import('./views/warehouse/WarehouseListView.vue') },
+  { path: '/warehouse/edit/:id?', name: 'warehouse-edit', component: () => import('./views/warehouse/WarehouseEditView.vue') },
+  { path: '/account/list', name: 'account-list', component: () => import('./views/fund/FundAccountListView.vue') },
+  { path: '/account/edit/:id?', name: 'account-edit', component: () => import('./views/fund/FundAccountEditView.vue') },
   { path: '/inventory/statistics', name: 'inventory-statistics', component: () => import('./views/InventoryStatisticsView.vue') },
   { path: '/setting', name: 'setting', component: () => import('./views/SettingView.vue') }
 ]
