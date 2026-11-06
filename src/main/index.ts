@@ -13,6 +13,7 @@ import { createInventoryService } from './services/inventory/inventory.service'
 import { createPurchaseService } from './services/purchase/purchase.service'
 import { createSaleService } from './services/sale/sale.service'
 import { createRetailService } from './services/retail/retail.service'
+import { createDocService } from './services/doc/doc.service'
 import { createPaymentService } from './services/payment/payment.service'
 import { createArrearsService } from './services/stats/arrears.service'
 import { createDashboardService } from './services/stats/dashboard.service'
@@ -323,6 +324,11 @@ app.whenReady().then(() => {
   })
 
   const retailSvc = getRetailService()
+  const docSvc = createDocService(openDb(join(app.getPath('userData'), 'zhjs-erp.db'), migrationsDir))
+  registerIpc({
+    'doc:query': (_evt, payload) => docSvc.query(payload as never),
+    'doc:detail': (_evt, payload) => docSvc.getDetailWithItems(Number(payload))
+  })
   registerIpc({
     'retail:create': (_evt, payload) => retailSvc.create(payload as never),
     'retail:getDetail': (_evt, payload) => retailSvc.getDetail(Number(payload)),

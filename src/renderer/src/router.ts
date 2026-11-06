@@ -34,6 +34,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/inventory/statistics', name: 'inventory-statistics', component: () => import('./views/InventoryStatisticsView.vue') },
   { path: '/inventory/stock', name: 'inventory-stock', component: () => import('./views/inventory/StockListView.vue') },
   { path: '/stats/arrears', name: 'stats-arrears', component: () => import('./views/stats/ArrearsView.vue') },
+  { path: '/doc/search', name: 'doc-search', component: () => import('./views/doc/DocSearchView.vue') },
   { path: '/opening', name: 'opening', component: () => import('./views/opening/OpeningView.vue') },
   { path: '/setting', name: 'setting', component: () => import('./views/setting/SettingView.vue') }
 ]

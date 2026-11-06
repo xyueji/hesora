@@ -53,6 +53,7 @@ const route = useRoute()
         <el-sub-menu index="stats-group">
           <template #title>报表</template>
           <el-menu-item index="/stats/arrears">应收应付</el-menu-item>
+          <el-menu-item index="/doc/search">单据查询</el-menu-item>
         </el-sub-menu>
         <el-menu-item index="/opening">期初建账</el-menu-item>
         <el-menu-item index="/setting">设置</el-menu-item>

@@ -104,4 +104,39 @@ describe('doc.service', () => {
   it('getById returns null for missing doc', () => {
     expect(s.getById(999)).toBeNull()
   })
+
+  describe('partner_name resolution', () => {
+    it('query returns partner_name for customer/supplier and null for retail', () => {
+      const svc = createDocService(openMemDbWithPartners())
+      const sale = svc.create({ ...purchaseInput(), type: 'sale' as const, partner_id: 101 })
+      const purchase = svc.create({ ...purchaseInput(), partner_id: 201 })
+      const retail = svc.create({
+        ...purchaseInput(),
+        type: 'retail' as const,
+        partner_id: null as unknown as number
+      })
+      const rows = svc.query({ page: 1, pageSize: 10 }).items
+      const byId = new Map(rows.map((r) => [r.id, r]))
+      expect(byId.get(sale.id)?.partner_name).toBe('测试客户')
+      expect(byId.get(purchase.id)?.partner_name).toBe('测试供应商')
+      expect(byId.get(retail.id)?.partner_name ?? null).toBeNull()
+    })
+
+    it('getDetailWithItems returns doc and items', () => {
+      const svc = createDocService(openMemDbWithPartners())
+      const row = svc.create(purchaseInput())
+      const d = svc.getDetailWithItems(row.id)
+      expect(d?.doc.id).toBe(row.id)
+      expect(d?.items).toHaveLength(2)
+      expect(svc.getDetailWithItems(999)).toBeNull()
+    })
+  })
 })
+
+/** 内存库 + 预置一个客户(id 101)和一个供应商(id 201) */
+function openMemDbWithPartners(): import('better-sqlite3').Database {
+  const db = openMemDb()
+  db.prepare(`INSERT INTO customer (id, code, name) VALUES (101, 'C101', '测试客户')`).run()
+  db.prepare(`INSERT INTO supplier (id, code, name) VALUES (201, 'S201', '测试供应商')`).run()
+  return db
+}

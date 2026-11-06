@@ -24,6 +24,7 @@ interface DocDbRow {
   remark: string | null
   status: string
   created_at: string
+  partner_name?: string | null
 }
 
 function pad(n: number, len: number): string {
@@ -48,7 +49,8 @@ function toDocRow(row: DocDbRow): DocRow {
     total_amount: row.total_amount,
     remark: row.remark,
     status: row.status as DocRow['status'],
-    created_at: row.created_at
+    created_at: row.created_at,
+    partner_name: row.partner_name ?? null
   }
 }
 
@@ -134,8 +136,7 @@ export function createDocService(db: DB) {
     return getById(docId) as DocRow
   }
 
-  function query(q: DocQuery): DocPageResult {
-    const pageSize = Math.min(Math.max(Math.trunc(Number(q.pageSize) || 20), 1), 200)
+  function query(q: DocQuery): DocPageResult {    const pageSize = Math.min(Math.max(Math.trunc(Number(q.pageSize) || 20), 1), 200)
     const page = Math.max(Math.trunc(Number(q.page) || 1), 1)
     const where: string[] = []
     const params: Record<string, unknown> = {}
@@ -166,19 +167,32 @@ export function createDocService(db: DB) {
     }
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
     const total = Number(
-      (db.prepare(`SELECT COUNT(*) AS c FROM doc ${whereSql}`).get(params) as { c: number }).c
+      (db.prepare(`SELECT COUNT(*) AS c FROM doc d ${whereSql}`).get(params) as { c: number }).c
     )
     const rows = db
-      .prepare(`SELECT * FROM doc ${whereSql} ORDER BY id DESC LIMIT @limit OFFSET @offset`)
+      .prepare(
+        `SELECT d.*, CASE WHEN d.partner_id IS NULL THEN NULL ELSE COALESCE(c.name, s.name) END AS partner_name
+         FROM doc d
+         LEFT JOIN customer c ON c.id = d.partner_id
+         LEFT JOIN supplier s ON s.id = d.partner_id
+         ${whereSql} ORDER BY d.id DESC LIMIT @limit OFFSET @offset`
+      )
       .all({ ...params, limit: pageSize, offset: (page - 1) * pageSize }) as DocDbRow[]
     return { total, items: rows.map(toDocRow) }
+  }
+
+  /** 通用单据详情：单据头 + 明细行（供单据查询中心使用）。 */
+  function getDetailWithItems(id: number): { doc: DocRow; items: DocItemRow[] } | null {
+    const doc = getById(id)
+    if (!doc) return null
+    return { doc, items: getItems(id) }
   }
 
   function remove(_id: number): void {
     throw new BizError('DOC_DONE', '已完成单据不可删除')
   }
 
-  return { nextDocNo, create, getById, getItems, query, remove }
+  return { nextDocNo, create, getById, getItems, getDetailWithItems, query, remove }
 }
 
 export type DocService = ReturnType<typeof createDocService>
