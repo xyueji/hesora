@@ -31,7 +31,8 @@ const plainItems: MenuItem[] = [
   { path: '/opening', label: '期初建账', perm: 'opening.edit' },
   { path: '/setting', label: '设置', perm: 'system.setting' },
   { path: '/system/users', label: '用户管理', perm: 'system.user' },
-  { path: '/sync', label: '同步备份', perm: 'data.sync' }
+  { path: '/sync', label: '同步备份', perm: 'data.sync' },
+  { path: '/guide?replay=1', label: '重新查看引导' }
 ]
 
 const groups: MenuGroup[] = [

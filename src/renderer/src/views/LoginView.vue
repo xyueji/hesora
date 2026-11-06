@@ -3,6 +3,7 @@ import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { authApi } from '../api/auth'
+import { settingApi } from '../api/setting'
 import { setSession } from '../stores/auth'
 
 const router = useRouter()
@@ -23,6 +24,16 @@ async function submit() {
     }
     setSession(user)
     ElMessage.success(`欢迎，${user.username}`)
+    // 首次使用（guide.show 未关闭）→ 先看新手引导
+    try {
+      const show = await settingApi.get('guide.show')
+      if (show !== '0') {
+        void router.push('/guide')
+        return
+      }
+    } catch {
+      /* 读设置失败则正常进首页 */
+    }
     void router.push('/')
   } catch (e) {
     ElMessage.error((e as Error).message || '登录失败')

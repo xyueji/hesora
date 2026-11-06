@@ -2,6 +2,8 @@ import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-rou
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },
+  { path: '/guide', name: 'guide', component: () => import('./views/guide/GuideView.vue') },
+  { path: '/activate', name: 'activate', component: () => import('./views/activate/ActivateView.vue') },
   { path: '/', name: 'home', component: () => import('./views/DashboardView.vue') },
   { path: '/product/list', name: 'product-list', component: () => import('./views/product/ProductListView.vue') },
   { path: '/product/edit/:id?', name: 'product-edit', component: () => import('./views/product/ProductEditView.vue') },
@@ -59,6 +61,22 @@ router.beforeEach(async (to) => {
   }
   if (!currentUser.value && to.path !== '/login') return { path: '/login' }
   if (currentUser.value && to.path === '/login') return { path: '/' }
+  // 试用到期强制进入激活页（license:check / auth:* 通道不受试用守卫限制）
+  if (
+    currentUser.value &&
+    to.path !== '/activate' &&
+    to.path !== '/guide'
+  ) {
+    try {
+      const { licenseApi } = await import('./api/license')
+      const s = await licenseApi.check()
+      if (s.mode === 'trial' && s.daysLeft !== undefined && s.daysLeft <= 0) {
+        return { path: '/activate' }
+      }
+    } catch {
+      /* 检查失败不拦截（离线容错） */
+    }
+  }
   return true
 })
 
