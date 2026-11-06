@@ -46,6 +46,10 @@ const route = useRoute()
           <el-menu-item index="/assemble/edit">开组装拆卸单</el-menu-item>
           <el-menu-item index="/assemble/list">组装拆卸单列表</el-menu-item>
         </el-sub-menu>
+        <el-sub-menu index="stats-group">
+          <template #title>报表</template>
+          <el-menu-item index="/stats/arrears">应收应付</el-menu-item>
+        </el-sub-menu>
         <el-menu-item index="/opening">期初建账</el-menu-item>
         <el-menu-item index="/setting">设置</el-menu-item>
       </el-menu>

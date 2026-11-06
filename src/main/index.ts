@@ -14,6 +14,7 @@ import { createPurchaseService } from './services/purchase/purchase.service'
 import { createSaleService } from './services/sale/sale.service'
 import { createRetailService } from './services/retail/retail.service'
 import { createPaymentService } from './services/payment/payment.service'
+import { createArrearsService } from './services/stats/arrears.service'
 import { createTransferService } from './services/transfer/transfer.service'
 import { createStocktakeService } from './services/stocktake/stocktake.service'
 import { createAssembleService } from './services/assemble/assemble.service'
@@ -159,6 +160,15 @@ function getPaymentService(): ReturnType<typeof createPaymentService> {
     paymentService = createPaymentService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return paymentService
+}
+
+let arrearsService: ReturnType<typeof createArrearsService> | null = null
+function getArrearsService(): ReturnType<typeof createArrearsService> {
+  if (!arrearsService) {
+    const userData = app.getPath('userData')
+    arrearsService = createArrearsService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return arrearsService
 }
 
 function createWindow(): BrowserWindow {
@@ -313,6 +323,13 @@ app.whenReady().then(() => {
     'payment:getPaymentDetail': (_evt, payload) => paymentSvc.getPaymentDetail(Number(payload)),
     'payment:queryReceipt': (_evt, payload) => paymentSvc.queryReceipt(payload as never),
     'payment:queryPayment': (_evt, payload) => paymentSvc.queryPayment(payload as never)
+  })
+
+  const arrearsSvc = getArrearsService()
+  registerIpc({
+    'stats:receivables': () => arrearsSvc.receivables(),
+    'stats:payables': () => arrearsSvc.payables(),
+    'stats:summary': () => arrearsSvc.summary()
   })
 
   const transferSvc = getTransferService()
