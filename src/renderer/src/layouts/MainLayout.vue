@@ -14,11 +14,15 @@ const route = useRoute()
           <template #title>采购</template>
           <el-menu-item index="/purchase/edit">开进货单</el-menu-item>
           <el-menu-item index="/purchase/list">进货单列表</el-menu-item>
+          <el-menu-item index="/purchase/return-edit">开采购退货单</el-menu-item>
+          <el-menu-item index="/purchase/return-list">采购退货单列表</el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="sale-group">
           <template #title>销售</template>
           <el-menu-item index="/sale/edit">开销售单</el-menu-item>
           <el-menu-item index="/sale/list">销售单列表</el-menu-item>
+          <el-menu-item index="/sale/return-edit">开销售退货单</el-menu-item>
+          <el-menu-item index="/sale/return-list">销售退货单列表</el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="retail-group">
           <template #title>零售</template>

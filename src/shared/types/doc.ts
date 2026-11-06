@@ -64,6 +64,8 @@ export interface DocRow {
 
 export interface DocQuery {
   type?: DocType
+  /** 多类型过滤（与 type 二选一，types 优先） */
+  types?: DocType[]
   date_from?: string
   date_to?: string
   keyword?: string

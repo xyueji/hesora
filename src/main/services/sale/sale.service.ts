@@ -28,6 +28,8 @@ export interface SaleQuery {
   date_to?: string
   keyword?: string
   partner_id?: number
+  /** 不传返回销售单+退货单；'sale' 仅销售单；'sale_return' 仅退货单 */
+  type?: 'sale' | 'sale_return'
   page: number
   pageSize: number
 }
@@ -105,9 +107,93 @@ export function createSaleService(db: DB) {
     return doc as DocRow
   }
 
+  /**
+   * 销售退货单：type='sale_return'（编号 XTyyyyMMddNNNN），货入库（IN），
+   * 入库成本按当前库存行的移动加权成本（无库存行则 0）。
+   * 款项按应收减少（退款给客户）处理，统一记资金流水 fund_flow（direction 'in'，doc_type 'sale_return'）。
+   * 不做原单关联校验：退货数量超过历史销量但库存充足时同样允许。
+   */
+  function createReturn(input: SaleCreateInput): DocRow {
+    const warehouseId = Number(input.warehouse_id)
+    if (!Number.isInteger(warehouseId)) {
+      throw new BizError('VALIDATION', '仓库不能为空')
+    }
+    const wh = db.prepare('SELECT id FROM warehouse WHERE id = ?').get(warehouseId)
+    if (!wh) throw new BizError('NOT_FOUND', `仓库不存在：${warehouseId}`)
+    if (input.customer_id !== undefined && input.customer_id !== null) {
+      const cus = db.prepare('SELECT id FROM customer WHERE id = ?').get(Number(input.customer_id))
+      if (!cus) throw new BizError('NOT_FOUND', `客户不存在：${input.customer_id}`)
+    }
+    if (!input.items || input.items.length === 0) {
+      throw new BizError('VALIDATION', '销售退货明细不能为空')
+    }
+    for (const it of input.items) {
+      if (!Number.isFinite(Number(it.qty)) || Number(it.qty) <= 0) {
+        throw new BizError('VALIDATION', '明细数量必须大于0')
+      }
+      const price = Number(it.price ?? 0)
+      if (!Number.isFinite(price) || price < 0) {
+        throw new BizError('VALIDATION', '明细单价不能为负数')
+      }
+    }
+    let doc: DocRow | undefined
+    db.transaction(() => {
+      doc = docService.create({
+        type: 'sale_return',
+        date: input.date,
+        partner_id: input.customer_id,
+        warehouse_id: warehouseId,
+        remark: input.remark,
+        items: input.items.map((it) => ({
+          product_id: it.product_id,
+          warehouse_id: warehouseId,
+          batch_no: it.batch_no,
+          unit: it.unit,
+          rate: it.rate,
+          qty: it.qty,
+          price: it.price
+        }))
+      })
+      const changes = input.items.map((it) => {
+        const rate = it.rate === undefined || it.rate === null ? 1 : Number(it.rate)
+        const row = db
+          .prepare(
+            'SELECT moving_cost FROM inventory WHERE product_id = ? AND warehouse_id = ? AND batch_no = ?'
+          )
+          .get(it.product_id, warehouseId, it.batch_no ?? '') as
+          | { moving_cost: number }
+          | undefined
+        return {
+          product_id: it.product_id,
+          warehouse_id: warehouseId,
+          batch_no: it.batch_no ?? '',
+          change_qty: Number(it.qty) * rate,
+          unit_cost: row?.moving_cost ?? 0,
+          source: 'sale_return',
+          source_id: doc?.id ?? 0
+        }
+      })
+      inventoryService.applyChanges(changes)
+      const total = doc?.total_amount ?? 0
+      if (total > 0) {
+        db.prepare(
+          `INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark)
+           VALUES (?, 'sale_return', ?, ?, 'in', ?, ?)`
+        ).run(
+          1,
+          doc?.id ?? 0,
+          total,
+          doc?.date ?? '',
+          input.remark ?? null
+        )
+      }
+    })()
+    return doc as DocRow
+  }
+
   function getDetail(id: number): SaleDetail {
     const doc = docService.getById(id)
-    if (!doc || doc.type !== 'sale') {
+    if (!doc || (doc.type !== 'sale' && doc.type !== 'sale_return')) {
       throw new BizError('NOT_FOUND', `销售单不存在：${id}`)
     }
     return { doc, items: docService.getItems(id) }
@@ -115,7 +201,7 @@ export function createSaleService(db: DB) {
 
   function query(q: SaleQuery): DocPageResult {
     const inner: DocQuery = {
-      type: 'sale',
+      types: q.type ? [q.type] : ['sale', 'sale_return'],
       date_from: q.date_from,
       date_to: q.date_to,
       keyword: q.keyword,
@@ -126,7 +212,7 @@ export function createSaleService(db: DB) {
     return docService.query(inner)
   }
 
-  return { create, getDetail, query }
+  return { create, createReturn, getDetail, query }
 }
 
 export type SaleService = ReturnType<typeof createSaleService>

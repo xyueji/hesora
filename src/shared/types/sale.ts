@@ -20,6 +20,8 @@ export interface SaleQuery {
   date_to?: string
   keyword?: string
   partner_id?: number
+  /** 不传返回销售单+退货单；'sale' 仅销售单；'sale_return' 仅退货单 */
+  type?: 'sale' | 'sale_return'
   page: number
   pageSize: number
 }

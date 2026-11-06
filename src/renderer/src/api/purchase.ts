@@ -21,6 +21,7 @@ export interface PurchaseDetail {
 
 export const purchaseApi = {
   create: (p: PurchaseCreateInput) => call<DocRow>('purchase:create', p),
+  createReturn: (p: PurchaseCreateInput) => call<DocRow>('purchase:createReturn', p),
   getDetail: (id: number) => call<PurchaseDetail>('purchase:getDetail', id),
   query: (q: PurchaseQuery) => call<DocPageResult>('purchase:query', q)
 }

@@ -142,6 +142,11 @@ export function createDocService(db: DB) {
     if (q.type) {
       where.push('type = @type')
       params['type'] = q.type
+    } else if (q.types && q.types.length > 0) {
+      where.push(`type IN (${q.types.map((_, i) => `@type_${i}`).join(',')})`)
+      q.types.forEach((t, i) => {
+        params[`type_${i}`] = t
+      })
     }
     if (q.date_from) {
       where.push('date >= @date_from')

@@ -23,6 +23,7 @@ export interface SaleDetail {
 
 export const saleApi = {
   create: (p: SaleCreateInput) => call<DocRow>('sale:create', p),
+  createReturn: (p: SaleCreateInput) => call<DocRow>('sale:createReturn', p),
   getDetail: (id: number) => call<SaleDetail>('sale:getDetail', id),
   query: (q: SaleQuery) => call<DocPageResult>('sale:query', q)
 }

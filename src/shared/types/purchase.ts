@@ -20,6 +20,8 @@ export interface PurchaseQuery {
   date_to?: string
   keyword?: string
   partner_id?: number
+  /** 不传返回采购单+退货单；'purchase' 仅采购单；'purchase_return' 仅退货单 */
+  type?: 'purchase' | 'purchase_return'
   page: number
   pageSize: number
 }

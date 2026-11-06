@@ -297,6 +297,7 @@ app.whenReady().then(() => {
   const purchaseSvc = getPurchaseService()
   registerIpc({
     'purchase:create': (_evt, payload) => purchaseSvc.create(payload as never),
+    'purchase:createReturn': (_evt, payload) => purchaseSvc.createReturn(payload as never),
     'purchase:getDetail': (_evt, payload) => purchaseSvc.getDetail(Number(payload)),
     'purchase:query': (_evt, payload) => purchaseSvc.query(payload as never)
   })
@@ -304,6 +305,7 @@ app.whenReady().then(() => {
   const saleSvc = getSaleService()
   registerIpc({
     'sale:create': (_evt, payload) => saleSvc.create(payload as never),
+    'sale:createReturn': (_evt, payload) => saleSvc.createReturn(payload as never),
     'sale:getDetail': (_evt, payload) => saleSvc.getDetail(Number(payload)),
     'sale:query': (_evt, payload) => saleSvc.query(payload as never)
   })
