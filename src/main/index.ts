@@ -5,6 +5,7 @@ import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
 import { PERMISSION_MAP } from './permissions-map'
 import { setCurrentUser, getCurrentUser, can } from './auth'
 import { createUserService } from './services/user/user.service'
+import { createLicenseService } from './services/license/license.service'
 import { createProductService } from './services/product/product.service'
 import { createCustomerService } from './services/customer/customer.service'
 import { createSupplierService } from './services/supplier/supplier.service'
@@ -227,6 +228,28 @@ app.whenReady().then(() => {
   setDefaultPermissionGuard((channel) => {
     const perm = PERMISSION_MAP[channel]
     return perm === undefined || can(perm)
+  })
+
+  // 试用到期守卫：trial 且 daysLeft<=0 时，除 auth:*/license:* 外一律拒绝
+  const licenseSvc = createLicenseService(
+    openDb(join(app.getPath('userData'), 'zhjs-erp.db'), migrationsDir)
+  )
+  const prevGuard = (channel: string): boolean => {
+    const perm = PERMISSION_MAP[channel]
+    return perm === undefined || can(perm)
+  }
+  setDefaultPermissionGuard((channel) => {
+    if (channel.startsWith('auth:') || channel.startsWith('license:')) return true
+    if (!prevGuard(channel)) return false
+    const status = licenseSvc.getStatus()
+    if (status.mode === 'trial' && status.daysLeft !== undefined && status.daysLeft <= 0) {
+      return false
+    }
+    return true
+  })
+  registerIpc({
+    'license:check': () => licenseSvc.getStatus(),
+    'license:activate': (_evt, payload) => licenseSvc.activate(String(payload))
   })
   const svc = getProductService()
   registerIpc({
