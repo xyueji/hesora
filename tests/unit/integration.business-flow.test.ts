@@ -72,8 +72,8 @@ function setup() {
       { product_id: productB, qty: 1 }
     ]
   })
-  const zhangsan = customerService.create({ code: 'C001', name: '张三' })
-  const laowang = supplierService.create({ code: 'S001', name: '老王' })
+  const zhangsan = customerService.create({ code: 'C001', name: '张三', opening_receivable: 0 })
+  const laowang = supplierService.create({ code: 'S001', name: '老王', opening_payable: 0 })
 
   function stock(productId: number, warehouseId: number): { qty: number; moving_cost: number } {
     const rows = inventory.getByProduct(productId, warehouseId)
