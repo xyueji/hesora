@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import { BizError } from '../../../shared/result'
-import type { CostLogRow, InventoryChange, InventoryRow } from '../../../shared/types/inventory'
+import type { CostLogRow, InventoryChange, InventoryRow, StockPageResult, StockQuery } from '../../../shared/types/inventory'
 
 export type DB = Database
 
@@ -126,6 +126,83 @@ export function createInventoryService(db: DB) {
       return db
         .prepare('SELECT * FROM cost_log WHERE product_id = ? ORDER BY id ASC')
         .all(productId) as CostLogRow[]
+    },
+
+    // 库存统计：仅显示数量非 0 的批次，含停用商品（停用商品库存仍存在）
+    queryStock(query: StockQuery): StockPageResult {
+      const conditions: string[] = ['i.qty <> 0']
+      const params: Array<string | number> = []
+      if (query.keyword) {
+        conditions.push('(p.code LIKE ? OR p.name LIKE ?)')
+        const kw = `%${query.keyword}%`
+        params.push(kw, kw)
+      }
+      if (query.warehouse_id !== undefined) {
+        conditions.push('i.warehouse_id = ?')
+        params.push(query.warehouse_id)
+      }
+      const where = conditions.join(' AND ')
+
+      const baseFrom = `
+        FROM inventory i
+        JOIN product p ON p.id = i.product_id
+        JOIN warehouse w ON w.id = i.warehouse_id
+        WHERE ${where}
+      `
+      const total = (
+        db.prepare(`SELECT COUNT(*) AS c ${baseFrom}`).get(...params) as { c: number }
+      ).c
+
+      const rows = db
+        .prepare(
+          `SELECT
+            i.product_id,
+            p.code AS product_code,
+            p.name AS product_name,
+            p.base_unit AS unit,
+            i.warehouse_id,
+            w.name AS warehouse_name,
+            i.batch_no,
+            i.qty,
+            i.moving_cost,
+            (
+              SELECT GROUP_CONCAT(u.unit || '=' || RTRIM(RTRIM(CAST(u.rate AS TEXT), '0'), '.'), ';')
+              FROM product_unit u
+              WHERE u.product_id = i.product_id AND u.is_base = 0
+            ) AS spec
+          ${baseFrom}
+          ORDER BY product_code, warehouse_name, batch_no
+          LIMIT ? OFFSET ?`
+        )
+        .all(...params, query.pageSize, (query.page - 1) * query.pageSize) as Array<{
+        product_id: number
+        product_code: string
+        product_name: string
+        unit: string
+        warehouse_id: number
+        warehouse_name: string
+        batch_no: string
+        qty: number
+        moving_cost: number
+        spec: string | null
+      }>
+
+      return {
+        total,
+        items: rows.map((r) => ({
+          product_id: r.product_id,
+          product_code: r.product_code,
+          product_name: r.product_name,
+          spec: r.spec ?? '',
+          unit: r.unit,
+          warehouse_id: r.warehouse_id,
+          warehouse_name: r.warehouse_name,
+          batch_no: r.batch_no,
+          qty: r.qty,
+          moving_cost: r.moving_cost,
+          amount: r.qty * r.moving_cost
+        }))
+      }
     }
   }
 }

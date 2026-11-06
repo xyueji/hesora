@@ -1,3 +1,29 @@
+export interface StockQuery {
+  keyword?: string
+  warehouse_id?: number
+  page: number
+  pageSize: number
+}
+
+export interface StockItem {
+  product_id: number
+  product_code: string
+  product_name: string
+  spec: string
+  unit: string
+  warehouse_id: number
+  warehouse_name: string
+  batch_no: string
+  qty: number
+  moving_cost: number
+  amount: number
+}
+
+export interface StockPageResult {
+  total: number
+  items: StockItem[]
+}
+
 export interface InventoryChange {
   product_id: number
   warehouse_id: number

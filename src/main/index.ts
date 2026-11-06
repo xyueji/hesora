@@ -9,6 +9,7 @@ import { createWarehouseService } from './services/warehouse/warehouse.service'
 import { createFundService } from './services/fund/fund.service'
 import { createSettingService } from './services/setting/setting.service'
 import { createOpeningService } from './services/opening/opening.service'
+import { createInventoryService } from './services/inventory/inventory.service'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -25,6 +26,15 @@ function getProductService(): ReturnType<typeof createProductService> {
     productService = createProductService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return productService
+}
+
+let inventoryService: ReturnType<typeof createInventoryService> | null = null
+function getInventoryService(): ReturnType<typeof createInventoryService> {
+  if (!inventoryService) {
+    const userData = app.getPath('userData')
+    inventoryService = createInventoryService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return inventoryService
 }
 
 let customerService: ReturnType<typeof createCustomerService> | null = null
@@ -197,6 +207,11 @@ app.whenReady().then(() => {
   registerIpc({
     'opening:save': (_evt, payload) => openingSvc.save(payload as never),
     'opening:getStatus': () => openingSvc.getStatus()
+  })
+
+  const invSvc = getInventoryService()
+  registerIpc({
+    'inventory:queryStock': (_evt, payload) => invSvc.queryStock(payload as never)
   })
 
   createWindow()

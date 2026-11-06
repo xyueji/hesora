@@ -9,7 +9,8 @@ function setup() {
   const inv = createInventoryService(db)
   const productId = createProductService(db).create({ code: 'P001', name: '可乐', base_unit: '罐', retail_price: 3, trade_price: 2.5, purchase_price: 2, tracking_type: 'none', units: [], barcodes: [] })
   const whId = createWarehouseService(db).create({ name: '主仓', is_default: true })
-  return { db, inv, productId, whId }
+  const whId2 = createWarehouseService(db).create({ name: '副仓', is_default: false })
+  return { db, inv, productId, whId, whId2 }
 }
 
 describe('inventory.service', () => {
@@ -71,5 +72,68 @@ describe('inventory.service', () => {
     ).toThrow()
     const r = ctx.inv.getByProduct(ctx.productId, ctx.whId)
     expect(r).toHaveLength(0)
+  })
+})
+
+describe('inventory.service queryStock', () => {
+  let ctx: ReturnType<typeof setup>
+  let productService: ReturnType<typeof createProductService>
+  beforeEach(() => {
+    ctx = setup()
+    productService = createProductService(ctx.db)
+  })
+
+  it('returns joined product/warehouse info with amount computed', () => {
+    const p2 = productService.create({ code: 'P002', name: '雪碧', base_unit: '瓶', retail_price: 3, trade_price: 2.5, purchase_price: 2, tracking_type: 'none', units: [{ unit: '箱', rate: 24 }], barcodes: [] })
+    ctx.inv.applyChanges([
+      { product_id: ctx.productId, warehouse_id: ctx.whId, change_qty: 10, unit_cost: 2 },
+      { product_id: p2, warehouse_id: ctx.whId2, change_qty: 5, unit_cost: 3 }
+    ])
+    const r = ctx.inv.queryStock({ page: 1, pageSize: 10 })
+    expect(r.total).toBe(2)
+    const coke = r.items.find((i) => i.product_code === 'P001')!
+    expect(coke.product_name).toBe('可乐')
+    expect(coke.warehouse_name).toBe('主仓')
+    expect(coke.qty).toBe(10)
+    expect(coke.moving_cost).toBeCloseTo(2)
+    expect(coke.amount).toBeCloseTo(20)
+    expect(coke.unit).toBe('罐')
+    const sprite = r.items.find((i) => i.product_code === 'P002')!
+    expect(sprite.spec).toBe('箱=24')
+    expect(sprite.amount).toBeCloseTo(15)
+  })
+
+  it('keyword filter only returns matching product rows', () => {
+    const p2 = productService.create({ code: 'P002', name: '雪碧', base_unit: '瓶', retail_price: 3, trade_price: 2.5, purchase_price: 2, tracking_type: 'none', units: [], barcodes: [] })
+    ctx.inv.applyChanges([
+      { product_id: ctx.productId, warehouse_id: ctx.whId, change_qty: 10, unit_cost: 2 },
+      { product_id: p2, warehouse_id: ctx.whId, change_qty: 10, unit_cost: 2 }
+    ])
+    const r = ctx.inv.queryStock({ keyword: '可乐', page: 1, pageSize: 10 })
+    expect(r.total).toBe(1)
+    expect(r.items[0]!.product_code).toBe('P001')
+  })
+
+  it('excludes zero-qty rows', () => {
+    ctx.inv.applyChanges([{ product_id: ctx.productId, warehouse_id: ctx.whId, change_qty: 10, unit_cost: 2 }])
+    ctx.inv.applyChanges([{ product_id: ctx.productId, warehouse_id: ctx.whId, change_qty: -10 }])
+    const r = ctx.inv.queryStock({ page: 1, pageSize: 10 })
+    expect(r.total).toBe(0)
+    expect(r.items).toHaveLength(0)
+  })
+
+  it('paginates: page 1 has pageSize items, total counts all', () => {
+    const p2 = productService.create({ code: 'P002', name: '雪碧', base_unit: '瓶', retail_price: 3, trade_price: 2.5, purchase_price: 2, tracking_type: 'none', units: [], barcodes: [] })
+    const p3 = productService.create({ code: 'P003', name: '芬达', base_unit: '瓶', retail_price: 3, trade_price: 2.5, purchase_price: 2, tracking_type: 'none', units: [], barcodes: [] })
+    ctx.inv.applyChanges([
+      { product_id: ctx.productId, warehouse_id: ctx.whId, change_qty: 1, unit_cost: 2 },
+      { product_id: p2, warehouse_id: ctx.whId, change_qty: 1, unit_cost: 2 },
+      { product_id: p3, warehouse_id: ctx.whId, change_qty: 1, unit_cost: 2 }
+    ])
+    const r = ctx.inv.queryStock({ page: 1, pageSize: 2 })
+    expect(r.items).toHaveLength(2)
+    expect(r.total).toBe(3)
+    const r2 = ctx.inv.queryStock({ page: 2, pageSize: 2 })
+    expect(r2.items).toHaveLength(1)
   })
 })
