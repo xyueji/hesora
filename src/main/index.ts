@@ -10,6 +10,7 @@ import { createFundService } from './services/fund/fund.service'
 import { createSettingService } from './services/setting/setting.service'
 import { createOpeningService } from './services/opening/opening.service'
 import { createInventoryService } from './services/inventory/inventory.service'
+import { createPurchaseService } from './services/purchase/purchase.service'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -89,6 +90,15 @@ function getOpeningService(): ReturnType<typeof createOpeningService> {
     openingService = createOpeningService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return openingService
+}
+
+let purchaseService: ReturnType<typeof createPurchaseService> | null = null
+function getPurchaseService(): ReturnType<typeof createPurchaseService> {
+  if (!purchaseService) {
+    const userData = app.getPath('userData')
+    purchaseService = createPurchaseService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return purchaseService
 }
 
 function createWindow(): BrowserWindow {
@@ -212,6 +222,13 @@ app.whenReady().then(() => {
   const invSvc = getInventoryService()
   registerIpc({
     'inventory:queryStock': (_evt, payload) => invSvc.queryStock(payload as never)
+  })
+
+  const purchaseSvc = getPurchaseService()
+  registerIpc({
+    'purchase:create': (_evt, payload) => purchaseSvc.create(payload as never),
+    'purchase:getDetail': (_evt, payload) => purchaseSvc.getDetail(Number(payload)),
+    'purchase:query': (_evt, payload) => purchaseSvc.query(payload as never)
   })
 
   createWindow()

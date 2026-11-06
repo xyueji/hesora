@@ -10,6 +10,11 @@ const route = useRoute()
       <div class="brand">进销存管理系统</div>
       <el-menu router :default-active="route.path" class="layout-menu">
         <el-menu-item index="/">首页</el-menu-item>
+        <el-sub-menu index="purchase-group">
+          <template #title>采购</template>
+          <el-menu-item index="/purchase/edit">开进货单</el-menu-item>
+          <el-menu-item index="/purchase/list">进货单列表</el-menu-item>
+        </el-sub-menu>
         <el-menu-item index="/product/list">商品管理</el-menu-item>
         <el-menu-item index="/customer/list">客户</el-menu-item>
         <el-menu-item index="/supplier/list">供应商</el-menu-item>
