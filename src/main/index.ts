@@ -15,6 +15,7 @@ import { createSaleService } from './services/sale/sale.service'
 import { createRetailService } from './services/retail/retail.service'
 import { createTransferService } from './services/transfer/transfer.service'
 import { createStocktakeService } from './services/stocktake/stocktake.service'
+import { createAssembleService } from './services/assemble/assemble.service'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -139,6 +140,15 @@ function getStocktakeService(): ReturnType<typeof createStocktakeService> {
     stocktakeService = createStocktakeService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return stocktakeService
+}
+
+let assembleService: ReturnType<typeof createAssembleService> | null = null
+function getAssembleService(): ReturnType<typeof createAssembleService> {
+  if (!assembleService) {
+    const userData = app.getPath('userData')
+    assembleService = createAssembleService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return assembleService
 }
 
 function createWindow(): BrowserWindow {
@@ -301,6 +311,15 @@ app.whenReady().then(() => {
     'stocktake:create': (_evt, payload) => stocktakeSvc.create(payload as never),
     'stocktake:getDetail': (_evt, payload) => stocktakeSvc.getDetail(Number(payload)),
     'stocktake:query': (_evt, payload) => stocktakeSvc.query(payload as never)
+  })
+
+  const assembleSvc = getAssembleService()
+  registerIpc({
+    'assemble:create': (_evt, payload) => assembleSvc.create(payload as never),
+    'assemble:disassemble': (_evt, payload) => assembleSvc.disassemble(payload as never),
+    'assemble:getDetail': (_evt, payload) => assembleSvc.getDetail(Number(payload)),
+    'assemble:getDisassembleDetail': (_evt, payload) => assembleSvc.getDisassembleDetail(Number(payload)),
+    'assemble:query': (_evt, payload) => assembleSvc.query(payload as never)
   })
 
   createWindow()

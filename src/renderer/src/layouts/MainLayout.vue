@@ -37,6 +37,8 @@ const route = useRoute()
           <el-menu-item index="/transfer/list">调拨单列表</el-menu-item>
           <el-menu-item index="/stocktake/edit">开盘点单</el-menu-item>
           <el-menu-item index="/stocktake/list">盘点单列表</el-menu-item>
+          <el-menu-item index="/assemble/edit">开组装拆卸单</el-menu-item>
+          <el-menu-item index="/assemble/list">组装拆卸单列表</el-menu-item>
         </el-sub-menu>
         <el-menu-item index="/opening">期初建账</el-menu-item>
         <el-menu-item index="/setting">设置</el-menu-item>

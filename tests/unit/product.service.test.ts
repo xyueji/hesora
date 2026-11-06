@@ -88,4 +88,64 @@ describe('product.service', () => {
     const id2 = s.create({ ...base, code: 'P002' })
     expect(() => s.update(id2, { code: 'P001' })).toThrow()
   })
+
+  it('create combo with bom and getById returns kind + bom', () => {
+    const childId = s.create(base)
+    const comboId = s.create({
+      ...base,
+      code: 'C001',
+      name: '礼盒',
+      kind: 'combo',
+      bom: [{ product_id: childId, qty: 2 }]
+    })
+    const got = s.getById(comboId)
+    expect(got?.kind).toBe('combo')
+    expect(got?.bom).toEqual([{ product_id: childId, qty: 2 }])
+    const child = s.getById(childId)
+    expect(child?.kind).toBe('standard')
+    expect(child?.bom).toBeUndefined()
+  })
+
+  it('combo without bom is rejected (create and update)', () => {
+    expect(() => s.create({ ...base, code: 'C002', kind: 'combo', bom: [] })).toThrowError(BizError)
+    const childId = s.create(base)
+    const comboId = s.create({
+      ...base,
+      code: 'C003',
+      kind: 'combo',
+      bom: [{ product_id: childId, qty: 1 }]
+    })
+    expect(() => s.update(comboId, { bom: [] })).toThrowError(BizError)
+  })
+
+  it('update replaces bom and validates children', () => {
+    const a = s.create(base)
+    const b = s.create({ ...base, code: 'P003' })
+    const comboId = s.create({
+      ...base,
+      code: 'C004',
+      kind: 'combo',
+      bom: [{ product_id: a, qty: 1 }]
+    })
+    s.update(comboId, { bom: [{ product_id: b, qty: 3 }] })
+    expect(s.getById(comboId)?.bom).toEqual([{ product_id: b, qty: 3 }])
+    expect(() => s.update(comboId, { bom: [{ product_id: 99999, qty: 1 }] })).toThrowError(/子件商品不存在/)
+    expect(() => s.update(comboId, { bom: [{ product_id: a, qty: 0 }] })).toThrowError(/大于0/)
+    // 标准商品不能作为子件换成另一个组合商品
+    const combo2 = s.create({
+      ...base,
+      code: 'C005',
+      kind: 'combo',
+      bom: [{ product_id: a, qty: 1 }]
+    })
+    expect(() => s.update(combo2, { bom: [{ product_id: comboId, qty: 1 }] })).toThrowError(/标准商品/)
+  })
+
+  it('query supports kind filter', () => {
+    const childId = s.create(base)
+    s.create({ ...base, code: 'C006', kind: 'combo', bom: [{ product_id: childId, qty: 1 }] })
+    expect(s.query({ page: 1, pageSize: 10, kind: 'combo' }).total).toBe(1)
+    expect(s.query({ page: 1, pageSize: 10, kind: 'standard' }).total).toBe(1)
+    expect(s.query({ page: 1, pageSize: 10 }).total).toBe(2)
+  })
 })

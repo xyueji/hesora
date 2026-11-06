@@ -1,7 +1,8 @@
 import type { Database } from 'better-sqlite3'
 import { BizError } from '../../../shared/result'
 import type { PageResult } from '../../../shared/types/common'
-import type { Product, ProductQuery, ProductUnit } from '../../../shared/types/product'
+import type { Product, ProductKind, ProductQuery, ProductUnit } from '../../../shared/types/product'
+import type { BomItem } from '../../../shared/types/product'
 
 export type DB = Database
 
@@ -19,7 +20,13 @@ interface ProductRow {
   images: string | null
   remark: string | null
   tracking_type: string
+  kind: string
   disabled: number
+}
+
+interface BomRow {
+  product_id: number
+  qty: number
 }
 
 interface UnitRow {
@@ -52,8 +59,8 @@ function parseImages(raw: string | null): string[] {
 
 export function createProductService(db: DB) {
   const insertProduct = db.prepare(`
-    INSERT INTO product (code, name, spec, category, base_unit, retail_price, trade_price, purchase_price, min_stock, images, remark, tracking_type)
-    VALUES (@code, @name, @spec, @category, @base_unit, @retail_price, @trade_price, @purchase_price, @min_stock, @images, @remark, @tracking_type)
+    INSERT INTO product (code, name, spec, category, base_unit, retail_price, trade_price, purchase_price, min_stock, images, remark, tracking_type, kind)
+    VALUES (@code, @name, @spec, @category, @base_unit, @retail_price, @trade_price, @purchase_price, @min_stock, @images, @remark, @tracking_type, @kind)
   `)
   const insertUnit = db.prepare(
     'INSERT INTO product_unit (product_id, unit, rate, is_base) VALUES (?, ?, ?, 0)'
@@ -63,6 +70,41 @@ export function createProductService(db: DB) {
   )
   const deleteUnits = db.prepare('DELETE FROM product_unit WHERE product_id = ?')
   const deleteBarcodes = db.prepare('DELETE FROM product_barcode WHERE product_id = ?')
+  const deleteBom = db.prepare('DELETE FROM bom_item WHERE combo_id = ?')
+  const insertBom = db.prepare('INSERT INTO bom_item (combo_id, product_id, qty) VALUES (?, ?, ?)')
+
+  // 校验并整体替换组合商品 BOM。要求：非空；子件存在且为标准商品；qty > 0。
+  function writeBom(comboId: number, bom: BomItem[]): void {
+    if (!Array.isArray(bom) || bom.length === 0) {
+      throw new BizError('VALIDATION', '组合商品必须至少配置一个子件')
+    }
+    const selectChild = db.prepare('SELECT id, kind FROM product WHERE id = ?')
+    const seen = new Set<number>()
+    for (const it of bom) {
+      const pid = Number(it.product_id)
+      if (!Number.isInteger(pid)) {
+        throw new BizError('VALIDATION', '子件商品不能为空')
+      }
+      if (pid === comboId) {
+        throw new BizError('VALIDATION', '组合商品不能以自身作为子件')
+      }
+      if (seen.has(pid)) {
+        throw new BizError('VALIDATION', `子件商品重复：${pid}`)
+      }
+      seen.add(pid)
+      const child = selectChild.get(pid) as { id: number; kind: string } | undefined
+      if (!child) throw new BizError('NOT_FOUND', `子件商品不存在：${pid}`)
+      if (child.kind !== 'standard') {
+        throw new BizError('VALIDATION', '子件必须是标准商品，不能嵌套组合商品')
+      }
+      const qty = Number(it.qty)
+      if (!Number.isFinite(qty) || qty <= 0) {
+        throw new BizError('VALIDATION', '子件用量必须大于0')
+      }
+    }
+    deleteBom.run(comboId)
+    for (const it of bom) insertBom.run(comboId, Number(it.product_id), Number(it.qty))
+  }
 
   function writeUnits(id: number, units: ProductUnit[]): void {
     deleteUnits.run(id)
@@ -106,6 +148,13 @@ export function createProductService(db: DB) {
     const barcodes = db
       .prepare('SELECT barcode FROM product_barcode WHERE product_id = ? ORDER BY id')
       .all(id) as BarcodeRow[]
+    const kind = (row.kind === 'combo' ? 'combo' : 'standard') as ProductKind
+    const bom =
+      kind === 'combo'
+        ? (db
+            .prepare('SELECT product_id, qty FROM bom_item WHERE combo_id = ? ORDER BY id')
+            .all(id) as BomRow[]).map((b) => ({ product_id: b.product_id, qty: b.qty }))
+        : undefined
     return {
       id: row.id,
       code: row.code,
@@ -120,6 +169,8 @@ export function createProductService(db: DB) {
       images: parseImages(row.images),
       remark: row.remark ?? undefined,
       tracking_type: row.tracking_type as Product['tracking_type'],
+      kind,
+      bom,
       units: units.map((u) => ({ unit: u.unit, rate: u.rate })),
       barcodes: barcodes.map((b) => b.barcode),
       disabled: row.disabled === 1
@@ -147,11 +198,13 @@ export function createProductService(db: DB) {
             min_stock: p.min_stock ?? null,
             images: p.images === undefined ? null : JSON.stringify(p.images),
             remark: p.remark ?? null,
-            tracking_type: p.tracking_type ?? 'none'
+            tracking_type: p.tracking_type ?? 'none',
+            kind: p.kind ?? 'standard'
           }).lastInsertRowid
         )
         writeUnits(id, p.units ?? [])
         writeBarcodes(id, p.barcodes ?? [])
+        if ((p.kind ?? 'standard') === 'combo') writeBom(id, p.bom ?? [])
       })()
       return id
     },
@@ -188,6 +241,7 @@ export function createProductService(db: DB) {
         if (p.images !== undefined) cols.push('images = @images'), (vals['images'] = JSON.stringify(p.images))
         if (p.remark !== undefined) cols.push('remark = @remark'), (vals['remark'] = p.remark)
         if (p.tracking_type !== undefined) (cols.push('tracking_type = @tracking_type')), (vals['tracking_type'] = p.tracking_type)
+        if (p.kind !== undefined) cols.push('kind = @kind'), (vals['kind'] = p.kind)
         if (cols.length > 0) {
           cols.push("updated_at = datetime('now','localtime')")
           vals['id'] = id
@@ -195,6 +249,12 @@ export function createProductService(db: DB) {
         }
         if (p.units !== undefined) writeUnits(id, p.units)
         if (p.barcodes !== undefined) writeBarcodes(id, p.barcodes)
+        if (p.kind !== undefined || p.bom !== undefined) {
+          const kindRow = db.prepare('SELECT kind FROM product WHERE id = ?').get(id) as
+            | { kind: string }
+            | undefined
+          if (kindRow?.kind === 'combo') writeBom(id, p.bom ?? [])
+        }
       })()
     },
 
@@ -221,6 +281,10 @@ export function createProductService(db: DB) {
       if (q.category) {
         where.push('category = @category')
         params['category'] = q.category
+      }
+      if (q.kind) {
+        where.push('kind = @kind')
+        params['kind'] = q.kind
       }
       if (q.keyword) {
         where.push(

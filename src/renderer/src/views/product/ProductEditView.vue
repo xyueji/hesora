@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { productApi } from '../../api/product'
-import type { Product, ProductUnit, TrackingType } from '../../../../shared/types/product'
+import type { Product, ProductUnit, TrackingType, ProductKind } from '../../../../shared/types/product'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,6 +26,8 @@ const form = ref<Product>({
   min_stock: null,
   remark: '',
   tracking_type: 'none',
+  kind: 'standard',
+  bom: [],
   units: [],
   barcodes: []
 })
@@ -40,6 +42,43 @@ const trackingOptions: { value: TrackingType; label: string }[] = [
   { value: 'batch', label: '批次' },
   { value: 'serial', label: '序列号' }
 ]
+
+const kindOptions: { value: ProductKind; label: string }[] = [
+  { value: 'standard', label: '标准商品' },
+  { value: 'combo', label: '组合商品' }
+]
+
+const isCombo = computed(() => form.value.kind === 'combo')
+
+// BOM 子件行
+interface BomRow {
+  product_id: number | null
+  product: Product | null
+  qty: number | null
+}
+const bomRows = ref<BomRow[]>([])
+const childOptions = ref<Product[]>([])
+
+function addBomRow(): void {
+  bomRows.value.push({ product_id: null, product: null, qty: 1 })
+}
+
+function removeBomRow(index: number): void {
+  bomRows.value.splice(index, 1)
+}
+
+async function searchChildren(keyword: string): Promise<void> {
+  try {
+    const r = await productApi.query({ page: 1, pageSize: 50, keyword: keyword || undefined })
+    childOptions.value = r.list.filter((p) => p.id !== id.value && p.kind !== 'combo')
+  } catch {
+    /* 静默 */
+  }
+}
+
+function onChildSelect(row: BomRow): void {
+  row.product = childOptions.value.find((p) => p.id === row.product_id) ?? null
+}
 
 function addUnit(): void {
   unitRows.value.push({ unit: '', rate: 1 })
@@ -75,6 +114,14 @@ async function load(): Promise<void> {
     form.value = p
     unitRows.value = p.units ? [...p.units] : []
     barcodes.value = p.barcodes ? [...p.barcodes] : []
+    bomRows.value = (p.bom ?? []).map((b) => ({ product_id: b.product_id, product: null, qty: b.qty }))
+    for (const row of bomRows.value) {
+      try {
+        row.product = await productApi.get(row.product_id)
+      } catch {
+        row.product = null
+      }
+    }
   } catch (e) {
     ElMessage.error((e as Error).message)
   }
@@ -85,12 +132,27 @@ async function save(): Promise<void> {
     ElMessage.warning('编码、名称、基本单位为必填项')
     return
   }
+  if (isCombo.value) {
+    const bom = bomRows.value.filter((r) => r.product_id !== null && (r.qty ?? 0) > 0)
+    if (bom.length === 0) {
+      ElMessage.warning('组合商品必须至少配置一个子件')
+      return
+    }
+    if (bom.length !== bomRows.value.length) {
+      ElMessage.warning('BOM 子件行存在未选择商品或数量不大于0的记录')
+      return
+    }
+  }
   saving.value = true
   try {
     const payload: Omit<Product, 'id'> = {
       ...form.value,
       units: unitRows.value,
-      barcodes: barcodes.value
+      barcodes: barcodes.value,
+      kind: form.value.kind ?? 'standard',
+      bom: isCombo.value
+        ? bomRows.value.map((r) => ({ product_id: r.product_id as number, qty: r.qty as number }))
+        : []
     }
     if (isEdit.value) await productApi.update(id.value!, payload)
     else await productApi.create(payload)
@@ -135,7 +197,14 @@ onMounted(load)
           <el-form-item label="基本单位" required>
             <el-input v-model="form.base_unit" placeholder="如：罐 / 瓶 / 个" />
           </el-form-item>
-          <el-form-item label="追踪方式">
+          <el-form-item label="商品类型">
+            <el-radio-group v-model="form.kind" :disabled="isEdit">
+              <el-radio v-for="k in kindOptions" :key="k.value" :value="k.value">
+                {{ k.label }}
+              </el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="!isCombo" label="追踪方式">
             <el-radio-group v-model="form.tracking_type">
               <el-radio v-for="t in trackingOptions" :key="t.value" :value="t.value">
                 {{ t.label }}
@@ -160,6 +229,7 @@ onMounted(load)
           </el-form-item>
         </div>
 
+        <template v-if="!isCombo">
         <div class="section-title">多单位</div>
         <el-table :data="unitRows" size="small" class="units-table" empty-text="暂无多单位，可点击下方添加">
           <el-table-column label="单位" min-width="140">
@@ -199,6 +269,49 @@ onMounted(load)
             @keyup.enter="addBarcode"
           />
         </div>
+        </template>
+
+        <template v-if="isCombo">
+          <div class="section-title">BOM 子件清单</div>
+          <el-table :data="bomRows" size="small" class="units-table" empty-text="暂无子件，可点击下方添加">
+            <el-table-column label="子件商品" min-width="220">
+              <template #default="{ row }">
+                <el-select
+                  v-model="row.product_id"
+                  filterable
+                  remote
+                  :remote-method="searchChildren"
+                  :loading="false"
+                  placeholder="搜索标准商品"
+                  @focus="searchChildren('')"
+                  @change="onChildSelect(row)"
+                  style="width: 100%"
+                >
+                  <el-option
+                    v-for="p in childOptions"
+                    :key="p.id"
+                    :label="`${p.code} ${p.name}`"
+                    :value="p.id as number"
+                  />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column label="单位" width="90">
+              <template #default="{ row }">{{ row.product?.base_unit ?? '—' }}</template>
+            </el-table-column>
+            <el-table-column label="用量" min-width="140">
+              <template #default="{ row }">
+                <el-input-number v-model="row.qty" :min="0" :precision="2" controls-position="right" />
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="80">
+              <template #default="{ $index }">
+                <el-button link type="danger" @click="removeBomRow($index)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-button class="mt" size="small" @click="addBomRow">添加子件</el-button>
+        </template>
 
         <div class="section-title">备注</div>
         <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="备注" />
