@@ -27,6 +27,7 @@ import { createAssembleService } from './services/assemble/assemble.service'
 import { createPrintIpc } from './print'
 import { createCsvIpc } from './csv'
 import { createBackupIpc } from './backup'
+import { registerUpdateIpc } from './update'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -501,6 +502,9 @@ app.whenReady().then(() => {
       return true
     }
   })
+
+  // 提示式更新（无需权限，登录前也可检查）
+  registerUpdateIpc()
 
   createWindow()
 

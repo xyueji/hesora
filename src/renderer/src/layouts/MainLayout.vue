@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import { currentUser, hasPermission, logout } from '../stores/auth'
+import { updateApi } from '../api/update'
 import type { PermissionKey } from '../../../shared/permissions'
 
 const route = useRoute()
@@ -108,6 +109,22 @@ const visibleGroups = computed(() =>
     .filter((g) => g.items.some((i) => !i.perm || hasPermission(i.perm)))
     .map((g) => ({ ...g, items: g.items.filter((i) => !i.perm || hasPermission(i.perm)) }))
 )
+
+// 提示式更新：每天最多检查一次，有新版本时弹通知，点击"下载"用系统浏览器打开
+onMounted(async () => {
+  const r = await updateApi.checkDaily()
+  if (r && r.hasUpdate) {
+    ElNotification({
+      title: '发现新版本',
+      message: r.notes || `新版本 ${r.latestVersion ?? ''} 已发布`,
+      type: 'info',
+      duration: 0,
+      onClick: () => {
+        if (r.downloadUrl) void updateApi.openUrl(r.downloadUrl)
+      }
+    })
+  }
+})
 
 async function onLogout() {
   try {
