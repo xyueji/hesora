@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { inventoryApi } from '../../api/inventory'
+import { csvApi } from '../../api/csv'
 import { warehouseApi } from '../../api/warehouse'
 import type { StockItem } from '../../../../shared/types/inventory'
 import type { Warehouse } from '../../../../shared/types/warehouse'
@@ -48,6 +49,23 @@ function reset(): void {
   void load()
 }
 
+const exporting = ref(false)
+
+async function doExport(): Promise<void> {
+  exporting.value = true
+  try {
+    const path = await csvApi.export('stock', {
+      warehouse_id: warehouseId.value === undefined ? undefined : Number(warehouseId.value)
+    })
+    ElMessage.success(`已导出到：${path}`)
+  } catch (e) {
+    const msg = (e as Error).message
+    if (msg !== '已取消导出') ElMessage.error(msg)
+  } finally {
+    exporting.value = false
+  }
+}
+
 onMounted(async () => {
   try {
     const r = await warehouseApi.query({ page: 1, pageSize: 100 })
@@ -89,6 +107,7 @@ onMounted(async () => {
           </el-select>
           <el-button type="primary" @click="search">查询</el-button>
           <el-button @click="reset">重置</el-button>
+          <el-button :loading="exporting" @click="doExport">导出库存</el-button>
         </div>
       </div>
 

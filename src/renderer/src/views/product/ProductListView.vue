@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { productApi } from '../../api/product'
+import { csvApi, readCsvFile } from '../../api/csv'
+import type { ImportResult } from '../../api/csv'
 import type { Product } from '../../../../shared/types/product'
 
 const router = useRouter()
@@ -51,6 +53,52 @@ function fmt(n: number): string {
   return n.toFixed(2)
 }
 
+const importing = ref(false)
+const exporting = ref(false)
+const importInput = ref<HTMLInputElement | null>(null)
+
+async function doExport(): Promise<void> {
+  exporting.value = true
+  try {
+    const path = await csvApi.export('products')
+    ElMessage.success(`已导出到：${path}`)
+  } catch (e) {
+    const msg = (e as Error).message
+    if (msg !== '已取消导出') ElMessage.error(msg)
+  } finally {
+    exporting.value = false
+  }
+}
+
+function pickImport(): void {
+  importInput.value?.click()
+}
+
+async function onImportFile(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  importing.value = true
+  try {
+    const content = await readCsvFile(file)
+    const r: ImportResult = await csvApi.importProducts(content)
+    if (r.errors.length === 0) {
+      ElMessage.success(`导入完成：新增 ${r.created} 条，更新 ${r.updated} 条`)
+    } else {
+      const lines = r.errors.map((er) => `第${er.row}行：${er.message}`).join('\n')
+      await ElMessageBox.alert(lines, `导入完成：新增 ${r.created} 条，更新 ${r.updated} 条，失败 ${r.errors.length} 条`, {
+        type: 'warning'
+      })
+    }
+    await load()
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    importing.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -72,9 +120,12 @@ onMounted(load)
               <el-button @click="search">搜索</el-button>
             </template>
           </el-input>
+          <el-button :loading="importing" @click="pickImport">导入</el-button>
+          <el-button :loading="exporting" @click="doExport">导出</el-button>
           <el-button type="primary" @click="router.push('/product/edit')">新增商品</el-button>
         </div>
       </div>
+      <input ref="importInput" type="file" accept=".csv,text/csv" hidden @change="onImportFile" />
 
       <el-table v-loading="loading" :data="list" stripe class="table">
         <el-table-column prop="code" label="编码" width="130" />

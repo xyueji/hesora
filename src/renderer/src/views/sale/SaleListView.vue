@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { printApi } from '../../api/print'
 import { saleApi, type SaleDetail } from '../../api/sale'
+import { csvApi } from '../../api/csv'
 import { customerApi } from '../../api/customer'
 import { productApi } from '../../api/product'
 import type { DocRow, DocItemRow } from '../../../../shared/types/doc'
@@ -88,6 +89,24 @@ function search(): void {
   void load()
 }
 
+const exportingCsv = ref(false)
+
+async function doExportCsv(): Promise<void> {
+  exportingCsv.value = true
+  try {
+    const path = await csvApi.export('sale', {
+      date_from: dateRange.value?.[0],
+      date_to: dateRange.value?.[1]
+    })
+    ElMessage.success(`已导出到：${path}`)
+  } catch (e) {
+    const msg = (e as Error).message
+    if (msg !== '已取消导出') ElMessage.error(msg)
+  } finally {
+    exportingCsv.value = false
+  }
+}
+
 function fmt(n: number): string {
   return n.toFixed(2)
 }
@@ -167,6 +186,7 @@ async function printA4(): Promise<void> {
               <el-button @click="search">搜索</el-button>
             </template>
           </el-input>
+          <el-button :loading="exportingCsv" @click="doExportCsv">导出CSV</el-button>
         </div>
       </div>
 

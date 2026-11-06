@@ -20,6 +20,7 @@ import { createTransferService } from './services/transfer/transfer.service'
 import { createStocktakeService } from './services/stocktake/stocktake.service'
 import { createAssembleService } from './services/assemble/assemble.service'
 import { createPrintIpc } from './print'
+import { createCsvIpc } from './csv'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -388,6 +389,22 @@ app.whenReady().then(() => {
       return printIpc.printReceipt(Number(docId), deviceName)
     },
     'print:a4pdf': (_evt, payload) => printIpc.printA4Pdf(Number(payload))
+  })
+
+  const csvIpc = createCsvIpc(openDb(join(app.getPath('userData'), 'zhjs-erp.db'), migrationsDir))
+  registerIpc({
+    'csv:export': (_evt, payload) => {
+      const { kind, params } = payload as { kind: string; params?: Record<string, unknown> }
+      return csvIpc.exportCsv(kind as never, (params ?? {}) as never)
+    },
+    'csv:importProducts': (_evt, payload) => {
+      const { fileContent } = payload as { fileContent: string }
+      return csvIpc.importProducts(String(fileContent))
+    },
+    'csv:importOpeningStock': (_evt, payload) => {
+      const { fileContent, warehouse_id } = payload as { fileContent: string; warehouse_id: number }
+      return csvIpc.importOpeningStock(String(fileContent), Number(warehouse_id))
+    }
   })
 
   createWindow()
