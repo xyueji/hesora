@@ -2,7 +2,8 @@ import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-rou
 
 const routes: RouteRecordRaw[] = [
   { path: '/', name: 'home', component: () => import('./views/DashboardView.vue') },
-  { path: '/product/list', name: 'product-list', component: () => import('./views/ProductListView.vue') },
+  { path: '/product/list', name: 'product-list', component: () => import('./views/product/ProductListView.vue') },
+  { path: '/product/edit/:id?', name: 'product-edit', component: () => import('./views/product/ProductEditView.vue') },
   { path: '/customer/list', name: 'customer-list', component: () => import('./views/CustomerListView.vue') },
   { path: '/supplier/list', name: 'supplier-list', component: () => import('./views/SupplierListView.vue') },
   { path: '/warehouse/list', name: 'warehouse-list', component: () => import('./views/WarehouseListView.vue') },
