@@ -30,7 +30,12 @@ const route = useRoute()
         <el-menu-item index="/supplier/list">供应商</el-menu-item>
         <el-menu-item index="/warehouse/list">仓库</el-menu-item>
         <el-menu-item index="/account/list">资金账户</el-menu-item>
-        <el-menu-item index="/inventory/statistics">库存</el-menu-item>
+        <el-sub-menu index="inventory-group">
+          <template #title>库存</template>
+          <el-menu-item index="/inventory/statistics">库存汇总</el-menu-item>
+          <el-menu-item index="/transfer/edit">开调拨单</el-menu-item>
+          <el-menu-item index="/transfer/list">调拨单列表</el-menu-item>
+        </el-sub-menu>
         <el-menu-item index="/opening">期初建账</el-menu-item>
         <el-menu-item index="/setting">设置</el-menu-item>
       </el-menu>
