@@ -15,6 +15,7 @@ import { createSaleService } from './services/sale/sale.service'
 import { createRetailService } from './services/retail/retail.service'
 import { createPaymentService } from './services/payment/payment.service'
 import { createArrearsService } from './services/stats/arrears.service'
+import { createDashboardService } from './services/stats/dashboard.service'
 import { createTransferService } from './services/transfer/transfer.service'
 import { createStocktakeService } from './services/stocktake/stocktake.service'
 import { createAssembleService } from './services/assemble/assemble.service'
@@ -160,6 +161,15 @@ function getPaymentService(): ReturnType<typeof createPaymentService> {
     paymentService = createPaymentService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return paymentService
+}
+
+let dashboardService: ReturnType<typeof createDashboardService> | null = null
+function getDashboardService(): ReturnType<typeof createDashboardService> {
+  if (!dashboardService) {
+    const userData = app.getPath('userData')
+    dashboardService = createDashboardService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return dashboardService
 }
 
 let arrearsService: ReturnType<typeof createArrearsService> | null = null
@@ -332,6 +342,15 @@ app.whenReady().then(() => {
     'stats:receivables': () => arrearsSvc.receivables(),
     'stats:payables': () => arrearsSvc.payables(),
     'stats:summary': () => arrearsSvc.summary()
+  })
+
+  const dashboardSvc = getDashboardService()
+  registerIpc({
+    'dashboard:summary': (_evt, payload) => dashboardSvc.summary(String(payload)),
+    'dashboard:trend': (_evt, payload) => {
+      const { days } = (payload ?? {}) as { days?: number }
+      return dashboardSvc.trend(Number(days) || 7)
+    }
   })
 
   const transferSvc = getTransferService()
