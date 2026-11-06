@@ -9,6 +9,6 @@ describe('migrations', () => {
   })
   it('is idempotent via user_version', () => {
     const db = openMemDb()
-    expect(db.pragma('user_version', { simple: true })).toBe(1)
+    expect(db.pragma('user_version', { simple: true })).toBe(2)
   })
 })
