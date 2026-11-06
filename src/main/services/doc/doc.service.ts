@@ -154,6 +154,10 @@ export function createDocService(db: DB) {
       where.push('no LIKE @kw')
       params['kw'] = `%${q.keyword}%`
     }
+    if (q.partner_id !== undefined && q.partner_id !== null) {
+      where.push('partner_id = @partner_id')
+      params['partner_id'] = q.partner_id
+    }
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
     const total = Number(
       (db.prepare(`SELECT COUNT(*) AS c FROM doc ${whereSql}`).get(params) as { c: number }).c

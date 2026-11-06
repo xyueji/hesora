@@ -15,6 +15,11 @@ const route = useRoute()
           <el-menu-item index="/purchase/edit">开进货单</el-menu-item>
           <el-menu-item index="/purchase/list">进货单列表</el-menu-item>
         </el-sub-menu>
+        <el-sub-menu index="sale-group">
+          <template #title>销售</template>
+          <el-menu-item index="/sale/edit">开销售单</el-menu-item>
+          <el-menu-item index="/sale/list">销售单列表</el-menu-item>
+        </el-sub-menu>
         <el-menu-item index="/product/list">商品管理</el-menu-item>
         <el-menu-item index="/customer/list">客户</el-menu-item>
         <el-menu-item index="/supplier/list">供应商</el-menu-item>

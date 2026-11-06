@@ -81,6 +81,16 @@ describe('doc.service', () => {
     expect(s.query({ date_from: '2025-11-10', date_to: '2025-11-30', page: 1, pageSize: 10 }).total).toBe(1)
   })
 
+  it('query filters by partner_id', () => {
+    s.create({ ...purchaseInput(), partner_id: 1 })
+    s.create({ ...purchaseInput(), partner_id: 2 })
+    expect(s.query({ partner_id: 1, page: 1, pageSize: 10 }).total).toBe(1)
+    expect(s.query({ partner_id: 2, page: 1, pageSize: 10 }).items[0]?.partner_id).toBe(2)
+    expect(s.query({ partner_id: 3, page: 1, pageSize: 10 }).total).toBe(0)
+    // 不传 partner_id 不过滤
+    expect(s.query({ page: 1, pageSize: 10 }).total).toBe(2)
+  })
+
   it('remove always throws DOC_DONE', () => {
     const row = s.create(purchaseInput())
     try {

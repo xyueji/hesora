@@ -67,6 +67,7 @@ export interface DocQuery {
   date_from?: string
   date_to?: string
   keyword?: string
+  partner_id?: number
   page: number
   pageSize: number
 }
