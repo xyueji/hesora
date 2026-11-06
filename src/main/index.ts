@@ -12,6 +12,7 @@ import { createOpeningService } from './services/opening/opening.service'
 import { createInventoryService } from './services/inventory/inventory.service'
 import { createPurchaseService } from './services/purchase/purchase.service'
 import { createSaleService } from './services/sale/sale.service'
+import { createRetailService } from './services/retail/retail.service'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -109,6 +110,15 @@ function getSaleService(): ReturnType<typeof createSaleService> {
     saleService = createSaleService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return saleService
+}
+
+let retailService: ReturnType<typeof createRetailService> | null = null
+function getRetailService(): ReturnType<typeof createRetailService> {
+  if (!retailService) {
+    const userData = app.getPath('userData')
+    retailService = createRetailService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return retailService
 }
 
 function createWindow(): BrowserWindow {
@@ -246,6 +256,13 @@ app.whenReady().then(() => {
     'sale:create': (_evt, payload) => saleSvc.create(payload as never),
     'sale:getDetail': (_evt, payload) => saleSvc.getDetail(Number(payload)),
     'sale:query': (_evt, payload) => saleSvc.query(payload as never)
+  })
+
+  const retailSvc = getRetailService()
+  registerIpc({
+    'retail:create': (_evt, payload) => retailSvc.create(payload as never),
+    'retail:getDetail': (_evt, payload) => retailSvc.getDetail(Number(payload)),
+    'retail:query': (_evt, payload) => retailSvc.query(payload as never)
   })
 
   createWindow()
