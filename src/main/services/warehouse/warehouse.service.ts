@@ -9,14 +9,13 @@ interface WarehouseRow {
   id: number
   code: string
   name: string
+  address: string | null
   is_default: number
   remark: string | null
   disabled: number
   created_at: string
   updated_at: string | null
 }
-// DDL has no address column in 001_init? It does not — check: warehouse(code,name,is_default,remark,disabled).
-// address is not a column; keep it out of persistence (accepted on input, ignored).
 
 function requireText(v: unknown, field: string): string {
   if (typeof v !== 'string' || v.trim() === '') {
@@ -30,6 +29,7 @@ function toEntity(row: WarehouseRow): Warehouse {
     id: row.id,
     code: row.code,
     name: row.name,
+    address: row.address ?? undefined,
     is_default: row.is_default === 1,
     remark: row.remark ?? undefined,
     disabled: row.disabled === 1
@@ -38,8 +38,8 @@ function toEntity(row: WarehouseRow): Warehouse {
 
 export function createWarehouseService(db: DB) {
   const insertWarehouse = db.prepare(`
-    INSERT INTO warehouse (code, name, is_default, remark)
-    VALUES (@code, @name, @is_default, @remark)
+    INSERT INTO warehouse (code, name, address, is_default, remark)
+    VALUES (@code, @name, @address, @is_default, @remark)
   `)
 
   function assertNameFree(name: string, excludeId?: number): void {
@@ -83,6 +83,7 @@ export function createWarehouseService(db: DB) {
           insertWarehouse.run({
             code,
             name,
+            address: w.address ?? null,
             is_default: isDefault,
             remark: w.remark ?? null
           }).lastInsertRowid
