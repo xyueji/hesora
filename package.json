@@ -11,7 +11,9 @@
     "build:win": "electron-vite build && electron-builder --win",
     "test": "vitest run",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
-    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false"
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "dist": "electron-vite build && electron-builder --win",
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0"
@@ -39,5 +41,31 @@
       "esbuild",
       "vue-demi"
     ]
+  },
+  "build": {
+    "appId": "com.zhjs.erp",
+    "productName": "智销进销存",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "src/main/db/migrations",
+        "to": "migrations"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "artifactName": "${productName}-${version}-setup.exe"
+    }
   }
 }
