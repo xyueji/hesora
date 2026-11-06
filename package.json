@@ -1,6 +1,6 @@
 {
   "name": "zhjs-erp",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Offline invoicing/inventory ERP for small merchants (Electron + Vue3 + TS)",
   "main": "./out/main/index.js",
   "author": "zhjs-erp",
