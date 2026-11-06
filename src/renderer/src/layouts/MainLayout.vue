@@ -16,6 +16,7 @@ const route = useRoute()
         <el-menu-item index="/warehouse/list">仓库</el-menu-item>
         <el-menu-item index="/account/list">资金账户</el-menu-item>
         <el-menu-item index="/inventory/statistics">库存</el-menu-item>
+        <el-menu-item index="/opening">期初建账</el-menu-item>
         <el-menu-item index="/setting">设置</el-menu-item>
       </el-menu>
     </el-aside>

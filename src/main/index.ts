@@ -8,6 +8,7 @@ import { createSupplierService } from './services/supplier/supplier.service'
 import { createWarehouseService } from './services/warehouse/warehouse.service'
 import { createFundService } from './services/fund/fund.service'
 import { createSettingService } from './services/setting/setting.service'
+import { createOpeningService } from './services/opening/opening.service'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -69,6 +70,15 @@ function getSettingService(): ReturnType<typeof createSettingService> {
     settingService = createSettingService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return settingService
+}
+
+let openingService: ReturnType<typeof createOpeningService> | null = null
+function getOpeningService(): ReturnType<typeof createOpeningService> {
+  if (!openingService) {
+    const userData = app.getPath('userData')
+    openingService = createOpeningService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return openingService
 }
 
 function createWindow(): BrowserWindow {
@@ -181,6 +191,12 @@ app.whenReady().then(() => {
     },
     'setting:getAll': () => settingSvc.getAll(),
     'setting:remove': (_evt, payload) => settingSvc.remove(String(payload))
+  })
+
+  const openingSvc = getOpeningService()
+  registerIpc({
+    'opening:save': (_evt, payload) => openingSvc.save(payload as never),
+    'opening:getStatus': () => openingSvc.getStatus()
   })
 
   createWindow()
