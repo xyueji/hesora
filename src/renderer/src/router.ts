@@ -36,7 +36,8 @@ const routes: RouteRecordRaw[] = [
   { path: '/stats/arrears', name: 'stats-arrears', component: () => import('./views/stats/ArrearsView.vue') },
   { path: '/doc/search', name: 'doc-search', component: () => import('./views/doc/DocSearchView.vue') },
   { path: '/opening', name: 'opening', component: () => import('./views/opening/OpeningView.vue') },
-  { path: '/setting', name: 'setting', component: () => import('./views/setting/SettingView.vue') }
+  { path: '/setting', name: 'setting', component: () => import('./views/setting/SettingView.vue') },
+  { path: '/sync', name: 'sync', component: () => import('./views/sync/SyncView.vue') }
 ]
 
 const router = createRouter({

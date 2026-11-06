@@ -22,6 +22,7 @@ import { createStocktakeService } from './services/stocktake/stocktake.service'
 import { createAssembleService } from './services/assemble/assemble.service'
 import { createPrintIpc } from './print'
 import { createCsvIpc } from './csv'
+import { createBackupIpc } from './backup'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -413,6 +414,19 @@ app.whenReady().then(() => {
     }
   })
 
+  const backupIpc = createBackupIpc(openDb(join(app.getPath('userData'), 'zhjs-erp.db'), migrationsDir))
+  backupIpc.autoBackup()
+  registerIpc({
+    'backup:now': () => backupIpc.backupNow(),
+    'backup:pickDir': () => backupIpc.pickDir(),
+    'backup:list': () => backupIpc.backupList(),
+    'backup:restore': (_evt, payload) => backupIpc.restoreBackup(String(payload)),
+    'sync:getConfig': () => backupIpc.syncGetConfig(),
+    'sync:saveConfig': (_evt, payload) => backupIpc.syncSaveConfig(payload),
+    'sync:now': () => backupIpc.syncNow(),
+    'sync:download': () => backupIpc.syncDownload(),
+    'sync:restoreFromCloud': (_evt, payload) => backupIpc.restoreFromCloud(String(payload))
+  })
   createWindow()
 
   app.on('activate', function () {

@@ -57,6 +57,7 @@ const route = useRoute()
         </el-sub-menu>
         <el-menu-item index="/opening">期初建账</el-menu-item>
         <el-menu-item index="/setting">设置</el-menu-item>
+        <el-menu-item index="/sync">同步备份</el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
