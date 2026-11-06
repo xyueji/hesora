@@ -14,6 +14,7 @@ import { createPurchaseService } from './services/purchase/purchase.service'
 import { createSaleService } from './services/sale/sale.service'
 import { createRetailService } from './services/retail/retail.service'
 import { createTransferService } from './services/transfer/transfer.service'
+import { createStocktakeService } from './services/stocktake/stocktake.service'
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.
@@ -129,6 +130,15 @@ function getTransferService(): ReturnType<typeof createTransferService> {
     transferService = createTransferService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
   }
   return transferService
+}
+
+let stocktakeService: ReturnType<typeof createStocktakeService> | null = null
+function getStocktakeService(): ReturnType<typeof createStocktakeService> {
+  if (!stocktakeService) {
+    const userData = app.getPath('userData')
+    stocktakeService = createStocktakeService(openDb(join(userData, 'zhjs-erp.db'), migrationsDir))
+  }
+  return stocktakeService
 }
 
 function createWindow(): BrowserWindow {
@@ -280,6 +290,17 @@ app.whenReady().then(() => {
     'transfer:create': (_evt, payload) => transferSvc.create(payload as never),
     'transfer:getDetail': (_evt, payload) => transferSvc.getDetail(Number(payload)),
     'transfer:query': (_evt, payload) => transferSvc.query(payload as never)
+  })
+
+  const stocktakeSvc = getStocktakeService()
+  registerIpc({
+    'stocktake:getSheet': (_evt, payload) => {
+      const { warehouse_id, keyword } = payload as { warehouse_id: number; keyword?: string }
+      return stocktakeSvc.getSheet(Number(warehouse_id), keyword)
+    },
+    'stocktake:create': (_evt, payload) => stocktakeSvc.create(payload as never),
+    'stocktake:getDetail': (_evt, payload) => stocktakeSvc.getDetail(Number(payload)),
+    'stocktake:query': (_evt, payload) => stocktakeSvc.query(payload as never)
   })
 
   createWindow()

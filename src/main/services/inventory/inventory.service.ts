@@ -68,10 +68,10 @@ export function createInventoryService(db: DB) {
     const row = selectInv.get(c.product_id, c.warehouse_id, batchNo) as InvRow | undefined
 
     if (c.change_qty > 0) {
-      // IN: unit_cost required > 0
+      // IN: unit_cost required >= 0（0 允许，用于盘点新增库存无成本记录等场景）
       const cost = c.unit_cost
-      if (cost === undefined || cost === null || !Number.isFinite(cost) || cost <= 0) {
-        throw new BizError('VALIDATION', '入库必须提供大于 0 的单价')
+      if (cost === undefined || cost === null || !Number.isFinite(cost) || cost < 0) {
+        throw new BizError('VALIDATION', '入库必须提供不小于 0 的单价')
       }
       let qty: number
       let movingCost: number
