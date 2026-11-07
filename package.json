@@ -1,6 +1,9 @@
 {
   "name": "hesora-inventory",
   "version": "1.1.0",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "description": "禾序进销存 · HESORA Inventory — 货有数，账有序。",
   "main": "./out/main/index.js",
   "author": "HESORA",
@@ -9,6 +12,8 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "build:win": "pnpm dist",
+    "pretest": "node tools/check-node.cjs",
+    "predev": "node tools/check-node.cjs",
     "test": "vitest run",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
