@@ -3,6 +3,7 @@ import { join } from 'path'
 import { openDb, type DB } from './db'
 import { resolveDatabasePath } from './db/location'
 import { resolveProfilePath } from './db/profile'
+import { seedDemoData } from './db/seed'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
 import { PERMISSION_MAP } from './permissions-map'
 import { setCurrentUser, getCurrentUser, can } from './auth'
@@ -68,6 +69,14 @@ function getDb(): DB {
     const file = resolveDatabasePath(app.getPath('userData'))
     applyPendingRestore(file)
     database = openDb(file, migrationsDir)
+    // 空库首启注入演示数据（幂等：有商品即跳过）。设置 demo.seeded=0 可跳过。
+    if (!app.commandLine.hasSwitch('no-demo-seed')) {
+      try {
+        seedDemoData(database)
+      } catch (error) {
+        console.error('[seed] demo data seeding failed:', error)
+      }
+    }
   }
   return database
 }
