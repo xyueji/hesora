@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onActivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { customerApi } from '../../api/customer'
@@ -68,6 +68,7 @@ function fmt(n: number): string {
 }
 
 onMounted(load)
+onActivated(load)
 </script>
 
 <template>

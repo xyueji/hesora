@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onActivated, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { purchaseApi, type PurchaseDetail } from '../../api/purchase'
 import { supplierApi } from '../../api/supplier'
@@ -95,6 +95,7 @@ function supplierName(row: DocRow): string {
 }
 
 onMounted(load)
+onActivated(load)
 </script>
 
 <template>

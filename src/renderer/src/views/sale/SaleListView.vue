@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onActivated, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { printApi } from '../../api/print'
 import { saleApi, type SaleDetail } from '../../api/sale'
@@ -130,6 +130,9 @@ function customerName(row: DocRow): string {
 onMounted(() => {
   void load()
   void loadCustomerOptions()
+})
+onActivated(() => {
+  void load()
 })
 
 const printingA4 = ref(false)

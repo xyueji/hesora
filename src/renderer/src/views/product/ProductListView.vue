@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onActivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { productApi } from '../../api/product'
@@ -101,6 +101,7 @@ async function onImportFile(e: Event): Promise<void> {
 }
 
 onMounted(load)
+onActivated(load)
 </script>
 
 <template>
