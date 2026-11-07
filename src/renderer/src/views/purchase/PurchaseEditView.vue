@@ -10,6 +10,7 @@ import { productApi } from '../../api/product'
 import { warehouseApi } from '../../api/warehouse'
 import { workflowApi } from '../../api/workflow'
 import { hasPermission } from '../../stores/auth'
+import { useDocumentScanner } from '../../composables/useDocumentScanner'
 import type { Supplier } from '../../../../shared/types/supplier'
 import type { Product, ProductUnit } from '../../../../shared/types/product'
 import type { Warehouse } from '../../../../shared/types/warehouse'
@@ -184,6 +185,31 @@ async function save(): Promise<void> {
 
 void searchSuppliers('')
 void loadWarehouses()
+
+// P1-7 扫码枪直接扫入开单页：命中条码/编码即填入最后一行空行（或已有行 +1）。
+function fillScanned(p: Product): void {
+  const existing = lines.value.find((l) => l.product_id === p.id)
+  if (existing) {
+    existing.qty = (existing.qty ?? 0) + 1
+    ElMessage.info(`${p.name} 数量 +1（现 ${existing.qty}）`)
+    return
+  }
+  const blank = [...lines.value].reverse().find((l) => l.product_id === null)
+  const target = blank ?? (lines.value.push(emptyLine()), lines.value[lines.value.length - 1]!)
+  target.product_id = p.id ?? null
+  onProductSelect(target)
+  // onProductSelect 从 productOptions 缓存取商品，扫码商品多半不在缓存，手工补齐
+  target.product = p
+  const units: ProductUnit[] = p.units ?? []
+  const base: ProductUnit = { unit: p.base_unit, rate: 1, is_base: true }
+  target.unitOptions = [base, ...units]
+  target.unit = p.base_unit
+  target.rate = 1
+  target.price = p.purchase_price ?? null
+  if (target.qty === null || (target.qty ?? 0) <= 0) target.qty = 1
+  ElMessage.success(`已加：${p.name}`)
+}
+useDocumentScanner({ onProduct: fillScanned })
 </script>
 
 <template>

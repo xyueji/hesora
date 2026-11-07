@@ -12,6 +12,7 @@ import { workflowApi } from '../../api/workflow'
 import { customerPriceApi } from '../../api/customer-price'
 import { watch } from 'vue'
 import { hasPermission } from '../../stores/auth'
+import { useDocumentScanner } from '../../composables/useDocumentScanner'
 import type { Customer } from '../../../../shared/types/customer'
 import type { Product, ProductUnit } from '../../../../shared/types/product'
 import type { Warehouse } from '../../../../shared/types/warehouse'
@@ -215,6 +216,33 @@ async function save(): Promise<void> {
 
 void searchCustomers('')
 void loadWarehouses()
+
+// P1-7 扫码枪直接扫入开单页：命中条码/编码即填入最后一行空行（或已有行 +1）。
+// 价格沿用 onProductSelect 的零售价默认，随后 applyCustomerPrices 会按客户覆盖。
+function fillScanned(p: Product): void {
+  const existing = lines.value.find((l) => l.product_id === p.id)
+  if (existing) {
+    existing.qty = (existing.qty ?? 0) + 1
+    ElMessage.info(`${p.name} 数量 +1（现 ${existing.qty}）`)
+    return
+  }
+  const blank = [...lines.value].reverse().find((l) => l.product_id === null)
+  const target = blank ?? (lines.value.push(emptyLine()), lines.value[lines.value.length - 1]!)
+  target.product_id = p.id ?? null
+  onProductSelect(target)
+  target.product = p
+  const units: ProductUnit[] = p.units ?? []
+  const base: ProductUnit = { unit: p.base_unit, rate: 1, is_base: true }
+  target.unitOptions = [base, ...units]
+  target.unit = p.base_unit
+  target.rate = 1
+  target.price = p.retail_price ?? null
+  target.priceManual = false
+  if (target.qty === null || (target.qty ?? 0) <= 0) target.qty = 1
+  ElMessage.success(`已加：${p.name}`)
+  if (form.customer_id !== null) void applyCustomerPrices()
+}
+useDocumentScanner({ onProduct: fillScanned })
 </script>
 
 <template>
