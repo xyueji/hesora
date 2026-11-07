@@ -1,4 +1,4 @@
-# AGENTS.md — zhjs-erp 项目工程规约
+# AGENTS.md — hesora-inventory（禾序进销存） 项目工程规约
 
 > 本文件对所有 AI 代理与人类协作者生效。任何代码生成、审查、提交前先读本文件。
 > 设计文档：`../docs/superpowers/specs/2026-11-07-zhjs-erp-design.md`
