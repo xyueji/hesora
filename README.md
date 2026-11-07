@@ -18,7 +18,7 @@
 ## 安装
 
 1. 双击 `禾序进销存-1.0.0-setup.exe`，按向导选择安装目录即可。
-2. 升级前先备份并退出旧版程序。禾序首次打开时将原数据目录 `%APPDATA%\zhjs-erp` 中的 `zhjs-erp.db` 改名为 `hesora-inventory.db`，已有业务记录和本地设置随账套保留。
+2. 升级前先备份并退出旧版程序。禾序首次打开时会把旧数据目录 `%APPDATA%\zhjs-erp` 整体迁移为 `%APPDATA%\hesora-inventory`（账套、备份与设置原样保留），账套文件同时改名为 `hesora-inventory.db`。
 3. 默认管理员：**admin / admin123**，⚠️ 登录后请立即在「用户管理」中修改密码。
 
 ## 试用与激活
@@ -39,11 +39,10 @@
 
 ## 升级（提示式更新）
 
-客户端每天最多检查一次更新（本地时间戳记录，检查失败静默跳过，不影响离线使用）。检查地址是编译期常量：
+客户端每天最多检查一次更新（本地时间戳记录，检查失败静默跳过，不影响离线使用）。检查地址由环境变量 `HESORA_UPDATE_URL` 注入（默认留空＝关闭更新检查）：
 
-```ts
-// src/main/update.ts
-export const UPDATE_URL = 'https://updates.example.com/zhjs/latest.json'
+```bash
+HESORA_UPDATE_URL=https://updates.example.com/hesora/latest.json
 ```
 
 发布新版本前把该常量改为你的真实地址，并在服务器放置 `latest.json`：

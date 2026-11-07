@@ -1,4 +1,4 @@
--- zhjs-erp 001_init: initial schema
+-- 禾序进销存 001_init: initial schema
 CREATE TABLE app_setting (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

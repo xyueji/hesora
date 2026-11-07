@@ -44,7 +44,7 @@
     ]
   },
   "build": {
-    "appId": "com.zhjs.erp",
+    "appId": "com.hesora.inventory",
     "productName": "禾序进销存",
     "directories": {
       "output": "dist"

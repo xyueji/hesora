@@ -2,6 +2,7 @@ import { app, shell, BrowserWindow, dialog } from 'electron'
 import { join } from 'path'
 import { openDb, type DB } from './db'
 import { resolveDatabasePath } from './db/location'
+import { resolveProfilePath } from './db/profile'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
 import { PERMISSION_MAP } from './permissions-map'
 import { setCurrentUser, getCurrentUser, can } from './auth'
@@ -41,11 +42,11 @@ import type { DocQuery, DocType } from '../shared/types/doc'
 import type { PaymentCreateInput, PaymentType } from '../shared/types/payment'
 import type { FundTransferInput } from '../shared/types/fund-ledger'
 
-// Preserve existing accounts and backups across the HESORA rebrand.
+// 品牌改名后迁移旧 profile 目录，保留已有账套、备份与设置。
 if (!app.commandLine.hasSwitch('user-data-dir')) {
-  app.setPath('userData', join(app.getPath('appData'), 'zhjs-erp'))
+  app.setPath('userData', resolveProfilePath(app.getPath('appData')))
 }
-if (process.platform === 'win32') app.setAppUserModelId('com.zhjs.erp')
+if (process.platform === 'win32') app.setAppUserModelId('com.hesora.inventory')
 
 // Migrations dir: in dev the source tree exists, so resolve from app path.
 // After packaging (Task 11), copy src/main/db/migrations into resources and use process.resourcesPath.

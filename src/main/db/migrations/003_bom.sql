@@ -1,4 +1,4 @@
--- zhjs-erp 003: BOM / combo products
+-- 禾序进销存 003: BOM / combo products
 ALTER TABLE product ADD COLUMN kind TEXT NOT NULL DEFAULT 'standard' CHECK (kind IN ('standard','combo'));
 
 CREATE TABLE bom_item (

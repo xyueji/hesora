@@ -1,4 +1,4 @@
--- zhjs-erp 002: generic document tables
+-- 禾序进销存 002: generic document tables
 CREATE TABLE doc (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   no TEXT NOT NULL UNIQUE,
