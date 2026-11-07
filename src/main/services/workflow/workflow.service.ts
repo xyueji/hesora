@@ -33,17 +33,30 @@ export function createWorkflowService(db: Database) {
     return toRow(row)
   }
 
+  // doc.reversal_of（迁移026）在旧版本库中可能不存在，按实际 schema 决定是否排除已红冲批次。
+  const hasReversalColumn = !!db.prepare(
+    "SELECT 1 FROM pragma_table_info('doc') WHERE name = 'reversal_of'"
+  ).get()
+  const reversedExpr = hasReversalColumn
+    ? '(SELECT 1 FROM doc r WHERE r.reversal_of = d.id) AS reversed'
+    : 'NULL AS reversed'
   function fulfillment(order: WorkflowRow, excludeId = 0): OrderFulfillment {
     const lines = order.items.map((item, line) => ({ ...item, line, posted: 0, reserved: 0, remaining: item.qty }))
-    const children = db.prepare(`SELECT w.id, w.body, w.status, d.no AS postedNo FROM doc_workflow w
+    const children = db.prepare(`SELECT w.id, w.body, w.status, d.no AS postedNo, w.posted_doc_id,
+      ${reversedExpr}
+      FROM doc_workflow w
       LEFT JOIN doc d ON d.id = w.posted_doc_id WHERE w.source_id = ? AND w.id <> ? ORDER BY w.id`)
-      .all(order.id, excludeId) as { id: number; body: string; status: WorkflowRow['status']; postedNo: string | null }[]
+      .all(order.id, excludeId) as { id: number; body: string; status: WorkflowRow['status']; postedNo: string | null; posted_doc_id: number | null; reversed: number | null }[]
     const batches: OrderFulfillment['batches'] = []
     let legacy = false
     for (const child of children) {
       const body = JSON.parse(child.body) as WorkflowInput
       batches.push({ id: child.id, date: body.date, status: child.status, postedNo: child.postedNo })
+      // 已过账但被红冲的 child：其履行贡献已随红冲回退，posted 不再计入；
+      // 但批次仍展示（保留状态），保持可追溯。
       if (child.status === 'cancelled') continue
+      const postedReversed = child.status === 'approved' && child.posted_doc_id !== null && child.reversed === 1
+      if (postedReversed) continue
       for (const item of body.items) {
         const line = item.source_line === undefined ? undefined : lines[item.source_line]
         if (!line) {
