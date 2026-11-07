@@ -1,15 +1,24 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { userApi, type SafeUser } from '../../api/user'
+import { roleApi, userApi, type SafeUser } from '../../api/user'
+import type { AccessRole } from '../../../../shared/permissions'
 
 const loading = ref(false)
 const saving = ref(false)
 const users = ref<SafeUser[]>([])
+const roles = ref<AccessRole[]>([])
 const dialogVisible = ref(false)
 const editing = ref<SafeUser | null>(null)
-const form = reactive({ username: '', password: '', role: 'cashier' as 'admin' | 'cashier' })
-const roleLabels: Record<string, string> = { admin: '管理员', cashier: '收银员' }
+const form = reactive({ username: '', password: '', role: 'cashier' })
+
+async function loadRoles() {
+  try {
+    roles.value = await roleApi.list()
+  } catch (e) {
+    ElMessage.error((e as Error).message || '加载角色失败')
+  }
+}
 
 async function load() {
   loading.value = true
@@ -20,6 +29,17 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function roleName(id: string): string {
+  return roles.value.find((r) => r.id === id)?.name ?? id
+}
+
+function roleDesc(id: string): string {
+  const r = roles.value.find((x) => x.id === id)
+  if (!r) return ''
+  if (r.builtin) return r.id === 'admin' ? '全部权限' : `内置角色 · ${r.permissions.length} 项权限`
+  return `自定义角色 · ${r.permissions.length} 项权限`
 }
 
 function openCreate() {
@@ -42,7 +62,7 @@ async function save() {
   saving.value = true
   try {
     if (editing.value) {
-      const patch: { role?: 'admin' | 'cashier'; password?: string } = { role: form.role }
+      const patch: { role?: string; password?: string } = { role: form.role }
       if (form.password) patch.password = form.password
       await userApi.update(editing.value.id, patch)
       ElMessage.success('用户已更新')
@@ -93,7 +113,10 @@ async function removeUser(u: SafeUser) {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await loadRoles()
+  await load()
+})
 </script>
 
 <template>
@@ -107,8 +130,11 @@ onMounted(load)
       </template>
       <el-table :data="users" border>
         <el-table-column prop="username" label="用户名" />
-        <el-table-column label="角色" width="120">
-          <template #default="{ row }">{{ roleLabels[row.role as string] ?? row.role }}</template>
+        <el-table-column label="角色" min-width="180">
+          <template #default="{ row }">
+            <div>{{ roleName(row.role) }}</div>
+            <div class="role-desc">{{ roleDesc(row.role) }}</div>
+          </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
@@ -130,7 +156,7 @@ onMounted(load)
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑用户' : '新增用户'" width="420px">
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑用户' : '新增用户'" width="460px">
       <el-form label-width="80px">
         <el-form-item label="用户名">
           <el-input v-model="form.username" :disabled="!!editing" />
@@ -141,9 +167,14 @@ onMounted(load)
         </el-form-item>
         <el-form-item label="角色">
           <el-select v-model="form.role" style="width: 100%">
-            <el-option label="管理员（全部权限）" value="admin" />
-            <el-option label="收银员（开单权限）" value="cashier" />
+            <el-option v-for="r in roles" :key="r.id" :label="r.name" :value="r.id">
+              <span>{{ r.name }}</span>
+              <span style="float: right; color: var(--el-text-color-secondary); font-size: 12px">
+                {{ r.builtin ? '内置' : '自定义' }}
+              </span>
+            </el-option>
           </el-select>
+          <div class="role-desc">可在「角色权限」中自定义角色的权限点</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -157,5 +188,10 @@ onMounted(load)
 <style scoped>
 .card-title {
   font-weight: 600;
+}
+.role-desc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
 }
 </style>

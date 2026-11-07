@@ -42,6 +42,8 @@ export interface SafeUser {
   id: number
   username: string
   role: string
+  /** 角色显示名（自定义角色为角色名称，内置角色为固定中文名） */
+  role_name: string
   disabled: number
   created_at: string
   updated_at: string | null
@@ -61,11 +63,13 @@ function checkPassword(password: string, stored: string): boolean {
   return candidate.length === expected.length && timingSafeEqual(candidate, expected)
 }
 
-function toSafe(row: UserRow): SafeUser {
+function toSafe(row: UserRow, roleName?: string): SafeUser {
+  const builtinName = BUILTIN_NAMES[row.role as keyof typeof BUILTIN_NAMES]
   return {
     id: row.id,
     username: row.username,
     role: row.access_role_id ?? row.role,
+    role_name: roleName ?? builtinName ?? row.role,
     disabled: row.disabled,
     created_at: row.created_at,
     updated_at: row.updated_at
@@ -75,6 +79,12 @@ function toSafe(row: UserRow): SafeUser {
 export function createUserService(db: Database) {
   function toRole(row: StoredRole): AccessRole {
     return { id: row.id, name: row.name, permissions: decodePermissions(row.permissions), builtin: false }
+  }
+
+  /** 解析用户行的角色显示名：自定义角色查 access_role，内置角色用固定中文名。 */
+  function safeUser(row: UserRow): SafeUser {
+    const custom = row.access_role_id ? customRole(row.access_role_id) : undefined
+    return toSafe(row, custom?.name)
   }
 
   function listRoles(): AccessRole[] {
@@ -230,7 +240,7 @@ export function createUserService(db: Database) {
         .prepare(`INSERT INTO "user" (username, password_hash, role, access_role_id) VALUES (?, ?, ?, ?)`)
         .run(username, hashPassword(password), role, accessRole)
       const row = db.prepare(`SELECT * FROM "user" WHERE id = ?`).get(info.lastInsertRowid) as UserRow
-      return toSafe(row)
+      return safeUser(row)
     },
 
     update(id: number, patch: { password?: string; role?: string; disabled?: number | boolean }): SafeUser {
@@ -266,17 +276,17 @@ export function createUserService(db: Database) {
         db.prepare(`UPDATE "user" SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
       }
       const updated = db.prepare(`SELECT * FROM "user" WHERE id = ?`).get(id) as UserRow
-      return toSafe(updated)
+      return safeUser(updated)
     },
 
     query(): SafeUser[] {
       const rows = db.prepare(`SELECT * FROM "user" ORDER BY id`).all() as UserRow[]
-      return rows.map(toSafe)
+      return rows.map((row) => safeUser(row))
     },
 
     getById(id: number): SafeUser | null {
       const row = db.prepare(`SELECT * FROM "user" WHERE id = ?`).get(id) as UserRow | undefined
-      return row ? toSafe(row) : null
+      return row ? safeUser(row) : null
     },
 
     remove(id: number): void {

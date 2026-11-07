@@ -1,9 +1,14 @@
 import { call } from './call'
+import type { PermissionKey } from '../../../shared/permissions'
 
 export interface SessionUser {
   id: number
   username: string
-  role: 'admin' | 'cashier'
+  role: string
+  /** 自定义角色名称；内置角色为 undefined */
+  roleName?: string
+  /** 自定义角色的权限清单；内置角色为 undefined（由 roleHas 按内置预设判定） */
+  permissions?: PermissionKey[]
 }
 
 export const authApi = {

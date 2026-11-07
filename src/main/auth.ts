@@ -13,8 +13,8 @@ export function getCurrentUser(): SessionUser | null {
   return currentUser
 }
 
-/** admin 拥有全部权限；未登录则无任何权限。 */
+/** admin 拥有全部权限；未登录则无任何权限。自定义角色按其权限清单判定。 */
 export function can(permission: PermissionKey): boolean {
   if (!currentUser) return false
-  return roleHas(currentUser.role, permission)
+  return roleHas(currentUser.role, permission, currentUser.permissions)
 }

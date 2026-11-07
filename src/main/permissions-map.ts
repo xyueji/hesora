@@ -95,11 +95,11 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'stats:report': 'report.business',
   'dashboard:summary': 'report.dashboard',
   'dashboard:trend': 'report.dashboard',
-  'workflow:list': 'system.setting',
-  'workflow:save': 'system.setting',
-  'workflow:approve': 'system.setting',
-  'workflow:convert': 'system.setting',
-  'workflow:cancel': 'system.setting',
+  'workflow:list': 'doc.workflow',
+  'workflow:save': 'doc.workflow',
+  'workflow:approve': 'doc.approve',
+  'workflow:convert': 'doc.approve',
+  'workflow:cancel': 'doc.workflow',
 
   'opening:save': 'opening.edit',
   'opening:getStatus': 'opening.edit',
@@ -129,5 +129,37 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'user:get': 'system.user',
   'user:create': 'system.user',
   'user:update': 'system.user',
-  'user:remove': 'system.user'
+  'user:remove': 'system.user',
+
+  'role:list': 'system.role',
+  'role:create': 'system.role',
+  'role:update': 'system.role',
+  'role:remove': 'system.role',
+
+  // 库存明细报表与调价
+  'stock:statisticsDetail': 'inventory.report',
+  'stock:costChanges': 'inventory.report',
+  'stock:flows': 'inventory.report',
+  'stock:warnings': 'inventory.report',
+  'stock:setWarning': 'inventory.report',
+  'stock:setWarningsByCondition': 'inventory.report',
+  'stock:adjustPrices': 'inventory.price',
+
+  // 商品价格等级 / 保质期批次效期
+  'product:priceLevels': 'product.price',
+  'product:savePriceLevels': 'product.price',
+  'product:setShelfLife': 'product.shelf',
+  'product:batches': 'product.shelf',
+  'product:saveBatch': 'product.shelf',
+
+  // 序列号台账
+  'serial:registerIn': 'inventory.serial',
+  'serial:consumeOut': 'inventory.serial',
+  'serial:stock': 'inventory.serial',
+  'serial:flows': 'inventory.serial',
+  'serial:validate': 'inventory.serial',
+  'serial:stockOf': 'inventory.serial',
+
+  // 单据复制（再来一单）
+  'doc:copy': 'doc.copy'
 }

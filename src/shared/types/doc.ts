@@ -134,3 +134,40 @@ export interface DocDetailWithItems {
   doc: DocRow
   items: DocItemRow[]
 }
+
+/** 单据复制时的可覆盖字段（仅日期 / 往来单位 / 备注） */
+export interface DocCopyOverrides {
+  /** 单据日期 yyyy-MM-dd */
+  date?: string
+  /** 往来单位 id（客户 / 供应商） */
+  partner_id?: number
+  /** 备注 */
+  remark?: string
+}
+
+/**
+ * 单据复制结果：被复制的原单 -> 新建草稿单。
+ * 新单不产生任何库存变动，仅保留原有明细行（数量 / 单价 / 金额）。
+ */
+export interface CopiedDocResult {
+  /** 新单据 id */
+  id: number
+  /** 新单据号 */
+  no: string
+  type: DocType
+  date: string
+  /** 新单为草稿状态 */
+  status: 'draft' | 'done'
+  partner_id: number | null
+  warehouse_id: number | null
+  warehouse_in_id: number | null
+  account_id: number | null
+  /** 来源单据 id（被复制的原单） */
+  source_doc_id: number | null
+  total_amount: number
+  remark: string | null
+  /** 被复制的原单号 */
+  copied_from_no: string | null
+  /** 新单明细 */
+  items: DocItemRow[]
+}

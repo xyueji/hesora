@@ -157,4 +157,46 @@ describe('product.service', () => {
     expect(s.query({ page: 1, pageSize: 10, kind: 'standard' }).total).toBe(1)
     expect(s.query({ page: 1, pageSize: 10 }).total).toBe(2)
   })
+
+  it('create keeps shelf life days and price levels', () => {
+    const id = s.create({
+      ...base,
+      shelf_life_days: 365,
+      shelf_life_warn_days: 30,
+      price_levels: [
+        { price_level: '零售价', price: 3 },
+        { price_level: '批发价', price: 2.5 }
+      ]
+    })
+    const got = s.getById(id)
+    expect(got?.shelf_life_days).toBe(365)
+    expect(got?.shelf_life_warn_days).toBe(30)
+    expect(got?.price_levels).toEqual([
+      { price_level: '零售价', price: 3 },
+      { price_level: '批发价', price: 2.5 }
+    ])
+  })
+
+  it('update replaces price levels and shelf life columns', () => {
+    const id = s.create({
+      ...base,
+      shelf_life_days: 365,
+      price_levels: [{ price_level: '零售价', price: 3 }]
+    })
+    s.update(id, {
+      shelf_life_days: 180,
+      shelf_life_warn_days: 15,
+      price_levels: [{ price_level: '会员价', price: 2.8 }]
+    })
+    const got = s.getById(id)
+    expect(got?.shelf_life_days).toBe(180)
+    expect(got?.shelf_life_warn_days).toBe(15)
+    expect(got?.price_levels).toEqual([{ price_level: '会员价', price: 2.8 }])
+  })
+
+  it('product without price levels returns an empty level list', () => {
+    const id = s.create(base)
+    expect(s.getById(id)?.price_levels).toEqual([])
+    expect(s.getById(id)?.shelf_life_days).toBeUndefined()
+  })
 })

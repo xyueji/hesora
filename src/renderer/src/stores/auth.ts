@@ -22,5 +22,6 @@ export async function logout(): Promise<void> {
 export function hasPermission(perm: PermissionKey): boolean {
   const u = currentUser.value
   if (!u) return false
-  return roleHas(u.role, perm)
+  // 自定义角色的权限来自会话中的 permissions 清单；内置角色由 roleHas 按预设判定。
+  return roleHas(u.role, perm, u.permissions)
 }

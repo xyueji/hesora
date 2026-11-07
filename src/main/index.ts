@@ -12,8 +12,11 @@ import { applyPendingRestore } from './services/backup/backup.service'
 import { createWorkflowService } from './services/workflow/workflow.service'
 import { createAuditService } from './services/audit/audit.service'
 import { BizError } from '../shared/result'
+import { isPermissionKey, type RoleInput } from '../shared/permissions'
 import type { WorkflowKind } from '../shared/types/workflow'
 import { createProductService } from './services/product/product.service'
+import { createPriceLevelService } from './services/product/price-level.service'
+import { createShelfLifeService } from './services/product/shelf-life.service'
 import { createCustomerService } from './services/customer/customer.service'
 import { createSupplierService } from './services/supplier/supplier.service'
 import { createWarehouseService } from './services/warehouse/warehouse.service'
@@ -22,10 +25,13 @@ import { createFundLedger } from './services/fund/ledger.service'
 import { createSettingService } from './services/setting/setting.service'
 import { createOpeningService } from './services/opening/opening.service'
 import { createInventoryService } from './services/inventory/inventory.service'
+import { createStockReportService } from './services/inventory/stock-report.service'
+import { createSerialService } from './services/inventory/serial.service'
 import { createPurchaseService } from './services/purchase/purchase.service'
 import { createSaleService } from './services/sale/sale.service'
 import { createRetailService } from './services/retail/retail.service'
 import { createDocService } from './services/doc/doc.service'
+import { createDocCopyService } from './services/doc/copy.service'
 import { createPaymentService } from './services/payment/payment.service'
 import { createArrearsService } from './services/stats/arrears.service'
 import { createDashboardService } from './services/stats/dashboard.service'
@@ -326,6 +332,36 @@ function initialize(): void {
     'product:enable': (_evt, payload) => svc.enable(Number(payload))
   })
 
+  // 价格等级 + 保质期/批次效期（商品主档增强）
+  const priceLevelSvc = createPriceLevelService(getDb())
+  const shelfLifeSvc = createShelfLifeService(getDb())
+  registerIpc({
+    'product:priceLevels': (_evt, payload) => {
+      const { productId } = payload as { productId: number }
+      return priceLevelSvc.getLevels(Number(productId))
+    },
+    'product:savePriceLevels': (_evt, payload) => {
+      const { productId, levels } = payload as { productId: number; levels: never[] }
+      priceLevelSvc.setLevels(Number(productId), levels)
+      return true
+    },
+    'product:setShelfLife': (_evt, payload) => {
+      const { productId, config } = payload as { productId: number; config: never }
+      shelfLifeSvc.setShelfLife(Number(productId), config)
+      return true
+    },
+    'product:batches': (_evt, payload) => shelfLifeSvc.listBatches(payload as never),
+    'product:saveBatch': (_evt, payload) => {
+      const { productId, warehouseId, batchNo, data } = payload as {
+        productId: number
+        warehouseId: number
+        batchNo: string
+        data?: { production_date?: string; expire_date?: string; remark?: string }
+      }
+      return shelfLifeSvc.ensureBatch(Number(productId), Number(warehouseId), String(batchNo ?? ''), data ?? {})
+    }
+  })
+
   const customerSvc = getCustomerService()
   registerIpc({
     'customer:create': (_evt, payload) => customerSvc.create(payload as never),
@@ -415,6 +451,55 @@ function initialize(): void {
       const result = invSvc.queryStock(payload as never)
       if (getCurrentUser()?.role === 'admin') return result
       return { ...result, items: result.items.map((row) => ({ ...row, moving_cost: 0, amount: 0 })) }
+    }
+  })
+
+  // 库存明细报表：统计明细/成本变动/库存流水/预警/批量调价
+  const stockReportSvc = createStockReportService(getDb())
+  registerIpc({
+    'stock:statisticsDetail': (_evt, payload) => stockReportSvc.statisticsDetail(payload as never),
+    'stock:costChanges': (_evt, payload) => stockReportSvc.costChanges(payload as never),
+    'stock:flows': (_evt, payload) => stockReportSvc.stockFlow(payload as never),
+    'stock:warnings': (_evt, payload) => stockReportSvc.warnings(payload as never),
+    'stock:setWarning': (_evt, payload) => {
+      const { product_id, min_stock } = payload as { product_id: number; min_stock: number }
+      stockReportSvc.setWarning(Number(product_id), Number(min_stock))
+      return true
+    },
+    'stock:setWarningsByCondition': (_evt, payload) => {
+      const { condition, min_stock } = payload as { condition: never; min_stock: number }
+      return stockReportSvc.setWarningsByCondition(condition, Number(min_stock))
+    },
+    'stock:adjustPrices': (_evt, payload) => {
+      const { items, operator } = payload as { items: never[]; operator?: string }
+      return stockReportSvc.adjustPrices(items, operator)
+    }
+  })
+
+  // 序列号台账
+  const serialSvc = createSerialService(getDb())
+  registerIpc({
+    'serial:registerIn': (_evt, payload) => serialSvc.registerIn(payload as never),
+    'serial:consumeOut': (_evt, payload) => serialSvc.consumeOut(payload as never),
+    'serial:stock': (_evt, payload) => serialSvc.listStock(payload as never),
+    'serial:flows': (_evt, payload) => serialSvc.listFlow(payload as never),
+    'serial:validate': (_evt, payload) => {
+      const { sns, productId, direction } = payload as {
+        sns: string[]
+        productId: number
+        direction?: 'in' | 'out'
+      }
+      return serialSvc.validateSns(Number(productId), sns, direction)
+    },
+    'serial:stockOf': (_evt, payload) => serialSvc.stockOf(Number(payload))
+  })
+
+  // 单据复制（再来一单）
+  const docCopySvc = createDocCopyService(getDb())
+  registerIpc({
+    'doc:copy': (_evt, payload) => {
+      const { docId, overrides } = payload as { docId: number; overrides?: never }
+      return docCopySvc.copy(Number(docId), overrides)
     }
   })
 
@@ -616,16 +701,41 @@ function initialize(): void {
     'user:query': () => userSvc.query(),
     'user:get': (_evt, payload) => userSvc.getById(Number(payload)),
     'user:create': (_evt, payload) =>
-      userSvc.create(payload as { username: string; password: string; role: 'admin' | 'cashier' }),
+      userSvc.create(payload as { username: string; password: string; role: string }),
     'user:update': (_evt, payload) => {
       const { id, patch } = payload as {
         id: number
-        patch: { password?: string; role?: 'admin' | 'cashier'; disabled?: number | boolean }
+        patch: { password?: string; role?: string; disabled?: number | boolean }
       }
       return userSvc.update(Number(id), patch)
     },
     'user:remove': (_evt, payload) => {
       userSvc.remove(Number(payload))
+      return true
+    },
+    // 角色（RBAC）：自定义角色的增删改查，权限点由 roleHas 判定
+    'role:list': () => userSvc.listRoles(),
+    'role:create': (_evt, payload) => {
+      const { name, permissions } = payload as { name: string; permissions: string[] }
+      return userSvc.createRole({
+        name: String(name ?? ''),
+        permissions: (Array.isArray(permissions) ? permissions : []).filter(isPermissionKey)
+      })
+    },
+    'role:update': (_evt, payload) => {
+      const { id, patch } = payload as {
+        id: string
+        patch: { name?: string; permissions?: string[] }
+      }
+      const next: Partial<RoleInput> = {}
+      if (patch?.name !== undefined) next.name = String(patch.name)
+      if (patch?.permissions !== undefined) {
+        next.permissions = (Array.isArray(patch.permissions) ? patch.permissions : []).filter(isPermissionKey)
+      }
+      return userSvc.updateRole(String(id), next)
+    },
+    'role:remove': (_evt, payload) => {
+      userSvc.removeRole(String(payload))
       return true
     }
   })

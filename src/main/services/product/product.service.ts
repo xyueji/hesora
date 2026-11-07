@@ -3,6 +3,7 @@ import { BizError } from '../../../shared/result'
 import type { PageResult } from '../../../shared/types/common'
 import type { Product, ProductKind, ProductQuery, ProductUnit } from '../../../shared/types/product'
 import type { BomItem } from '../../../shared/types/product'
+import { normalizePriceLevels } from './price-level.service'
 
 export type DB = Database
 
@@ -22,6 +23,13 @@ interface ProductRow {
   tracking_type: string
   kind: string
   disabled: number
+  shelf_life_days: number | null
+  shelf_life_warn_days: number | null
+}
+
+interface PriceLevelRow {
+  price_level: string
+  price: number
 }
 
 interface BomRow {
@@ -57,10 +65,20 @@ function parseImages(raw: string | null): string[] {
   return []
 }
 
+/** 保质期天数：允许为空，必须是不小于 0 的整数 */
+function normalizeShelfDays(value: unknown, field: string): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isInteger(n) || n < 0) {
+    throw new BizError('VALIDATION', `${field}必须是不小于 0 的整数`)
+  }
+  return n
+}
+
 export function createProductService(db: DB) {
   const insertProduct = db.prepare(`
-    INSERT INTO product (code, name, spec, category, base_unit, retail_price, trade_price, purchase_price, min_stock, images, remark, tracking_type, kind)
-    VALUES (@code, @name, @spec, @category, @base_unit, @retail_price, @trade_price, @purchase_price, @min_stock, @images, @remark, @tracking_type, @kind)
+    INSERT INTO product (code, name, spec, category, base_unit, retail_price, trade_price, purchase_price, min_stock, images, remark, tracking_type, kind, shelf_life_days, shelf_life_warn_days)
+    VALUES (@code, @name, @spec, @category, @base_unit, @retail_price, @trade_price, @purchase_price, @min_stock, @images, @remark, @tracking_type, @kind, @shelf_life_days, @shelf_life_warn_days)
   `)
   const insertUnit = db.prepare(
     'INSERT INTO product_unit (product_id, unit, rate, is_base) VALUES (?, ?, ?, 0)'
@@ -72,6 +90,22 @@ export function createProductService(db: DB) {
   const deleteBarcodes = db.prepare('DELETE FROM product_barcode WHERE product_id = ?')
   const deleteBom = db.prepare('DELETE FROM bom_item WHERE combo_id = ?')
   const insertBom = db.prepare('INSERT INTO bom_item (combo_id, product_id, qty) VALUES (?, ?, ?)')
+  const deletePriceLevels = db.prepare('DELETE FROM product_price WHERE product_id = ?')
+  const insertPriceLevel = db.prepare(
+    'INSERT INTO product_price (product_id, price_level, price) VALUES (?, ?, ?)'
+  )
+  const selectPriceLevels = db.prepare(
+    'SELECT price_level, price FROM product_price WHERE product_id = ? ORDER BY id'
+  )
+
+  /** 整体替换某商品的价格等级；校验规则与价格等级服务保持一致 */
+  function writePriceLevels(productId: number, levels: unknown): void {
+    const normalized = normalizePriceLevels(levels)
+    deletePriceLevels.run(productId)
+    for (const item of normalized) {
+      insertPriceLevel.run(productId, item.price_level, item.price)
+    }
+  }
 
   // 校验并整体替换组合商品 BOM。要求：非空；子件存在且为标准商品；qty > 0。
   function writeBom(comboId: number, bom: BomItem[]): void {
@@ -155,6 +189,10 @@ export function createProductService(db: DB) {
             .prepare('SELECT product_id, qty FROM bom_item WHERE combo_id = ? ORDER BY id')
             .all(id) as BomRow[]).map((b) => ({ product_id: b.product_id, qty: b.qty }))
         : undefined
+    const priceLevels = (selectPriceLevels.all(id) as PriceLevelRow[]).map((r) => ({
+      price_level: r.price_level,
+      price: r.price
+    }))
     return {
       id: row.id,
       code: row.code,
@@ -173,7 +211,10 @@ export function createProductService(db: DB) {
       bom,
       units: units.map((u) => ({ unit: u.unit, rate: u.rate })),
       barcodes: barcodes.map((b) => b.barcode),
-      disabled: row.disabled === 1
+      disabled: row.disabled === 1,
+      shelf_life_days: row.shelf_life_days ?? undefined,
+      shelf_life_warn_days: row.shelf_life_warn_days ?? undefined,
+      price_levels: priceLevels
     }
   }
 
@@ -199,12 +240,15 @@ export function createProductService(db: DB) {
             images: p.images === undefined ? null : JSON.stringify(p.images),
             remark: p.remark ?? null,
             tracking_type: p.tracking_type ?? 'none',
-            kind: p.kind ?? 'standard'
+            kind: p.kind ?? 'standard',
+            shelf_life_days: normalizeShelfDays(p.shelf_life_days, '保质期天数'),
+            shelf_life_warn_days: normalizeShelfDays(p.shelf_life_warn_days, '预警提前天数')
           }).lastInsertRowid
         )
         writeUnits(id, p.units ?? [])
         writeBarcodes(id, p.barcodes ?? [])
         if ((p.kind ?? 'standard') === 'combo') writeBom(id, p.bom ?? [])
+        if (p.price_levels !== undefined) writePriceLevels(id, p.price_levels)
       })()
       return id
     },
@@ -242,6 +286,14 @@ export function createProductService(db: DB) {
         if (p.remark !== undefined) cols.push('remark = @remark'), (vals['remark'] = p.remark)
         if (p.tracking_type !== undefined) (cols.push('tracking_type = @tracking_type')), (vals['tracking_type'] = p.tracking_type)
         if (p.kind !== undefined) cols.push('kind = @kind'), (vals['kind'] = p.kind)
+        if (p.shelf_life_days !== undefined) {
+          cols.push('shelf_life_days = @shelf_life_days')
+          vals['shelf_life_days'] = normalizeShelfDays(p.shelf_life_days, '保质期天数')
+        }
+        if (p.shelf_life_warn_days !== undefined) {
+          cols.push('shelf_life_warn_days = @shelf_life_warn_days')
+          vals['shelf_life_warn_days'] = normalizeShelfDays(p.shelf_life_warn_days, '预警提前天数')
+        }
         if (cols.length > 0) {
           cols.push("updated_at = datetime('now','localtime')")
           vals['id'] = id
@@ -249,6 +301,7 @@ export function createProductService(db: DB) {
         }
         if (p.units !== undefined) writeUnits(id, p.units)
         if (p.barcodes !== undefined) writeBarcodes(id, p.barcodes)
+        if (p.price_levels !== undefined) writePriceLevels(id, p.price_levels)
         if (p.kind !== undefined || p.bom !== undefined) {
           const kindRow = db.prepare('SELECT kind FROM product WHERE id = ?').get(id) as
             | { kind: string }

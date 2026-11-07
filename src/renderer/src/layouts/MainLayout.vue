@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import brandIcon from '../assets/hesora.svg'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElNotification } from 'element-plus'
 import { currentUser, hasPermission, logout } from '../stores/auth'
 import { updateApi } from '../api/update'
 import ModuleTour from '../components/ModuleTour.vue'
-import type { PermissionKey } from '../../../shared/permissions'
+import { roleDisplayName, type PermissionKey } from '../../../shared/permissions'
+import { closeAll, closeOthers, closeTab, openTab, restoreTabs, tabs, activeKey } from '../stores/tabs'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,8 +27,10 @@ interface MenuGroup {
 
 const plainItems: MenuItem[] = [
   { path: '/', label: '经营概况', perm: 'report.dashboard' },
-  { path: '/doc/workflow', label: '报价与订单审核', perm: 'system.setting' },
+  { path: '/doc/workflow', label: '报价与订单审核', perm: 'doc.workflow' },
   { path: '/product/list', label: '商品管理', perm: 'product.view' },
+  { path: '/product/price-levels', label: '价格等级', perm: 'product.price' },
+  { path: '/product/quality', label: '保质期查询', perm: 'product.shelf' },
   { path: '/customer/list', label: '客户', perm: 'customer.view' },
   { path: '/supplier/list', label: '供应商', perm: 'supplier.view' },
   { path: '/warehouse/list', label: '仓库', perm: 'warehouse.view' },
@@ -36,6 +39,7 @@ const plainItems: MenuItem[] = [
   { path: '/about', label: '关于禾序' },
   { path: '/setting', label: '设置', perm: 'system.setting' },
   { path: '/system/users', label: '用户管理', perm: 'system.user' },
+  { path: '/system/roles', label: '角色权限', perm: 'system.role' },
   { path: '/sync', label: '同步备份', perm: 'data.sync' },
   { path: '/guide?replay=1', label: '重新查看引导' }
 ]
@@ -89,6 +93,13 @@ const groups: MenuGroup[] = [
     perm: 'inventory.view',
     items: [
       { path: '/inventory/statistics', label: '库存汇总', perm: 'inventory.view' },
+      { path: '/inventory/detail', label: '库存明细', perm: 'inventory.report' },
+      { path: '/inventory/cost-change', label: '成本变动明细', perm: 'inventory.report' },
+      { path: '/inventory/flow', label: '库存流水', perm: 'inventory.report' },
+      { path: '/inventory/warning', label: '库存预警', perm: 'inventory.report' },
+      { path: '/inventory/serial', label: '序列号台账', perm: 'inventory.serial' },
+      { path: '/inventory/serial-flow', label: '序列号流水', perm: 'inventory.serial' },
+      { path: '/inventory/price-adjust', label: '调整售价', perm: 'inventory.price' },
       { path: '/transfer/edit', label: '开调拨单', perm: 'inventory.adjust' },
       { path: '/transfer/list', label: '调拨单列表', perm: 'inventory.adjust' },
       { path: '/stocktake/edit', label: '开盘点单', perm: 'inventory.adjust' },
@@ -147,6 +158,69 @@ async function onLogout() {
     ElMessage.error((e as Error).message || '退出失败')
   }
 }
+
+// ── 多标签页 ────────────────────────────────────────────────
+const contextMenuVisible = ref(false)
+const contextMenuKey = ref('')
+const contextMenuStyle = ref({ top: '0px', left: '0px' })
+
+/** 路由变化时登记/激活标签（登录、引导、激活等非工作台页面不进标签栏） */
+const TAB_EXCLUDED = new Set(['/login', '/activate', '/guide'])
+
+watch(
+  () => route.path,
+  () => {
+    if (TAB_EXCLUDED.has(route.path)) return
+    openTab(route)
+  },
+  { immediate: true }
+)
+
+onMounted(() => {
+  restoreTabs()
+})
+
+function onTabClick(key: string) {
+  const tab = tabs.value.find((t) => t.key === key)
+  if (!tab) return
+  if (route.fullPath === tab.path) return
+  void router.push(tab.path)
+}
+
+function onTabClose(key: string) {
+  const idx = tabs.value.findIndex((t) => t.key === key)
+  const closed = closeTab(key)
+  if (!closed) return
+  if (route.fullPath === closed.path) {
+    const next = tabs.value[idx] ?? tabs.value[idx - 1] ?? tabs.value[0]
+    void router.push(next ? next.path : '/')
+  }
+}
+
+function onTabContext(event: MouseEvent, key: string) {
+  contextMenuKey.value = key
+  contextMenuStyle.value = { top: `${event.clientY}px`, left: `${event.clientX}px` }
+  contextMenuVisible.value = true
+}
+
+function closeContextMenu() {
+  contextMenuVisible.value = false
+}
+
+function onContextCommand(cmd: 'close' | 'others' | 'all'): void {
+  const key = contextMenuKey.value
+  contextMenuVisible.value = false
+  if (cmd === 'close') onTabClose(key)
+  else if (cmd === 'others') {
+    closeOthers(key)
+    const tab = tabs.value.find((t) => t.key === key)
+    if (tab) void router.push(tab.path)
+  } else {
+    closeAll()
+    const home = tabs.value[0]
+    if (home) void router.push(home.path)
+  }
+}
 </script>
 
 <template>
@@ -171,15 +245,45 @@ async function onLogout() {
         <div class="workspace-label"><span class="status-dot"></span>本地工作台 <span class="workspace-caption">货有数，账有序。</span></div>
         <div class="user-area">
           <span class="user-name">{{ currentUser?.username }}</span>
-          <span class="user-role">{{ currentUser?.role === 'admin' ? '管理员' : '收银员' }}</span>
+          <span class="user-role">{{ roleDisplayName(currentUser) }}</span>
           <el-button size="small" text type="primary" @click="onLogout">退出登录</el-button>
         </div>
       </el-header>
       <ModuleTour />
-      <el-main>
-        <router-view />
+      <el-main class="layout-main">
+        <div class="tab-bar" @click="closeContextMenu">
+          <div
+            v-for="tab in tabs"
+            :key="tab.key"
+            class="tab-item"
+            :class="{ active: tab.key === activeKey }"
+            @click.stop="onTabClick(tab.key)"
+            @contextmenu.prevent="onTabContext($event, tab.key)"
+          >
+            <span class="tab-title">{{ tab.title }}</span>
+            <i v-if="tab.closable" class="tab-close" @click.stop="onTabClose(tab.key)">✕</i>
+          </div>
+        </div>
+        <div class="tab-content">
+          <router-view v-slot="{ Component, route: currentRoute }">
+            <keep-alive :max="12">
+              <component :is="Component" :key="currentRoute.path" />
+            </keep-alive>
+          </router-view>
+        </div>
       </el-main>
     </el-container>
+
+    <div
+      v-if="contextMenuVisible"
+      class="tab-context-menu"
+      :style="contextMenuStyle"
+      @click.stop="contextMenuVisible = false"
+    >
+      <div class="ctx-item" @click="onContextCommand('close')">关闭当前</div>
+      <div class="ctx-item" @click="onContextCommand('others')">关闭其他</div>
+      <div class="ctx-item" @click="onContextCommand('all')">关闭全部</div>
+    </div>
   </el-container>
 </template>
 
@@ -224,5 +328,90 @@ async function onLogout() {
 .user-role {
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+
+.layout-main {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--el-border-color);
+  background: var(--el-bg-color);
+  flex: 0 0 auto;
+  overflow-x: auto;
+}
+
+.tab-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  border: 1px solid var(--el-border-color);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-regular);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tab-item:hover {
+  background: var(--el-fill-color);
+}
+
+.tab-item.active {
+  background: var(--el-bg-color);
+  color: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+}
+
+.tab-close {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+.tab-close:hover {
+  color: var(--el-color-danger);
+  background: var(--el-fill-color-dark);
+}
+
+.tab-context-menu {
+  position: fixed;
+  z-index: 3000;
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 4px;
+  box-shadow: var(--el-box-shadow-light);
+  padding: 4px 0;
+  min-width: 120px;
+}
+
+.tab-content {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 16px;
+}
+
+.ctx-item {
+  padding: 7px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ctx-item:hover {
+  background: var(--el-fill-color-light);
+  color: var(--el-color-primary);
 }
 </style>
