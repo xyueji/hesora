@@ -39,12 +39,12 @@ describe('product search performance (10k products)', () => {
     const svc = createProductService(db)
 
     const cases: Array<[string, () => unknown]> = [
-      ['exact code', () => svc.query({ keyword: 'SKU009999', pageSize: 20 })],
-      ['name prefix', () => svc.query({ keyword: '可乐90', pageSize: 20 })],
-      ['name contains', () => svc.query({ keyword: '90号', pageSize: 20 })],
-      ['barcode exact', () => svc.query({ keyword: 'BC005000', pageSize: 20 })],
-      ['common fragment', () => svc.query({ keyword: '商品9', pageSize: 20 })],
-      ['single char wide', () => svc.query({ keyword: '号', pageSize: 20 })]
+      ['exact code', () => svc.query({ keyword: 'SKU009999', page: 1, pageSize: 20 })],
+      ['name prefix', () => svc.query({ keyword: '可乐90', page: 1, pageSize: 20 })],
+      ['name contains', () => svc.query({ keyword: '90号', page: 1, pageSize: 20 })],
+      ['barcode exact', () => svc.query({ keyword: 'BC005000', page: 1, pageSize: 20 })],
+      ['common fragment', () => svc.query({ keyword: '商品9', page: 1, pageSize: 20 })],
+      ['single char wide', () => svc.query({ keyword: '号', page: 1, pageSize: 20 })]
     ]
     for (const [label, run] of cases) {
       const start = performance.now()
