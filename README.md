@@ -1,6 +1,8 @@
-# 智销进销存（zhjs-erp）v1.0.0
+# 禾序进销存 · HESORA Inventory
 
-面向个人商户/中小企业的**完全离线**进销存 Windows 桌面软件（Electron + Vue3 + TypeScript + SQLite）。数据 100% 存在本地（`%APPDATA%/zhjs-erp`），可按需同步到云盘，不依赖任何云端账号。
+**货有数，账有序。** 禾序是一款面向商户与中小企业的 Windows 本地进销存软件，让进货、销售、库存和往来账目清楚有序。日常业务在本机运行，经营数据默认存放于本机，可按需备份、恢复与导出。
+
+[品牌说明与视觉规范](../docs/brand/品牌说明.md)
 
 ## 功能清单
 
@@ -15,16 +17,16 @@
 
 ## 安装
 
-1. 双击 `智销进销存-1.0.0-setup.exe`，按向导选择安装目录即可。
-2. 数据目录：`%APPDATA%/zhjs-erp`（数据库 `zhjs-erp.db`、备份等均在此，卸载重装/升级不丢数据）。
+1. 双击 `禾序进销存-1.0.0-setup.exe`，按向导选择安装目录即可。
+2. 升级前先备份并退出旧版程序。禾序首次打开时将原数据目录 `%APPDATA%\zhjs-erp` 中的 `zhjs-erp.db` 改名为 `hesora-inventory.db`，已有业务记录和本地设置随账套保留。
 3. 默认管理员：**admin / admin123**，⚠️ 登录后请立即在「用户管理」中修改密码。
 
 ## 试用与激活
 
 - 未激活状态下首次运行开始 **15 天全功能试用**；到期后仅登录/激活可用。
-- 激活：在「设置 → 激活」输入激活码。激活码由商家生成：
+- 激活：在软件激活页粘贴商家签发的激活码，由客户端离线验签：
   - 服务端工具位于 `tools/activation-server/`（Node + SQLite，部署到 VPS 或本机运行，详见该目录 README）。
-  - 流程：客户提供机器码 → 服务端用 `gen.js` + `private.pem` 签发激活码 → 客户粘贴激活。
+  - 流程：商家使用签发工具生成激活码 → 客户粘贴到软件激活页。
   - **`private.pem` 仅保存在服务端，绝不打入客户端安装包**（见下方发布清单）。
 
 ## 云盘同步
@@ -47,7 +49,7 @@ export const UPDATE_URL = 'https://updates.example.com/zhjs/latest.json'
 发布新版本前把该常量改为你的真实地址，并在服务器放置 `latest.json`：
 
 ```json
-{ "version": "1.0.1", "notes": "修复若干问题", "url": "https://.../智销进销存-1.0.1-setup.exe" }
+{ "version": "1.0.1", "notes": "修复若干问题", "url": "https://.../禾序进销存-1.0.1-setup.exe" }
 ```
 
 用户端发现新版本会弹出通知，点击后用系统浏览器打开 `url` 下载新安装包，覆盖安装即可（数据不丢失）。
@@ -60,12 +62,13 @@ export const UPDATE_URL = 'https://updates.example.com/zhjs/latest.json'
 pnpm i          # 安装依赖（postinstall 会为 Electron 重编译 better-sqlite3）
 pnpm dev        # 开发模式
 pnpm test       # Vitest 单测（内存库）
-pnpm dist       # 打包 Windows NSIS 安装包 → dist/智销进销存-<版本>-setup.exe
+pnpm dist       # 打包 Windows NSIS 安装包 → dist/禾序进销存-<版本>-setup.exe
 ```
 
 注意：
 
-- 打包后需 `pnpm rebuild better-sqlite3` 恢复开发 ABI，否则 vitest 会因 NODE_MODULE_VERSION 不匹配报错。
+- Windows 打包会准备并验证 Electron 版本的 SQLite 原生模块。打包后在 Node 22 中运行 `pnpm rebuild better-sqlite3`，恢复 Node 单测所需的模块。
+- 打包后可在工作区根目录执行 `node zhjs-erp-e2e/hesora-smoke.js`。冒烟脚本使用临时账套，检查启动、登录、商品保存和品牌界面；通过 `HESORA_SCREENSHOTS` 指定截图输出目录。
 - winCodeSign 缓存偶尔解压失败，可到 `%LOCALAPPDATA%/electron-builder-cache/winCodeSign` 手动 7za 解压后重试。
 
 ## 发布清单（Checklist）
@@ -76,4 +79,4 @@ pnpm dist       # 打包 Windows NSIS 安装包 → dist/智销进销存-<版本
 - [ ] `pnpm test` 全绿、`pnpm typecheck:node` / `pnpm typecheck:web` 通过
 - [ ] 安装包启动冒烟：进程可启动、数据库可建立、登录页可见
 - [ ] 修改 `src/main/update.ts` 的 `UPDATE_URL` 为真实更新地址
-- [x] 图标未定制（使用 Electron 默认图标）—— 已知限制，后续版本替换
+- [x] 禾序 SVG、PNG、Windows ICO 已接入界面与安装配置；兼容保留历史 appId 和账套路径

@@ -84,7 +84,7 @@ export function createInventoryService(db: DB) {
         movingCost = (row.qty * row.moving_cost + c.change_qty * cost) / qty
         updateInv.run(qty, movingCost, row.id)
       }
-      insertCostLog(c, batchNo, c.change_qty, movingCost, qty, movingCost)
+      insertCostLog(c, batchNo, c.change_qty, cost, qty, movingCost)
     } else {
       // OUT: deduct at moving_cost; cost unchanged
       if (!row || row.qty + c.change_qty < 0) {

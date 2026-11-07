@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { csvApi, readCsvFile } from '../../api/csv'
+import { hasPermission } from '../../stores/auth'
 import { openingApi } from '../../api/opening'
 import { productApi } from '../../api/product'
 import { warehouseApi } from '../../api/warehouse'
 import { customerApi } from '../../api/customer'
 import { supplierApi } from '../../api/supplier'
-import type { Product } from '../../../shared/types/product'
-import type { Warehouse } from '../../../shared/types/warehouse'
-import type { Customer } from '../../../shared/types/customer'
-import type { Supplier } from '../../../shared/types/supplier'
-import type { OpeningPayload } from '../../../shared/types/opening'
+import type { Product } from '../../../../shared/types/product'
+import type { Warehouse } from '../../../../shared/types/warehouse'
+import type { Customer } from '../../../../shared/types/customer'
+import type { Supplier } from '../../../../shared/types/supplier'
+import type { OpeningPayload } from '../../../../shared/types/opening'
 
 interface InvLine {
   product_id: number | null
@@ -34,7 +36,52 @@ const customerLines = reactive<PartLine[]>([])
 const supplierLines = reactive<PartLine[]>([])
 
 const productOptions = ref<Map<number, Product>>(new Map())
+const importedProductLabels = ref<Record<number, string>>({})
 const productSearching = ref(false)
+const importInput = ref<HTMLInputElement | null>(null)
+const importWarehouse = ref<number | null>(null)
+const importing = ref(false)
+const exportingTemplate = ref(false)
+
+async function downloadStockTemplate(): Promise<void> {
+  exportingTemplate.value = true
+  try {
+    const path = await csvApi.export('opening-stock-template')
+    ElMessage.success(`已保存模板到 ${path}`)
+  } catch (e) {
+    const message = (e as Error).message
+    if (message !== '已取消导出') ElMessage.error(message)
+  } finally {
+    exportingTemplate.value = false
+  }
+}
+
+async function importStock(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  const warehouseId = importWarehouse.value
+  input.value = ''
+  if (!file || warehouseId === null) return
+  importing.value = true
+  try {
+    const result = await csvApi.previewOpeningStock(await readCsvFile(file))
+    for (const line of result.lines) {
+      importedProductLabels.value[line.product_id] = `${line.product_code} ${line.product_name}`
+      invLines.push({ product_id: line.product_id, warehouse_id: warehouseId, batch_no: line.batch_no ?? '', qty: line.qty, unit_cost: line.unit_cost })
+    }
+    if (result.errors.length > 0) {
+      await ElMessageBox.alert(result.errors.map((error) => `第 ${error.row} 行：${error.message}`).join('\n'), `已载入 ${result.lines.length} 行，失败 ${result.errors.length} 行`, { type: 'warning' })
+    } else if (result.lines.length > 0) {
+      ElMessage.success(`已载入 ${result.lines.length} 行，请核对后保存期初数据`)
+    } else {
+      ElMessage.warning('文件中没有期初库存数据')
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    importing.value = false
+  }
+}
 
 function addInvLine(): void {
   invLines.push({ product_id: null, warehouse_id: warehouses.value[0]?.id ?? null, batch_no: '', qty: 0, unit_cost: 0 })
@@ -58,10 +105,6 @@ async function searchProducts(query: string): Promise<void> {
   }
 }
 
-function productLabel(id: number | null): string {
-  const p = id != null ? productOptions.value.get(id) : undefined
-  return p ? `${p.code} ${p.name}` : ''
-}
 
 async function loadStatus(): Promise<void> {
   done.value = (await openingApi.getStatus()).done
@@ -76,6 +119,7 @@ onMounted(async () => {
       supplierApi.query({ page: 1, pageSize: 1000 })
     ])
     warehouses.value = whs.list
+    importWarehouse.value = warehouses.value.find((warehouse) => warehouse.is_default)?.id ?? warehouses.value[0]?.id ?? null
     customers.value = cs.list
     suppliers.value = ss.list
     await Promise.all([loadStatus(), searchProducts('')])
@@ -88,8 +132,8 @@ onMounted(async () => {
 
 async function save(): Promise<void> {
   for (const [i, l] of invLines.entries()) {
-    if (l.product_id == null || l.warehouse_id == null || l.qty <= 0 || l.unit_cost <= 0) {
-      ElMessage.error(`期初库存第 ${i + 1} 行不完整：需选择商品和仓库，数量、单价须大于 0`)
+    if (l.product_id == null || l.warehouse_id == null || l.qty <= 0 || l.unit_cost < 0) {
+      ElMessage.error(`期初库存第 ${i + 1} 行不完整：请选择商品和仓库，数量须大于 0，单价不能为负数`)
       return
     }
   }
@@ -148,6 +192,15 @@ async function save(): Promise<void> {
         />
 
         <el-divider content-position="left">期初库存</el-divider>
+        <el-space v-if="hasPermission('data.import')" wrap style="margin-bottom: 8px">
+          <el-select v-model="importWarehouse" aria-label="导入仓库" placeholder="选择导入仓库" style="width: 160px">
+            <el-option v-for="w in warehouses" :key="w.id" :label="w.name" :value="w.id!" />
+          </el-select>
+          <el-button :loading="importing" :disabled="importWarehouse === null || saving" @click="importInput?.click()">载入库存 CSV</el-button>
+          <el-button v-if="hasPermission('data.export')" :loading="exportingTemplate" @click="downloadStockTemplate">下载模板</el-button>
+          <input ref="importInput" type="file" accept=".csv,text/csv" hidden @change="importStock" />
+          <span>表头顺序为商品编码、数量、成本单价、批次号。</span>
+        </el-space>
         <el-table :data="invLines" size="small">
           <el-table-column label="商品" min-width="220">
             <template #default="{ row }">
@@ -160,6 +213,8 @@ async function save(): Promise<void> {
                 placeholder="输入编码或名称搜索"
                 style="width: 100%"
               >
+                <el-option v-if="row.product_id && !productOptions.has(row.product_id) && importedProductLabels[row.product_id]"
+                  :label="importedProductLabels[row.product_id]" :value="row.product_id" />
                 <el-option
                   v-for="p in productOptions.values()"
                   :key="p.id"
@@ -244,7 +299,7 @@ async function save(): Promise<void> {
         <el-button style="margin-top: 8px" @click="addSupplierLine">添加供应商行</el-button>
 
         <div style="margin-top: 20px">
-          <el-button type="primary" :loading="saving" @click="save">保存期初</el-button>
+          <el-button type="primary" :loading="saving" :disabled="importing" @click="save">保存期初</el-button>
         </div>
       </template>
     </el-card>

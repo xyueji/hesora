@@ -87,11 +87,19 @@ export function createStocktakeService(db: DB) {
     if (!input.items || input.items.length === 0) {
       throw new BizError('VALIDATION', '盘点明细不能为空')
     }
+    const counted = new Set<string>()
     for (const it of input.items) {
       const qty = Number(it.actual_qty)
       if (!Number.isFinite(qty) || qty < 0) {
         throw new BizError('VALIDATION', '实盘数量不能小于0')
       }
+      const rate = Number(it.rate ?? 1)
+      if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(qty * rate)) {
+        throw new BizError('VALIDATION', '明细单位换算率无效')
+      }
+      const key = JSON.stringify([Number(it.product_id), it.batch_no ?? ''])
+      if (counted.has(key)) throw new BizError('VALIDATION', '同一商品和批次不可重复盘点')
+      counted.add(key)
     }
 
     let doc: DocRow | undefined
@@ -134,7 +142,7 @@ export function createStocktakeService(db: DB) {
           batch_no: d.item.batch_no,
           unit: d.item.unit,
           rate: d.item.rate,
-          qty: Math.abs(d.diff),
+          qty: Math.abs(d.diff) / Number(d.item.rate ?? 1),
           price: 0
         }))
       })
@@ -149,7 +157,7 @@ export function createStocktakeService(db: DB) {
         source_id: sourceId
       }))
       inventoryService.applyChanges(changes)
-    })()
+    }).immediate()
     return doc as DocRow
   }
 

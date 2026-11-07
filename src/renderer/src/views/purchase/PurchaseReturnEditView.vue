@@ -5,6 +5,9 @@ import { ElMessage } from 'element-plus'
 import { purchaseApi } from '../../api/purchase'
 import { supplierApi } from '../../api/supplier'
 import { productApi } from '../../api/product'
+import { fundApi } from '../../api/fund'
+import type { DocRow } from '../../../../shared/types/doc'
+import type { FundAccount } from '../../../../shared/types/fund'
 import { warehouseApi } from '../../api/warehouse'
 import type { Supplier } from '../../../../shared/types/supplier'
 import type { Product, ProductUnit } from '../../../../shared/types/product'
@@ -19,12 +22,9 @@ interface Line {
   batch_no: string
   qty: number | null
   price: number | null
+  originalQty?: number
 }
 
-interface Warehouse {
-  id: number
-  name: string
-}
 
 const router = useRouter()
 
@@ -38,10 +38,12 @@ const form = reactive({
   date: today(),
   supplier_id: null as number | null,
   warehouse_id: null as number | null,
+  account_id: null as number | null,
   remark: ''
 })
 
 const supplierOptions = ref<Supplier[]>([])
+const accountOptions = ref<FundAccount[]>([])
 const warehouseOptions = ref<Warehouse[]>([])
 const lines = ref<Line[]>([emptyLine()])
 
@@ -50,12 +52,12 @@ function emptyLine(): Line {
 }
 
 const saving = ref(false)
+const source = ref<DocRow | null>(null)
+const sourceOptions = ref<DocRow[]>([])
+const loadingSource = ref(false)
 
 const totalAmount = computed(() =>
-  lines.value.reduce((sum, l) => {
-    const rate = l.rate || 1
-    return sum + (l.qty ?? 0) * (l.price ?? 0) * rate
-  }, 0)
+  lines.value.reduce((sum, l) => sum + lineAmount(l), 0)
 )
 
 async function searchSuppliers(keyword: string): Promise<void> {
@@ -64,6 +66,60 @@ async function searchSuppliers(keyword: string): Promise<void> {
     supplierOptions.value = r.list
   } catch {
     /* 静默：远程搜索失败不阻断录入 */
+  }
+}
+
+async function searchSource(keyword: string): Promise<void> {
+  try {
+    sourceOptions.value = (await purchaseApi.query({
+      type: 'purchase', page: 1, pageSize: 30, keyword: keyword || undefined
+    })).items
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+async function selectSource(id: number | null | undefined): Promise<void> {
+  if (!id) {
+    source.value = null
+    return
+  }
+  loadingSource.value = true
+  try {
+    const detail = await purchaseApi.getDetail(id)
+    const partner = detail.doc.partner_id === null ? null : await supplierApi.get(detail.doc.partner_id)
+    const originalLines = await Promise.all(detail.items.map(async (item) => {
+      const product = await productApi.get(item.product_id)
+      const unit = item.unit || product?.base_unit || ''
+      return {
+        product_id: item.product_id,
+        product,
+        unit,
+        rate: item.rate,
+        unitOptions: [{ unit, rate: item.rate }],
+        batch_no: item.batch_no,
+        qty: null,
+        price: item.price,
+        originalQty: item.qty
+      }
+    }))
+    if (partner) supplierOptions.value = [partner, ...supplierOptions.value.filter((p) => p.id !== partner.id)]
+    form.supplier_id = detail.doc.partner_id
+    form.warehouse_id = detail.doc.warehouse_id
+    lines.value = originalLines
+    source.value = detail.doc
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    loadingSource.value = false
+  }
+}
+
+async function loadAccounts(): Promise<void> {
+  try {
+    accountOptions.value = (await fundApi.query({ page: 1, pageSize: 200 })).list
+  } catch (e) {
+    ElMessage.error((e as Error).message)
   }
 }
 
@@ -80,18 +136,16 @@ async function loadWarehouses(): Promise<void> {
   }
 }
 
-async function searchProducts(keyword: string, line: Line): Promise<void> {
+async function searchProducts(keyword: string): Promise<void> {
   try {
     const r = await productApi.query({ page: 1, pageSize: 50, keyword: keyword || undefined })
     productOptions.value = r.list
-    currentLine = line
   } catch {
     /* 静默 */
   }
 }
 
 const productOptions = ref<Product[]>([])
-let currentLine: Line | null = null
 
 function onProductSelect(line: Line): void {
   const p = productOptions.value.find((x) => x.id === line.product_id)
@@ -101,6 +155,7 @@ function onProductSelect(line: Line): void {
   line.unitOptions = [base, ...units]
   line.unit = base.unit ?? ''
   line.rate = 1
+  line.batch_no = ''
   if (!p || p.purchase_price === undefined) {
     line.price = null
   } else {
@@ -109,13 +164,14 @@ function onProductSelect(line: Line): void {
 }
 
 function lineAmount(l: Line): number {
-  const rate = l.rate || 1
-  return (l.qty ?? 0) * (l.price ?? 0) * rate
+  return (l.qty ?? 0) * (l.price ?? 0)
 }
 
 function onUnitChange(line: Line): void {
   const u = line.unitOptions.find((x) => x.unit === line.unit)
-  line.rate = u?.rate ?? 1
+  const rate = u?.rate ?? 1
+  if (line.price !== null) line.price = (line.price / line.rate) * rate
+  line.rate = rate
 }
 
 function addLine(): void {
@@ -128,6 +184,7 @@ function removeLine(index: number): void {
 }
 
 async function save(): Promise<void> {
+  if (saving.value || loadingSource.value) return
   if (!form.warehouse_id) {
     ElMessage.warning('请选择仓库')
     return
@@ -136,7 +193,7 @@ async function save(): Promise<void> {
     .filter((l) => l.product_id !== null && (l.qty ?? 0) > 0)
     .map((l) => ({
       product_id: l.product_id as number,
-      batch_no: l.product?.tracking_type === 'batch' ? l.batch_no || '' : undefined,
+      batch_no: source.value || l.product?.tracking_type === 'batch' ? l.batch_no || undefined : undefined,
       unit: l.unit || undefined,
       rate: l.rate || 1,
       qty: l.qty as number,
@@ -149,6 +206,8 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     const doc = await purchaseApi.createReturn({
+      source_doc_id: source.value?.id,
+      account_id: form.account_id ?? undefined,
       supplier_id: form.supplier_id ?? undefined,
       warehouse_id: form.warehouse_id,
       date: form.date || undefined,
@@ -166,6 +225,7 @@ async function save(): Promise<void> {
 
 void searchSuppliers('')
 void loadWarehouses()
+void loadAccounts()
 </script>
 
 <template>
@@ -180,9 +240,27 @@ void loadWarehouses()
       </div>
 
       <el-form label-width="90px" class="form" inline>
+        <el-form-item label="原采购单">
+          <el-select
+            :model-value="source?.id"
+            filterable
+            remote
+            clearable
+            :loading="loadingSource"
+            :disabled="loadingSource"
+            :remote-method="searchSource"
+            placeholder="按单号查找，可留空"
+            style="width: 220px"
+            @focus="searchSource('')"
+            @change="selectSource"
+          >
+            <el-option v-for="doc in sourceOptions" :key="doc.id" :label="doc.no" :value="doc.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="供应商">
           <el-select
             v-model="form.supplier_id"
+            :disabled="source !== null"
             filterable
             remote
             clearable
@@ -199,8 +277,13 @@ void loadWarehouses()
           </el-select>
         </el-form-item>
         <el-form-item label="仓库" required>
-          <el-select v-model="form.warehouse_id" placeholder="选择仓库" style="width: 180px">
+          <el-select v-model="form.warehouse_id" :disabled="source !== null" placeholder="选择仓库" style="width: 180px">
             <el-option v-for="w in warehouseOptions" :key="w.id" :label="w.name" :value="w.id as number" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="退款账户">
+          <el-select v-model="form.account_id" placeholder="留空冲减往来" clearable style="width: 180px">
+            <el-option v-for="a in accountOptions" :key="a.id" :label="a.name" :value="a.id as number" />
           </el-select>
         </el-form-item>
         <el-form-item label="日期">
@@ -214,14 +297,16 @@ void loadWarehouses()
       <el-table :data="lines" stripe class="table" empty-text="点击下方按钮添加商品">
         <el-table-column label="商品" min-width="220">
           <template #default="{ row }">
+            <span v-if="source">{{ row.product?.name ?? row.product_id }}</span>
             <el-select
+              v-else
               v-model="row.product_id"
               filterable
               remote
-              :remote-method="(kw: string) => searchProducts(kw, row)"
+              :remote-method="(kw: string) => searchProducts(kw)"
               :loading="false"
               placeholder="搜索商品"
-              @focus="searchProducts('', row)"
+              @focus="searchProducts('')"
               @change="onProductSelect(row)"
               style="width: 100%"
             >
@@ -243,7 +328,7 @@ void loadWarehouses()
         </el-table-column>
         <el-table-column label="数量" width="130">
           <template #default="{ row }">
-            <el-input-number v-model="row.qty" :min="0" :precision="2" controls-position="right" style="width: 100%" />
+            <el-input-number v-model="row.qty" :placeholder="row.originalQty === undefined ? undefined : `原单 ${row.originalQty}`" :min="0" :precision="2" controls-position="right" style="width: 100%" />
           </template>
         </el-table-column>
         <el-table-column label="单价" width="130">
@@ -253,7 +338,8 @@ void loadWarehouses()
         </el-table-column>
         <el-table-column label="批次号" width="120">
           <template #default="{ row }">
-            <el-input v-if="row.product?.tracking_type === 'batch'" v-model="row.batch_no" placeholder="批次号" />
+            <span v-if="source">{{ row.batch_no || '—' }}</span>
+            <el-input v-else-if="row.product?.tracking_type === 'batch'" v-model="row.batch_no" placeholder="批次号" />
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
@@ -270,7 +356,7 @@ void loadWarehouses()
       </el-table>
 
       <div class="footer">
-        <el-button @click="addLine">添加商品</el-button>
+        <el-button v-if="!source" @click="addLine">添加商品</el-button>
         <div class="total">
           合计：<span class="total-amount">{{ totalAmount.toFixed(2) }}</span> 元
         </div>

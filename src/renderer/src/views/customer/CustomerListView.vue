@@ -3,6 +3,8 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { customerApi } from '../../api/customer'
+import { csvApi } from '../../api/csv'
+import { hasPermission } from '../../stores/auth'
 import type { Customer } from '../../../../shared/types/customer'
 
 const router = useRouter()
@@ -13,6 +15,20 @@ const list = ref<Customer[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
+const exporting = ref(false)
+
+async function exportCustomers(): Promise<void> {
+  exporting.value = true
+  try {
+    const path = await csvApi.export('customers')
+    ElMessage.success(`已导出到 ${path}`)
+  } catch (e) {
+    const message = (e as Error).message
+    if (message !== '已取消导出') ElMessage.error(message)
+  } finally {
+    exporting.value = false
+  }
+}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -72,6 +88,7 @@ onMounted(load)
               <el-button @click="search">搜索</el-button>
             </template>
           </el-input>
+          <el-button v-if="hasPermission('data.export')" :loading="exporting" @click="exportCustomers">导出 CSV</el-button>
           <el-button type="primary" @click="router.push('/customer/edit')">新增客户</el-button>
         </div>
       </div>

@@ -36,6 +36,22 @@ function setupBase(): { customerId: number; supplierId: number; accountId: numbe
 }
 
 describe('dashboard.service', () => {
+  it('counts low-stock active products, including products with no inventory yet', () => {
+    const { productId } = setupBase()
+    db.prepare('UPDATE product SET min_stock = ? WHERE id = ?').run(5, productId)
+    db.exec("INSERT INTO product (code, name, base_unit, min_stock, disabled) VALUES ('OFF','停用','件',5,1)")
+    expect(svc.summary(TODAY).low_stock_count).toBe(1)
+  })
+
+  it('keeps historical sale profit when a later purchase changes moving cost', () => {
+    const { warehouseId, productId } = setupBase()
+    const purchases = createPurchaseService(db)
+    purchases.create({ warehouse_id: warehouseId, date: '2026-03-09', items: [{ product_id: productId, qty: 10, price: 2 }] })
+    createSaleService(db).create({ warehouse_id: warehouseId, date: TODAY, items: [{ product_id: productId, qty: 4, price: 5 }] })
+    purchases.create({ warehouse_id: warehouseId, date: '2026-03-11', items: [{ product_id: productId, qty: 6, price: 8 }] })
+    expect(svc.summary(TODAY).gross_profit).toBe(12)
+  })
+
   it('summary: sale profit = item amount - qty*rate*moving_cost of matching inventory row', () => {
     const { customerId, supplierId, warehouseId, productId } = setupBase()
     // 进货 10@2（移动加权成本 2），今日销售 10@3 → 毛利 10*(3-2)=10

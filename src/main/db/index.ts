@@ -5,10 +5,15 @@ export type DB = Database.Database
 
 export function openDb(filePath: string, migrationsDir: string): DB {
   const db = new Database(filePath)
-  db.pragma('journal_mode = WAL')
-  db.pragma('foreign_keys = ON')
-  runMigrations(db, migrationsDir)
-  return db
+  try {
+    db.pragma('journal_mode = WAL')
+    db.pragma('foreign_keys = ON')
+    runMigrations(db, migrationsDir)
+    return db
+  } catch (error) {
+    db.close()
+    throw error
+  }
 }
 
 export function tx<T>(db: DB, fn: () => T): T {

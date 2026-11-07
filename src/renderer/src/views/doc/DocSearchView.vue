@@ -13,6 +13,7 @@ const DOC_TYPES = Object.keys(docTypeLabels) as DocType[]
 
 const typeFilter = ref<DocType | null>(null)
 const keyword = ref('')
+const partnerKeyword = ref('')
 const dateRange = ref<[string, string] | null>(null)
 const loading = ref(false)
 const list = ref<DocRow[]>([])
@@ -33,6 +34,7 @@ async function load(): Promise<void> {
       pageSize: pageSize.value,
       type: typeFilter.value ?? undefined,
       keyword: keyword.value || undefined,
+      partner_keyword: partnerKeyword.value || undefined,
       date_from: dateRange.value?.[0],
       date_to: dateRange.value?.[1]
     })
@@ -137,6 +139,14 @@ onMounted(() => {
             @change="search"
           />
           <el-input
+            v-model="partnerKeyword"
+            placeholder="往来单位名称或编码"
+            clearable
+            class="search"
+            @keyup.enter="search"
+            @clear="search"
+          />
+          <el-input
             v-model="keyword"
             placeholder="搜索单号"
             clearable
@@ -230,6 +240,7 @@ onMounted(() => {
 }
 .doc-search .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }

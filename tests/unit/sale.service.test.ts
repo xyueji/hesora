@@ -69,7 +69,7 @@ describe('sale.service', () => {
     })
   }
 
-  it('create sale after purchase: inventory reduced by qty*rate, no /^XS/ check, total = Σ qty*price*rate', () => {
+  it('create sale after purchase: stock uses the rate and totals use the entered unit price', () => {
     stockUp(10, 12, 24) // 120 罐入库
     const doc = ctx.saleService.create({
       customer_id: ctx.customerId,
@@ -78,7 +78,7 @@ describe('sale.service', () => {
     })
     expect(doc.no).toMatch(/^XS\d{8}\d{4}$/)
     expect(doc.status).toBe('done')
-    expect(doc.total_amount).toBeCloseTo(2 * 36 * 12)
+    expect(doc.total_amount).toBeCloseTo(2 * 36)
     expect(doc.partner_id).toBe(ctx.customerId)
     const rows = ctx.inventoryService.getByProduct(ctx.productId, ctx.whId)
     expect(rows).toHaveLength(1)

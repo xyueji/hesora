@@ -48,13 +48,16 @@ onMounted(load)
 
 <template>
   <div class="dashboard" v-loading="loading">
+    <header class="dashboard-heading"><div><div class="brand-eyebrow">BUSINESS OVERVIEW</div><h1>经营概况</h1><p>从每一笔记录，看清今天的生意。</p></div><el-button :loading="loading" @click="load">刷新数据</el-button></header>
     <el-alert v-if="errMsg" type="error" :title="errMsg" show-icon :closable="false" />
     <template v-if="summary">
       <div class="card-row">
-        <div v-for="c in cards" :key="c.label" class="stat-card" :class="c.accent">
-          <div class="stat-label">{{ c.label }}</div>
-          <div class="stat-value">{{ fmtMoney(summary[c.key]) }}</div>
-        </div>
+        <template v-for="c in cards" :key="c.label">
+          <div v-if="summary[c.key] !== null" class="stat-card" :class="c.accent">
+            <div class="stat-label">{{ c.label }}</div>
+            <div class="stat-value">{{ fmtMoney(summary[c.key] ?? 0) }}</div>
+          </div>
+        </template>
       </div>
 
       <el-card class="section" shadow="never">
@@ -74,6 +77,7 @@ onMounted(load)
         <template #header>今日单据</template>
         <div class="doc-nums">
           <span>销售单 <b>{{ summary.sales_count }}</b> 张</span>
+          <span>库存预警 <b>{{ summary.low_stock_count }}</b> 种</span>
         </div>
       </el-card>
     </template>
@@ -98,16 +102,16 @@ onMounted(load)
   color: #fff;
 }
 .card-blue {
-  background: linear-gradient(135deg, #3a7bd5, #2b5fa8);
+  background: #12685E;
 }
 .card-green {
-  background: linear-gradient(135deg, #2f9e6e, #1f7a50);
+  background: #236E62;
 }
 .card-orange {
-  background: linear-gradient(135deg, #e08e2b, #c06f10);
+  background: #78603B;
 }
 .card-red {
-  background: linear-gradient(135deg, #d95a4e, #b03a30);
+  background: #99534B;
 }
 .stat-label {
   font-size: 13px;
@@ -145,7 +149,7 @@ onMounted(load)
 .trend-bar {
   width: 100%;
   min-height: 2px;
-  background: #3a7bd5;
+  background: #12685E;
   border-radius: 4px 4px 0 0;
   transition: height 0.3s;
 }
@@ -165,7 +169,7 @@ onMounted(load)
   color: #555;
 }
 .doc-nums b {
-  color: #2b5fa8;
+  color: #12685E;
   font-size: 18px;
 }
 </style>

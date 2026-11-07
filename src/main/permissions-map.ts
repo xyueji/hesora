@@ -3,6 +3,7 @@ import type { PermissionKey } from '../shared/permissions'
 // 每个 IPC 通道所需权限；不在映射中的通道无需权限（包括 auth:* 自身）。
 export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'product:get': 'product.view',
+  'product:getByBarcode': 'product.view',
   'product:query': 'product.view',
   'product:create': 'product.edit',
   'product:update': 'product.edit',
@@ -37,8 +38,12 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'fund:update': 'fund.edit',
   'fund:disable': 'fund.edit',
   'fund:enable': 'fund.edit',
+  'ledger:accounts': 'fund.edit',
+  'ledger:entries': 'fund.edit',
+  'ledger:transfer': 'fund.edit',
 
   'inventory:queryStock': 'inventory.view',
+  'inventory:listCostLogs': 'report.business',
   'transfer:create': 'inventory.adjust',
   'transfer:getDetail': 'inventory.adjust',
   'transfer:query': 'inventory.adjust',
@@ -63,13 +68,21 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'sale:query': 'doc.sale',
 
   'retail:create': 'doc.retail',
+  'retail:hold': 'doc.retail',
+  'retail:listHeld': 'doc.retail',
+  'retail:discardHeld': 'doc.retail',
   'retail:getDetail': 'doc.retail',
   'retail:query': 'doc.retail',
 
   'doc:query': 'doc.viewAll',
   'doc:detail': 'doc.viewAll',
+  'print:receipt': 'doc.retail',
+  'print:a4pdf': 'doc.viewAll',
 
   'payment:createReceipt': 'doc.payment',
+  'payment:create': 'doc.payment',
+  'payment:query': 'doc.payment',
+  'payment:getDetail': 'doc.payment',
   'payment:createPayment': 'doc.payment',
   'payment:getReceiptDetail': 'doc.payment',
   'payment:getPaymentDetail': 'doc.payment',
@@ -79,8 +92,14 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'stats:receivables': 'report.arrears',
   'stats:payables': 'report.arrears',
   'stats:summary': 'report.arrears',
+  'stats:report': 'report.business',
   'dashboard:summary': 'report.dashboard',
   'dashboard:trend': 'report.dashboard',
+  'workflow:list': 'system.setting',
+  'workflow:save': 'system.setting',
+  'workflow:approve': 'system.setting',
+  'workflow:convert': 'system.setting',
+  'workflow:cancel': 'system.setting',
 
   'opening:save': 'opening.edit',
   'opening:getStatus': 'opening.edit',
@@ -88,6 +107,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'csv:export': 'data.export',
   'csv:importProducts': 'data.import',
   'csv:importOpeningStock': 'data.import',
+  'csv:previewOpeningStock': 'data.import',
 
   'backup:now': 'data.backup',
   'backup:pickDir': 'data.backup',
@@ -99,6 +119,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'sync:download': 'data.sync',
   'sync:restoreFromCloud': 'data.sync',
 
+  'audit:list': 'system.setting',
   'setting:get': 'system.setting',
   'setting:set': 'system.setting',
   'setting:getAll': 'system.setting',

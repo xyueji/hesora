@@ -3,7 +3,7 @@ import { BizError } from '../../../shared/result'
 import type { DocItemRow, DocPageResult, DocQuery, DocRow } from '../../../shared/types/doc'
 import { createDocService, type DocService } from '../doc/doc.service'
 import { createInventoryService } from '../inventory/inventory.service'
-import type { RetailCreateInput, RetailItemInput, RetailQuery } from '../../../shared/types/retail'
+import type { RetailCreateInput, RetailHeldCart, RetailItemInput, RetailQuery } from '../../../shared/types/retail'
 
 export type DB = Database
 
@@ -22,7 +22,7 @@ export function createRetailService(db: DB) {
   const docService: DocService = createDocService(db)
   const inventoryService = createInventoryService(db)
 
-  function create(input: RetailCreateInput): DocRow {
+  function validate(input: RetailCreateInput): number {
     const warehouseId = Number(input.warehouse_id)
     if (!Number.isInteger(warehouseId)) {
       throw new BizError('VALIDATION', '仓库不能为空')
@@ -30,7 +30,7 @@ export function createRetailService(db: DB) {
     const wh = db.prepare('SELECT id FROM warehouse WHERE id = ?').get(warehouseId)
     if (!wh) throw new BizError('NOT_FOUND', `仓库不存在：${warehouseId}`)
     if (input.account_id !== undefined && input.account_id !== null) {
-      const acc = db.prepare('SELECT id FROM fund_account WHERE id = ?').get(Number(input.account_id))
+      const acc = db.prepare('SELECT id FROM fund_account WHERE id = ? AND disabled = 0').get(Number(input.account_id))
       if (!acc) throw new BizError('NOT_FOUND', `账户不存在：${input.account_id}`)
     }
     if (input.customer_id !== undefined && input.customer_id !== null) {
@@ -48,9 +48,65 @@ export function createRetailService(db: DB) {
       if (!Number.isFinite(price) || price < 0) {
         throw new BizError('VALIDATION', '明细单价不能为负数')
       }
+      const rate = Number(it.rate ?? 1)
+      if (!Number.isFinite(rate) || rate <= 0) {
+        throw new BizError('VALIDATION', '明细单位换算率无效')
+      }
     }
+    return warehouseId
+  }
+
+  function assertOperator(operatorId: number): void {
+    if (!db.prepare('SELECT id FROM "user" WHERE id = ? AND disabled = 0').get(operatorId)) {
+      throw new BizError('NOT_FOUND', '操作员不存在或已停用')
+    }
+  }
+
+  function hold(operatorId: number, input: RetailCreateInput): number {
+    assertOperator(operatorId)
+    const warehouseId = validate(input)
+    const { held_id: id, ...cart } = input
+    const payload = JSON.stringify({ ...cart, warehouse_id: warehouseId })
+    if (id === undefined) {
+      return Number(db.prepare(
+        'INSERT INTO retail_held (operator_id, payload) VALUES (?, ?)'
+      ).run(operatorId, payload).lastInsertRowid)
+    }
+    const updated = db.prepare(
+      "UPDATE retail_held SET payload = ?, updated_at = datetime('now', 'localtime') WHERE id = ? AND operator_id = ?"
+    ).run(payload, id, operatorId)
+    if (updated.changes === 0) throw new BizError('NOT_FOUND', '挂单不存在或已结算')
+    return id
+  }
+
+  function listHeld(operatorId: number): RetailHeldCart[] {
+    assertOperator(operatorId)
+    const rows = db.prepare(
+      'SELECT id, payload, updated_at FROM retail_held WHERE operator_id = ? ORDER BY updated_at DESC, id DESC'
+    ).all(operatorId) as Array<{ id: number; payload: string; updated_at: string }>
+    return rows.map(({ id, payload, updated_at }) => ({
+      id,
+      updated_at,
+      input: JSON.parse(payload) as RetailHeldCart['input']
+    }))
+  }
+
+  function discardHeld(operatorId: number, id: number): void {
+    assertOperator(operatorId)
+    const removed = db.prepare(
+      'DELETE FROM retail_held WHERE id = ? AND operator_id = ?'
+    ).run(id, operatorId)
+    if (removed.changes === 0) throw new BizError('NOT_FOUND', '挂单不存在或已结算')
+  }
+
+  function create(input: RetailCreateInput, operatorId?: number): DocRow {
     let doc: DocRow | undefined
     db.transaction(() => {
+      const warehouseId = validate(input)
+      if (input.held_id !== undefined) {
+        if (operatorId === undefined) throw new BizError('VALIDATION', '结算挂单需要登录')
+        discardHeld(operatorId, input.held_id)
+      }
       doc = docService.create({
         type: 'retail',
         date: input.date,
@@ -94,7 +150,7 @@ export function createRetailService(db: DB) {
           input.remark ?? null
         )
       }
-    })()
+    }).immediate()
     return doc as DocRow
   }
 
@@ -118,7 +174,7 @@ export function createRetailService(db: DB) {
     return docService.query(inner)
   }
 
-  return { create, getDetail, query }
+  return { create, getDetail, query, hold, listHeld, discardHeld }
 }
 
 export type RetailService = ReturnType<typeof createRetailService>

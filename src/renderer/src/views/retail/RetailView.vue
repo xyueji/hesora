@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { Warehouse } from '../../../../shared/types/warehouse'
 import { retailApi } from '../../api/retail'
 import { productApi } from '../../api/product'
 import { warehouseApi } from '../../api/warehouse'
@@ -8,20 +9,18 @@ import { fundApi } from '../../api/fund'
 import { printApi } from '../../api/print'
 import type { Product } from '../../../../shared/types/product'
 import type { FundAccount } from '../../../../shared/types/fund'
+import type { RetailCreateInput, RetailHeldCart } from '../../../../shared/types/retail'
 
 interface Line {
   product_id: number
   name: string
   unit: string
+  batch_no?: string
   rate: number
   qty: number
   price: number
 }
 
-interface Warehouse {
-  id: number
-  name: string
-}
 
 const barcodeInput = ref<HTMLInputElement | null>(null)
 const barcode = ref('')
@@ -34,11 +33,15 @@ const form = reactive({
 })
 
 const lines = ref<Line[]>([])
+const heldId = ref<number>()
+const heldCarts = ref<RetailHeldCart[]>([])
+const heldVisible = ref(false)
+const holding = ref(false)
 
 const saving = ref(false)
 
 const totalAmount = computed(() =>
-  lines.value.reduce((sum, l) => sum + l.qty * l.price * (l.rate || 1), 0)
+  lines.value.reduce((sum, l) => sum + lineAmount(l), 0)
 )
 
 const payVisible = ref(false)
@@ -48,7 +51,7 @@ const payForm = reactive({
 })
 const changeAmount = computed(() => {
   const received = Number(payForm.received ?? 0)
-  return received - totalAmount.value
+  return Number((received - Number(totalAmount.value.toFixed(2))).toFixed(2))
 })
 
 function focusBarcode(): void {
@@ -78,8 +81,17 @@ async function loadAccounts(): Promise<void> {
 }
 
 async function resolveProduct(keyword: string): Promise<Product | null> {
+  const scanned = await productApi.getByBarcode(keyword)
+  if (scanned) return scanned
   const r = await productApi.query({ page: 1, pageSize: 1, keyword })
-  return r.list[0] ?? null
+  if (r.total > 1) throw new Error('匹配到多个商品，请输入完整编码或条码')
+  const product = r.list[0]
+  if (!product) return null
+  // 商品名支持关键字，条码仅精确匹配。
+  const query = keyword.toLocaleLowerCase()
+  return product.code.toLocaleLowerCase() === query || product.name.toLocaleLowerCase().includes(query)
+    ? product
+    : null
 }
 
 async function onBarcodeEnter(): Promise<void> {
@@ -101,6 +113,10 @@ async function onBarcodeEnter(): Promise<void> {
 }
 
 function appendLine(p: Product): void {
+  if (p.id === undefined) {
+    ElMessage.error('无法识别该商品，请重新查询')
+    return
+  }
   const existing = lines.value.find((l) => l.product_id === p.id)
   if (existing) {
     existing.qty += 1
@@ -117,12 +133,97 @@ function appendLine(p: Product): void {
 }
 
 function lineAmount(l: Line): number {
-  return l.qty * l.price * (l.rate || 1)
+  return l.qty * l.price
 }
 
 function removeLine(index: number): void {
   lines.value.splice(index, 1)
   focusBarcode()
+}
+
+function cartPayload(): RetailCreateInput {
+  if (form.warehouse_id === null) throw new Error('请选择仓库')
+  return {
+    held_id: heldId.value,
+    warehouse_id: form.warehouse_id,
+    remark: form.remark || undefined,
+    items: lines.value.map(({ name: _name, ...line }) => line)
+  }
+}
+
+function clearCart(): void {
+  heldId.value = undefined
+  lines.value = []
+  form.remark = ''
+  focusBarcode()
+}
+
+async function holdCart(): Promise<void> {
+  if (holding.value || lines.value.length === 0) return
+  holding.value = true
+  try {
+    await retailApi.hold(cartPayload())
+    clearCart()
+    ElMessage.success('已挂单')
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    holding.value = false
+  }
+}
+
+async function showHeldCarts(): Promise<void> {
+  try {
+    heldCarts.value = await retailApi.listHeld()
+    heldVisible.value = true
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+async function resumeCart(cart: RetailHeldCart): Promise<void> {
+  if (lines.value.length > 0) {
+    ElMessage.warning('请先挂起或结算当前商品')
+    return
+  }
+  holding.value = true
+  try {
+    const restored = await Promise.all(cart.input.items.map(async (item) => {
+      const product = await productApi.get(item.product_id)
+      return {
+        ...item,
+        name: product ? `${product.code} ${product.name}` : `商品 #${item.product_id}`,
+        rate: item.rate ?? 1,
+        unit: item.unit ?? product?.base_unit ?? ''
+      }
+    }))
+    lines.value = restored
+    form.warehouse_id = cart.input.warehouse_id
+    form.remark = cart.input.remark ?? ''
+    heldId.value = cart.id
+    heldVisible.value = false
+    focusBarcode()
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    holding.value = false
+  }
+}
+
+async function discardCart(cart: RetailHeldCart): Promise<void> {
+  try {
+    await ElMessageBox.confirm('确定删除此挂单？', '删除挂单', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await retailApi.discardHeld(cart.id)
+    if (cart.id === heldId.value) clearCart()
+    heldCarts.value = heldCarts.value.filter((c) => c.id !== cart.id)
+    ElMessage.success('挂单已删除')
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
 }
 
 function openPay(): void {
@@ -139,30 +240,25 @@ function openPay(): void {
 }
 
 async function savePay(): Promise<void> {
+  if (saving.value) return
   if (payForm.account_id === null) {
     ElMessage.warning('请选择收款账户')
     return
   }
+  if (changeAmount.value < 0) {
+    ElMessage.warning('实收金额不足')
+    return
+  }
   saving.value = true
   try {
-    await retailApi.create({
-      warehouse_id: form.warehouse_id as number,
-      account_id: payForm.account_id,
-      remark: form.remark || undefined,
-      items: lines.value.map((l) => ({
-        product_id: l.product_id,
-        unit: l.unit,
-        rate: l.rate,
-        qty: l.qty,
-        price: l.price
-      }))
+    const doc = await retailApi.create({
+      ...cartPayload(),
+      account_id: payForm.account_id
     })
     payVisible.value = false
     lastReceiptDocId.value = doc.id
     ElMessage.success(`收款完成，合计 ¥${totalAmount.value.toFixed(2)}，找零 ¥${Math.max(changeAmount.value, 0).toFixed(2)}`)
-    lines.value = []
-    form.remark = ''
-    focusBarcode()
+    clearCart()
     void offerPrintReceipt(doc.id)
   } catch (e) {
     ElMessage.error((e as Error).message)
@@ -208,11 +304,19 @@ function fmt(n: number): string {
   return n.toFixed(2)
 }
 
+function onCashShortcut(event: KeyboardEvent): void {
+  if (event.key !== 'F2' || payVisible.value || heldVisible.value) return
+  event.preventDefault()
+  openPay()
+}
+
 onMounted(() => {
   void loadWarehouses()
   void loadAccounts()
   focusBarcode()
+  window.addEventListener('keydown', onCashShortcut)
 })
+onBeforeUnmount(() => window.removeEventListener('keydown', onCashShortcut))
 </script>
 
 <template>
@@ -266,11 +370,29 @@ onMounted(() => {
           合计：<span class="total-num">¥{{ fmt(totalAmount) }}</span>
         </div>
         <el-button type="primary" size="large" class="pay-btn" @click="openPay">收款 (F2)</el-button>
+        <el-button :disabled="lines.length === 0" :loading="holding" @click="holdCart">挂单</el-button>
+        <el-button @click="showHeldCarts">取单</el-button>
         <el-button size="large" :disabled="lastReceiptDocId === null" :loading="printingReceipt" @click="reprintReceipt">打印小票</el-button>
       </div>
     </el-card>
 
-    <el-dialog v-model="payVisible" title="收款" width="420px" @open="focusBarcode">
+    <el-dialog v-model="heldVisible" title="挂单" width="640px">
+      <el-table :data="heldCarts" empty-text="暂无挂单">
+        <el-table-column prop="updated_at" label="挂单时间" width="168" />
+        <el-table-column prop="input.remark" label="备注" min-width="120" />
+        <el-table-column label="商品行数" width="95">
+          <template #default="{ row }">{{ row.input.items.length }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="126">
+          <template #default="{ row }">
+            <el-button link type="primary" :disabled="holding" @click="resumeCart(row)">取单</el-button>
+            <el-button link type="danger" :disabled="holding" @click="discardCart(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
+
+    <el-dialog v-model="payVisible" title="收款" width="420px">
       <el-form label-width="90px">
         <el-form-item label="合计金额">
           <span class="pay-total">¥{{ fmt(totalAmount) }}</span>
@@ -332,7 +454,7 @@ onMounted(() => {
 .total-num {
   font-size: 28px;
   font-weight: 700;
-  color: #e6722e;
+  color: var(--el-color-primary);
 }
 .pay-btn {
   min-width: 130px;
@@ -347,6 +469,6 @@ onMounted(() => {
 }
 .change.neg,
 .neg-tip {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 </style>

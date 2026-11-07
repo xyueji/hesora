@@ -21,10 +21,6 @@ interface Line {
   price: number | null
 }
 
-interface Warehouse {
-  id: number
-  name: string
-}
 
 const router = useRouter()
 
@@ -52,10 +48,7 @@ function emptyLine(): Line {
 const saving = ref(false)
 
 const totalAmount = computed(() =>
-  lines.value.reduce((sum, l) => {
-    const rate = l.rate || 1
-    return sum + (l.qty ?? 0) * (l.price ?? 0) * rate
-  }, 0)
+  lines.value.reduce((sum, l) => sum + lineAmount(l), 0)
 )
 
 async function searchSuppliers(keyword: string): Promise<void> {
@@ -80,18 +73,16 @@ async function loadWarehouses(): Promise<void> {
   }
 }
 
-async function searchProducts(keyword: string, line: Line): Promise<void> {
+async function searchProducts(keyword: string): Promise<void> {
   try {
     const r = await productApi.query({ page: 1, pageSize: 50, keyword: keyword || undefined })
     productOptions.value = r.list
-    currentLine = line
   } catch {
     /* 静默 */
   }
 }
 
 const productOptions = ref<Product[]>([])
-let currentLine: Line | null = null
 
 function onProductSelect(line: Line): void {
   const p = productOptions.value.find((x) => x.id === line.product_id)
@@ -109,13 +100,14 @@ function onProductSelect(line: Line): void {
 }
 
 function lineAmount(l: Line): number {
-  const rate = l.rate || 1
-  return (l.qty ?? 0) * (l.price ?? 0) * rate
+  return (l.qty ?? 0) * (l.price ?? 0)
 }
 
 function onUnitChange(line: Line): void {
   const u = line.unitOptions.find((x) => x.unit === line.unit)
-  line.rate = u?.rate ?? 1
+  const rate = u?.rate ?? 1
+  if (line.price !== null) line.price = (line.price / line.rate) * rate
+  line.rate = rate
 }
 
 function addLine(): void {
@@ -218,10 +210,10 @@ void loadWarehouses()
               v-model="row.product_id"
               filterable
               remote
-              :remote-method="(kw: string) => searchProducts(kw, row)"
+              :remote-method="(kw: string) => searchProducts(kw)"
               :loading="false"
               placeholder="搜索商品"
-              @focus="searchProducts('', row)"
+              @focus="searchProducts('')"
               @change="onProductSelect(row)"
               style="width: 100%"
             >

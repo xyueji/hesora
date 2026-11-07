@@ -4,7 +4,9 @@ import { ElMessage } from 'element-plus'
 import { inventoryApi } from '../../api/inventory'
 import { csvApi } from '../../api/csv'
 import { warehouseApi } from '../../api/warehouse'
-import type { StockItem } from '../../../../shared/types/inventory'
+import { hasPermission } from '../../stores/auth'
+import { DOC_TYPE_LABELS, type DocType } from '../../../../shared/types/doc'
+import type { CostLogRow, StockItem } from '../../../../shared/types/inventory'
 import type { Warehouse } from '../../../../shared/types/warehouse'
 
 const keyword = ref('')
@@ -15,6 +17,26 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const warehouses = ref<Warehouse[]>([])
+const canViewCost = computed(() => hasPermission('report.business'))
+const ledgerVisible = ref(false)
+const ledgerTitle = ref('')
+const ledgerRows = ref<CostLogRow[]>([])
+
+async function showLedger(item: StockItem): Promise<void> {
+  try {
+    const rows = await inventoryApi.listCostLogs(item.product_id)
+    ledgerRows.value = rows.filter((row) => row.warehouse_id === item.warehouse_id && row.batch_no === item.batch_no).reverse()
+    ledgerTitle.value = [item.product_name, item.warehouse_name, item.batch_no].filter(Boolean).join(' · ')
+    ledgerVisible.value = true
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+function sourceLabel(source: string | null): string {
+  if (source === 'opening') return '期初'
+  return DOC_TYPE_LABELS[source as DocType] ?? (source || '—')
+}
 
 const sumQty = computed(() => items.value.reduce((s, i) => s + i.qty, 0))
 const sumAmount = computed(() => items.value.reduce((s, i) => s + i.amount, 0))
@@ -111,7 +133,7 @@ onMounted(async () => {
         </div>
       </div>
 
-      <el-table :data="items" v-loading="loading" border show-summary :summary-method="() => ['', '合计', '', '', '', '', '', sumQty, '', sumAmount]">
+      <el-table :data="items" v-loading="loading" border show-summary :summary-method="() => ['', '本页合计', '', '', '', '', sumQty, '', sumAmount]">
         <el-table-column prop="product_code" label="商品编码" min-width="110" />
         <el-table-column prop="product_name" label="商品名称" min-width="140" />
         <el-table-column prop="spec" label="规格" min-width="120" />
@@ -119,8 +141,13 @@ onMounted(async () => {
         <el-table-column prop="warehouse_name" label="仓库" min-width="100" />
         <el-table-column prop="batch_no" label="批次" min-width="100" />
         <el-table-column prop="qty" label="库存数量" align="right" width="100" />
-        <el-table-column prop="moving_cost" label="成本单价" align="right" width="100" />
-        <el-table-column prop="amount" label="库存金额" align="right" width="110" />
+        <el-table-column v-if="canViewCost" prop="moving_cost" label="成本单价" align="right" width="100" />
+        <el-table-column v-if="canViewCost" prop="amount" label="库存金额" align="right" width="110" />
+        <el-table-column v-if="canViewCost" label="操作" width="105" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="showLedger(row)">成本流水</el-button>
+          </template>
+        </el-table-column>
       </el-table>
 
       <div class="pager">
@@ -135,6 +162,19 @@ onMounted(async () => {
         />
       </div>
     </el-card>
+    <el-dialog v-model="ledgerVisible" :title="ledgerTitle" width="850px">
+      <el-table :data="ledgerRows" max-height="480" empty-text="暂无成本流水">
+        <el-table-column prop="created_at" label="时间" width="170" />
+        <el-table-column label="来源" min-width="110">
+          <template #default="{ row }">{{ sourceLabel(row.source) }}</template>
+        </el-table-column>
+        <el-table-column prop="source_id" label="单据 ID" width="80" />
+        <el-table-column prop="change_qty" label="变动数量" width="96" align="right" />
+        <el-table-column prop="unit_cost" label="变动单位成本" width="116" align="right" />
+        <el-table-column prop="after_qty" label="结存数量" width="96" align="right" />
+        <el-table-column prop="after_cost" label="结存单位成本" width="116" align="right" />
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 

@@ -13,3 +13,8 @@ export interface OpeningPayload {
   suppliers: OpeningSupplierLine[]
 }
 export interface OpeningStatus { done: boolean }
+
+export interface OpeningStockPreview {
+  lines: Array<Omit<OpeningInventoryLine, 'warehouse_id'> & { row: number; product_code: string; product_name: string }>
+  errors: Array<{ row: number; message: string }>
+}

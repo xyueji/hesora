@@ -260,6 +260,15 @@ export function createProductService(db: DB) {
 
     getById,
 
+    getByBarcode(barcode: string): Product | null {
+      const row = db.prepare(`
+        SELECT p.id
+        FROM product_barcode b JOIN product p ON p.id = b.product_id
+        WHERE b.barcode = ? AND p.disabled = 0
+      `).get(barcode.trim()) as { id: number } | undefined
+      return row ? getById(row.id) : null
+    },
+
     disable(id: number): void {
       db.prepare("UPDATE product SET disabled = 1, updated_at = datetime('now','localtime') WHERE id = ?").run(id)
     },

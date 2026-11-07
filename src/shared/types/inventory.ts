@@ -54,4 +54,5 @@ export interface CostLogRow {
   after_cost: number
   source: string | null
   source_id: number | null
+  created_at: string
 }

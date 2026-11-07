@@ -46,6 +46,59 @@ describe('retail.service', () => {
     })
   }
 
+  function cashier(name: string): number {
+    return Number(ctx.db.prepare('INSERT INTO user (username, password_hash) VALUES (?, ?)').run(name, 'test').lastInsertRowid)
+  }
+
+  it('persists a held cart without posting and isolates it by operator', () => {
+    const owner = cashier('owner')
+    const another = cashier('another')
+    const input = {
+      warehouse_id: ctx.whId,
+      items: [{ product_id: ctx.productId, qty: 2, price: 3 }]
+    }
+    const id = ctx.retailService.hold(owner, input)
+    expect(ctx.retailService.listHeld(another)).toEqual([])
+    expect(createRetailService(ctx.db).listHeld(owner)).toMatchObject([{ id, input }])
+    expect(ctx.retailService.query({ page: 1, pageSize: 10 }).total).toBe(0)
+    expect(ctx.inventoryService.getByProduct(ctx.productId)).toEqual([])
+  })
+
+  it('consumes a held cart only after a successful checkout', () => {
+    const owner = cashier('owner')
+    const another = cashier('another')
+    const input = {
+      warehouse_id: ctx.whId,
+      account_id: ctx.accountId,
+      items: [{ product_id: ctx.productId, qty: 2, price: 3 }]
+    }
+    const id = ctx.retailService.hold(owner, input)
+    expect(() => ctx.retailService.create({ ...input, held_id: id }, owner)).toThrow(/库存不足/)
+    expect(ctx.retailService.listHeld(owner)).toHaveLength(1)
+    stockUp()
+    expect(() => ctx.retailService.create({ ...input, held_id: id }, another)).toThrow(/挂单/)
+    const posted = ctx.retailService.create({ ...input, held_id: id }, owner)
+    expect(posted.total_amount).toBe(6)
+    expect(ctx.retailService.listHeld(owner)).toHaveLength(0)
+    expect(() => ctx.retailService.create({ ...input, held_id: id }, owner)).toThrow(/挂单/)
+    expect(ctx.retailService.query({ page: 1, pageSize: 10 }).total).toBe(1)
+  })
+
+  it('updates a resumed cart and allows only its owner to discard it', () => {
+    const owner = cashier('owner')
+    const another = cashier('another')
+    const input = {
+      warehouse_id: ctx.whId,
+      items: [{ product_id: ctx.productId, qty: 1, price: 3 }]
+    }
+    const id = ctx.retailService.hold(owner, input)
+    expect(ctx.retailService.hold(owner, { ...input, held_id: id, remark: '修改' })).toBe(id)
+    expect(ctx.retailService.listHeld(owner)).toMatchObject([{ id, input: { remark: '修改' } }])
+    expect(() => ctx.retailService.discardHeld(another, id)).toThrow(/挂单/)
+    ctx.retailService.discardHeld(owner, id)
+    expect(ctx.retailService.listHeld(owner)).toHaveLength(0)
+  })
+
   it('create after purchase: stock reduced by qty*rate, doc status done', () => {
     stockUp(10, 1, 2) // 库存 10
     const doc = ctx.retailService.create({

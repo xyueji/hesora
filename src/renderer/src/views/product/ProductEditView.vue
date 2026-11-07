@@ -117,7 +117,7 @@ async function load(): Promise<void> {
     bomRows.value = (p.bom ?? []).map((b) => ({ product_id: b.product_id, product: null, qty: b.qty }))
     for (const row of bomRows.value) {
       try {
-        row.product = await productApi.get(row.product_id)
+        if (row.product_id !== null) row.product = await productApi.get(row.product_id)
       } catch {
         row.product = null
       }

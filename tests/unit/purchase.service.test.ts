@@ -51,7 +51,7 @@ describe('purchase.service', () => {
     ctx = setup()
   })
 
-  it('create: doc no starts with CG, status done, total = Σ qty*price*rate', () => {
+  it('create: doc no starts with CG, status done, total uses the entered unit price', () => {
     const doc = ctx.purchaseService.create({
       supplier_id: ctx.supplierId,
       warehouse_id: ctx.whId,
@@ -59,7 +59,7 @@ describe('purchase.service', () => {
     })
     expect(doc.no).toMatch(/^CG\d{8}\d{4}$/)
     expect(doc.status).toBe('done')
-    expect(doc.total_amount).toBeCloseTo(10 * 24 * 12)
+    expect(doc.total_amount).toBeCloseTo(10 * 24)
     expect(doc.warehouse_id).toBe(ctx.whId)
     expect(doc.partner_id).toBe(ctx.supplierId)
   })

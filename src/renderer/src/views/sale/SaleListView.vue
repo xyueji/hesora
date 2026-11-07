@@ -8,7 +8,6 @@ import { customerApi } from '../../api/customer'
 import { productApi } from '../../api/product'
 import type { DocRow, DocItemRow } from '../../../../shared/types/doc'
 import type { Customer } from '../../../../shared/types/customer'
-import type { Product } from '../../../../shared/types/product'
 
 const keyword = ref('')
 const dateRange = ref<[string, string] | null>(null)

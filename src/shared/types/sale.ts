@@ -15,6 +15,11 @@ export interface SaleCreateInput {
   items: SaleItemInput[]
 }
 
+export interface SaleReturnInput extends SaleCreateInput {
+  account_id?: number
+  source_doc_id?: number
+}
+
 export interface SaleQuery {
   date_from?: string
   date_to?: string

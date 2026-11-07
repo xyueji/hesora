@@ -4,13 +4,14 @@ export type PermissionKey =
   | 'customer.view' | 'customer.edit'
   | 'supplier.view' | 'supplier.edit'
   | 'warehouse.view' | 'warehouse.edit'
-  | 'fund.view' | 'fund.edit'
+  | 'fund.view' | 'fund.edit' | 'fund.ledger' | 'fund.transfer'
   | 'inventory.view' | 'inventory.adjust' | 'inventory.assemble'
   | 'doc.purchase' | 'doc.sale' | 'doc.retail' | 'doc.return' | 'doc.payment' | 'doc.viewAll'
-  | 'report.arrears' | 'report.dashboard' | 'report.docSearch' | 'report.stock'
+  | 'doc.workflow' | 'doc.approve' | 'doc.print'
+  | 'report.cost' | 'report.arrears' | 'report.dashboard' | 'report.docSearch' | 'report.stock' | 'report.business'
   | 'data.import' | 'data.export' | 'data.backup' | 'data.sync'
   | 'opening.edit'
-  | 'system.setting' | 'system.user'
+  | 'system.setting' | 'system.user' | 'system.role'
 
 export const PERMISSIONS: Record<PermissionKey, string> = {
   'product.view': '查看商品',
@@ -23,6 +24,8 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   'warehouse.edit': '编辑仓库',
   'fund.view': '查看资金账户',
   'fund.edit': '编辑资金账户',
+  'fund.ledger': '查看资金余额与流水',
+  'fund.transfer': '账户间转账',
   'inventory.view': '查看库存',
   'inventory.adjust': '库存调整（调拨/盘点）',
   'inventory.assemble': '组装拆卸',
@@ -32,33 +35,41 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   'doc.return': '退货单据',
   'doc.payment': '收付款单据',
   'doc.viewAll': '单据查询',
+  'doc.workflow': '管理报价、订单与草稿',
+  'doc.approve': '审核与过账',
+  'doc.print': '打印单据',
+  'report.cost': '查看成本与利润',
   'report.arrears': '应收应付报表',
   'report.dashboard': '首页看板',
   'report.docSearch': '单据搜索',
   'report.stock': '库存报表',
+  'report.business': '经营报表',
   'data.import': '数据导入',
   'data.export': '数据导出',
   'data.backup': '备份恢复',
   'data.sync': '云盘同步',
   'opening.edit': '期初建账',
   'system.setting': '系统设置',
-  'system.user': '用户管理'
+  'system.user': '用户管理',
+  'system.role': '角色权限管理'
 }
 
 export const ALL_PERMISSIONS = Object.keys(PERMISSIONS) as PermissionKey[]
 
-// 收银员：看板 + 开单（零售/销售/退货/收付款）+ 基础查看
+// 收银员：开单、打印及选择开单所需的基础档案。
 export const CASHIER_PRESET: PermissionKey[] = [
   'report.dashboard',
   'product.view',
   'customer.view',
   'customer.edit',
+  'warehouse.view',
+  'fund.view',
   'inventory.view',
   'report.stock',
   'doc.sale',
+  'doc.print',
+  'doc.workflow',
   'doc.retail',
-  'doc.return',
-  'doc.payment',
   'doc.viewAll',
   'report.docSearch'
 ]
@@ -68,7 +79,36 @@ export const ROLE_PRESETS: Record<'admin' | 'cashier', PermissionKey[]> = {
   cashier: CASHIER_PRESET
 }
 
-export function roleHas(role: 'admin' | 'cashier', perm: PermissionKey): boolean {
+export const ADMIN_ONLY_PERMISSIONS: readonly PermissionKey[] = ['system.user', 'system.role']
+
+export interface AccessRole {
+  id: string
+  name: string
+  permissions: PermissionKey[]
+  builtin: boolean
+}
+
+export interface RoleInput {
+  name: string
+  permissions: PermissionKey[]
+}
+
+export interface SessionUser {
+  id: number
+  username: string
+  role: string
+  roleName?: string
+  permissions?: PermissionKey[]
+}
+
+export function isPermissionKey(value: unknown): value is PermissionKey {
+  return typeof value === 'string' && Object.hasOwn(PERMISSIONS, value)
+}
+
+export function roleHas(role: string, perm: PermissionKey, permissions?: readonly PermissionKey[]): boolean {
+  if (!isPermissionKey(perm)) return false
   if (role === 'admin') return true
-  return ROLE_PRESETS.cashier.includes(perm)
+  if (ADMIN_ONLY_PERMISSIONS.includes(perm)) return false
+  if (role === 'cashier') return CASHIER_PRESET.includes(perm)
+  return permissions?.includes(perm) ?? false
 }

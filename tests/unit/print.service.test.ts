@@ -8,6 +8,7 @@ import { createFundService } from '../../src/main/services/fund/fund.service'
 import { createCustomerService } from '../../src/main/services/customer/customer.service'
 import { createSupplierService } from '../../src/main/services/supplier/supplier.service'
 import { createPurchaseService } from '../../src/main/services/purchase/purchase.service'
+import { createStocktakeService } from '../../src/main/services/stocktake/stocktake.service'
 import { BizError } from '../../src/shared/result'
 import { renderReceiptHtml, renderA4Html } from '../../src/shared/print/templates'
 import type { DB } from '../../src/main/services/doc/doc.service'
@@ -64,6 +65,20 @@ describe('print.service', () => {
     ctx = setup()
   })
 
+  it('prints a configured 80 mm receipt with product spec and escaped footer', () => {
+    ctx.db.prepare('UPDATE product SET spec = ? WHERE id = ?').run('330 mL', ctx.productId)
+    ctx.db.prepare("INSERT INTO app_setting (key, value) VALUES ('print.receipt_width', '80'), ('print.receipt_footer', '<自定义>')").run()
+    ctx.purchaseService.create({ warehouse_id: ctx.whId, items: [{ product_id: ctx.productId, qty: 5, price: 2 }] })
+    const doc = ctx.retailService.create({ warehouse_id: ctx.whId, items: [{ product_id: ctx.productId, qty: 1, price: 3 }] })
+    const data = ctx.printService.receiptData(doc.id)
+    expect(data.items[0]?.spec).toBe('330 mL')
+    expect(data.widthMm).toBe(80)
+    const html = renderReceiptHtml(data)
+    expect(html).toContain('80mm')
+    expect(html).toContain('330 mL')
+    expect(html).toContain('&lt;自定义&gt;')
+  })
+
   it('receiptData returns shop header, items, total, payment method for retail doc', () => {
     ctx.db
       .prepare("INSERT INTO app_setting (key, value) VALUES ('shop.name', '我的小店')")
@@ -92,7 +107,7 @@ describe('print.service', () => {
     expect(data.footer).toBe('谢谢惠顾')
   })
 
-  it('receiptData falls back to 智销进销存 when no shop settings', () => {
+  it('receiptData falls back to 禾序进销存 when no shop settings', () => {
     ctx.purchaseService.create({
       warehouse_id: ctx.whId,
       items: [{ product_id: ctx.productId, rate: 1, qty: 10, price: 2 }]
@@ -102,7 +117,7 @@ describe('print.service', () => {
       items: [{ product_id: ctx.productId, qty: 1, price: 3 }]
     })
     const data = ctx.printService.receiptData(doc.id)
-    expect(data.shopName).toBe('智销进销存')
+    expect(data.shopName).toBe('禾序进销存')
     expect(data.paymentMethod).toBe('')
   })
 
@@ -118,7 +133,7 @@ describe('print.service', () => {
     })
     const data = svc.a4Data(doc.id)
     expect(data.title).toBe('采购单')
-    expect(data.shopName).toBe('智销进销存')
+    expect(data.shopName).toBe('禾序进销存')
     expect(data.partnerName).toBe('李四供应商')
     expect(data.warehouseName).toBe('主仓')
     expect(data.docNo).toBe(doc.no)
@@ -161,6 +176,17 @@ describe('print.service', () => {
     expect(html).toContain('10.00')
     expect(html).toContain('打货人')
     expect(html).toContain('收货人')
+  })
+
+  it('prints stocktake book and counted quantities with a signed difference', () => {
+    ctx.purchaseService.create({ warehouse_id: ctx.whId, items: [{ product_id: ctx.productId, qty: 10, price: 2 }] })
+    const doc = createStocktakeService(ctx.db).create({ warehouse_id: ctx.whId, items: [{ product_id: ctx.productId, actual_qty: 7 }] })
+    const html = renderA4Html(ctx.printService.a4Data(doc.id))
+    expect(html).toContain('账面数量')
+    expect(html).toContain('实盘数量')
+    expect(html).toContain('10.00')
+    expect(html).toContain('7.00')
+    expect(html).toContain('-3.00')
   })
 
   it('unknown doc id throws NOT_FOUND', () => {

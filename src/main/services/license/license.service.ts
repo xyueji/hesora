@@ -1,106 +1,139 @@
 import type { Database } from 'better-sqlite3'
-import { verify } from 'node:crypto'
+import { randomUUID, verify } from 'node:crypto'
 import { BizError } from '../../../shared/result'
-import { LICENSE_PUBLIC_KEY, LICENSE_CODE_PREFIX, TRIAL_DAYS, type LicensePayload } from '../../../shared/license'
-
-export type DB = Database
+import { LICENSE_CODE_PREFIX, TRIAL_DAYS, type LicensePayload } from '../../../shared/license'
 
 export interface LicenseStatus {
   mode: 'trial' | 'licensed'
   daysLeft?: number
   activatedAt?: string
   customer?: string
-}
-
-interface SettingRow {
-  key: string
-  value: string
+  onlineAvailable?: boolean
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000
+const ROLLBACK_TOLERANCE_MS = 5 * 60 * 1000
+const ROLLBACK_LIMIT = 3
 
 function parseCode(code: string, publicKeyPem: string): LicensePayload | null {
-  if (typeof code !== 'string' || !code.startsWith(LICENSE_CODE_PREFIX)) return null
+  if (!publicKeyPem || !code.startsWith(LICENSE_CODE_PREFIX) || code.length > 16384) return null
   const parts = code.slice(LICENSE_CODE_PREFIX.length).split('.')
-  if (parts.length !== 2) return null
-  const [bodyB64, sigB64] = parts
-  let canonical: string
-  let sig: Buffer
+  const [body, signature] = parts
+  if (parts.length !== 2 || !body || !signature) return null
   try {
-    canonical = Buffer.from(bodyB64 as string, 'base64url').toString('utf8')
-    sig = Buffer.from(sigB64 as string, 'base64url')
+    const canonical = Buffer.from(body, 'base64url')
+    if (!verify(null, canonical, publicKeyPem, Buffer.from(signature, 'base64url'))) return null
+    const obj = JSON.parse(canonical.toString('utf8')) as Partial<LicensePayload>
+    if (typeof obj.customer !== 'string' || !obj.customer.trim() || typeof obj.issuedAt !== 'string' ||
+        !Number.isFinite(Date.parse(obj.issuedAt)) ||
+        (obj.expiresAt != null && (typeof obj.expiresAt !== 'string' || !Number.isFinite(Date.parse(obj.expiresAt)))) ||
+        (obj.machine != null && (typeof obj.machine !== 'string' || !obj.machine.trim()))) return null
+    return { customer: obj.customer, issuedAt: obj.issuedAt, expiresAt: obj.expiresAt ?? null, machine: obj.machine ?? null }
   } catch {
     return null
   }
-  let payload: LicensePayload
-  try {
-    const obj = JSON.parse(canonical) as Partial<LicensePayload>
-    if (typeof obj.customer !== 'string' || typeof obj.issuedAt !== 'string') return null
-    payload = {
-      customer: obj.customer,
-      issuedAt: obj.issuedAt,
-      expiresAt: obj.expiresAt ?? null,
-      machine: obj.machine ?? null
-    }
-  } catch {
-    return null
-  }
-  const ok = verify(null, Buffer.from(canonical, 'utf8'), publicKeyPem, sig)
-  return ok ? payload : null
 }
 
-export function createLicenseService(db: DB, publicKeyPem: string = LICENSE_PUBLIC_KEY) {
-  function verifyFormat(code: string): LicensePayload | null {
-    return parseCode(code, publicKeyPem)
-  }
+interface LicenseOptions {
+  now?: () => number
+  machine?: () => string | undefined
+  activationUrl?: string
+  fetchImpl?: typeof fetch
+}
 
-  function setSetting(key: string, value: string): void {
-    db.prepare('INSERT OR REPLACE INTO app_setting (key, value) VALUES (?, ?)').run(key, value)
-  }
-  function getSetting(key: string): string | null {
-    const row = db.prepare('SELECT value FROM app_setting WHERE key = ?').get(key) as
-      | SettingRow
-      | undefined
-    return row ? row.value : null
+export function createLicenseService(db: Database, publicKeyPem = '', options: LicenseOptions = {}) {
+  const now = options.now ?? Date.now
+  let rollbackActive = false
+  const read = db.prepare('SELECT value FROM app_setting WHERE key = ?').pluck()
+  const write = db.prepare('INSERT OR REPLACE INTO app_setting (key, value) VALUES (?, ?)')
+  const get = (key: string) => read.get(`license.${key}`) as string | undefined
+  const set = (key: string, value: string) => write.run(`license.${key}`, value)
+  const verifyFormat = (code: string) => parseCode(code, publicKeyPem)
+
+  const observeClock = db.transaction(() => {
+    const time = now()
+    if (!get('install_id')) set('install_id', randomUUID())
+    if (!get('start')) set('start', new Date(time).toISOString())
+    const start = Date.parse(get('start') ?? '')
+    const previous = Number(get('last_seen')) || start || time
+    const effectiveTime = Math.max(time, previous)
+    let rollbacks = Number(get('rollback_count')) || 0
+    if (time < previous - ROLLBACK_TOLERANCE_MS) {
+      if (!rollbackActive) {
+        rollbacks++
+        set('rollback_count', String(rollbacks))
+        rollbackActive = true
+      }
+    } else if (time >= previous) {
+      rollbackActive = false
+    }
+    // Bound write amplification because the IPC guard checks every request.
+    if (!get('last_seen') || effectiveTime - previous >= 60_000) set('last_seen', String(effectiveTime))
+    return { effectiveTime, start, rollbacks }
+  })
+
+  function invalidReason(payload: LicensePayload, time: number): string | undefined {
+    if (payload.expiresAt && Date.parse(payload.expiresAt) <= time) return '授权已过期'
+    if (payload.machine && payload.machine !== options.machine?.()) return '激活码与本机设备不匹配'
+    return undefined
   }
 
   function getStatus(): LicenseStatus {
-    const stored = getSetting('license.code')
-    if (stored) {
-      const payload = verifyFormat(stored)
-      if (payload) {
-        return {
-          mode: 'licensed',
-          activatedAt: getSetting('license.activated_at') ?? undefined,
-          customer: payload.customer
-        }
-      }
-      // stored code invalid (db tampered) → fall through to trial
+    const { effectiveTime, start, rollbacks } = observeClock()
+    const payload = verifyFormat(get('code') ?? '')
+    if (payload && !invalidReason(payload, effectiveTime)) {
+      return { mode: 'licensed', activatedAt: get('activated_at'), customer: payload.customer }
     }
-    // trial start on first check
-    let start = getSetting('license.start')
-    if (!start) {
-      start = new Date().toISOString()
-      setSetting('license.start', start)
-    }
-    const elapsedDays = Math.floor((Date.now() - new Date(start).getTime()) / DAY_MS)
-    return { mode: 'trial', daysLeft: Math.max(0, TRIAL_DAYS - elapsedDays) }
+    const elapsed = Math.max(0, Math.floor((effectiveTime - start) / DAY_MS))
+    const daysLeft = rollbacks >= ROLLBACK_LIMIT || !Number.isFinite(start) ? 0 : Math.max(0, TRIAL_DAYS - elapsed)
+    return { mode: 'trial', daysLeft, onlineAvailable: Boolean(options.activationUrl && publicKeyPem) }
   }
 
   function activate(code: string): LicensePayload {
+    if (!publicKeyPem) throw new BizError('LICENSE_INVALID', '软件尚未配置授权公钥')
     const payload = verifyFormat(code)
     if (!payload) throw new BizError('LICENSE_INVALID', '激活码无效')
-    setSetting('license.code', code)
-    setSetting('license.activated_at', new Date().toISOString())
+    const { effectiveTime } = observeClock()
+    const reason = invalidReason(payload, effectiveTime)
+    if (reason) throw new BizError('LICENSE_INVALID', reason)
+    db.transaction(() => {
+      set('code', code)
+      set('activated_at', new Date(effectiveTime).toISOString())
+    })()
     return payload
   }
 
-  // test seam: simulate direct db tampering of the stored code
-  function _testSetStoredCode(code: string): void {
-    setSetting('license.code', code)
+  async function activateOnline(code: string): Promise<LicensePayload> {
+    if (!options.activationUrl || !publicKeyPem) throw new BizError('LICENSE_INVALID', '软件尚未配置在线激活')
+    if (!code || code.length > 256) throw new BizError('LICENSE_INVALID', '请输入有效的兑换码')
+    const machine = options.machine?.()
+    if (!machine) throw new BizError('LICENSE_INVALID', '无法获取本机设备信息')
+    let token: unknown
+    try {
+      const url = new URL(options.activationUrl)
+      if (url.protocol !== 'https:' || url.username || url.password) throw new Error('invalid activation URL')
+      const response = await (options.fetchImpl ?? fetch)(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, machine }),
+        signal: AbortSignal.timeout(10_000),
+        redirect: 'error'
+      })
+      if (response.status === 409) throw new BizError('LICENSE_INVALID', '兑换码已绑定其他设备，请联系供应商解绑')
+      if (response.status === 404 || response.status === 400) throw new BizError('LICENSE_INVALID', '兑换码无效或已过期')
+      if (!response.ok) throw new Error('activation unavailable')
+      token = (await response.json() as { code?: unknown }).code
+    } catch (e) {
+      if (e instanceof BizError) throw e
+      throw new BizError('LICENSE_INVALID', '无法连接激活服务，请稍后重试')
+    }
+    if (typeof token !== 'string' || verifyFormat(token)?.machine !== machine) {
+      throw new BizError('LICENSE_INVALID', '服务器未返回本机设备的有效授权')
+    }
+    return activate(token)
   }
 
-  return { verifyFormat, getStatus, activate, _testSetStoredCode }
+  return { verifyFormat, getStatus, activate, activateOnline }
 }
 
 export type LicenseService = ReturnType<typeof createLicenseService>

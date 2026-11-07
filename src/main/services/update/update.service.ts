@@ -43,7 +43,7 @@ export function createUpdateService(options: {
   updateUrl: string
   fetchImpl?: FetchLike
 }) {
-  const fetchImpl: FetchLike = options.fetchImpl ?? ((u: string) => fetch(u) as Promise<FetchLikeResponse>)
+  const fetchImpl: FetchLike = options.fetchImpl ?? ((u: string) => fetch(u, { signal: AbortSignal.timeout(10000), redirect: "error" }))
 
   async function check(): Promise<UpdateCheckResult> {
     try {
@@ -57,11 +57,17 @@ export function createUpdateService(options: {
         return { hasUpdate: false }
       }
       if (!info || typeof info.version !== 'string') return { hasUpdate: false }
+      if (!/^\d+(?:\.\d+){1,3}$/.test(info.version)) return { hasUpdate: false }
+      if (info.url !== undefined) {
+        if (typeof info.url !== "string") return { hasUpdate: false }
+        const download = new URL(info.url)
+        if (download.protocol !== "https:" || download.username || download.password) return { hasUpdate: false }
+      }
       if (!isNewerVersion(info.version, options.currentVersion)) return { hasUpdate: false }
       return {
         hasUpdate: true,
         latestVersion: info.version,
-        notes: info.notes,
+        notes: typeof info.notes === "string" ? info.notes : undefined,
         downloadUrl: info.url
       }
     } catch {

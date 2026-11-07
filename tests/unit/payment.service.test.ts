@@ -104,4 +104,15 @@ describe('payment.service', () => {
       docService.create({ type: 'purchase', warehouse_id: 1, items: [] })
     ).toThrowError(/明细不能为空/)
   })
+
+  it.each([
+    ['other_in', 'in'],
+    ['other_out', 'out']
+  ] as const)('posts %s to cash only', (type, direction) => {
+    const doc = ctx.paymentService.createOne(type, { account_id: ctx.accountId, amount: 15 })
+    expect(doc).toMatchObject({ type, account_id: ctx.accountId, total_amount: 15, partner_id: null })
+    const detail = ctx.paymentService.getDetail(type, doc.id)
+    expect(detail.flow).toMatchObject({ direction, amount: 15, doc_type: type })
+    expect(ctx.paymentService.query(type, { page: 1, pageSize: 20 }).items).toHaveLength(1)
+  })
 })

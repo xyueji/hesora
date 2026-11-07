@@ -1,13 +1,5 @@
 import { sign } from 'node:crypto'
 
-// Ed25519 public key embedded in the app. The matching private key lives in
-// tools/activation-server/private.pem (activation server / gen CLI only).
-// NOTE: private key is committed to the repo for now (dev convenience) — must be
-// removed before release builds.
-export const LICENSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAz7Th3fNP37RnbhW7o7yieZWW1GLW1Qyw0BF0ohBYDME=
------END PUBLIC KEY-----`
-
 export interface LicensePayload {
   customer: string
   issuedAt: string

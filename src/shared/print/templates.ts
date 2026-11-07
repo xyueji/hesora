@@ -3,6 +3,7 @@
 
 export interface ReceiptItemPrintRow {
   name: string
+  spec?: string
   unit: string
   qty: number
   price: number
@@ -10,6 +11,7 @@ export interface ReceiptItemPrintRow {
 }
 
 export interface ReceiptPrintData {
+  widthMm?: 58 | 80
   shopName: string
   docNo: string
   date: string
@@ -20,22 +22,23 @@ export interface ReceiptPrintData {
   footer: string
 }
 
-export interface A4ItemPrintRow {
-  name: string
-  unit: string
-  qty: number
-  price: number
-  amount: number
-}
-
 export interface A4PrintData {
   title: string
   shopName: string
   partnerName: string
   warehouseName: string
+  warehouseInName?: string
   docNo: string
   date: string
-  items: A4ItemPrintRow[]
+  items: ReceiptItemPrintRow[]
+  stocktakeItems?: Array<{
+    name: string
+    spec: string
+    unit: string
+    bookQty: number
+    actualQty: number
+    difference: number
+  }>
   total: number
   remark: string
   printDate: string
@@ -60,10 +63,11 @@ function esc(s: string | null | undefined): string {
 
 /** 58mm 热敏小票：等宽字体、窄边距、明细逐行"名称 数量x单价 金额"。 */
 export function renderReceiptHtml(data: ReceiptPrintData): string {
+  const width = data.widthMm === 80 ? 80 : 58
   const rows = data.items
     .map(
       (it) => `<tr>
-  <td colspan="2">${esc(it.name)}</td>
+  <td colspan="2">${esc(it.name)} ${esc(it.spec)}</td>
 </tr>
 <tr>
   <td>${esc(it.unit)} ${fmt(it.qty)} x ${fmt(it.price)}</td>
@@ -80,7 +84,7 @@ export function renderReceiptHtml(data: ReceiptPrintData): string {
 <title>${esc(data.docNo)}</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { width: 58mm; font-family: 'Courier New', monospace, sans-serif; font-size: 11px; color: #000; }
+  body { width: ${width}mm; max-width: 100%; padding: 0 3mm; font-family: 'Courier New', monospace, sans-serif; font-size: 11px; color: #000; }
   h1 { font-size: 15px; text-align: center; margin-bottom: 4px; }
   .meta, .line { line-height: 1.5; }
   hr { border: none; border-top: 1px dashed #000; margin: 4px 0; }
@@ -89,7 +93,7 @@ export function renderReceiptHtml(data: ReceiptPrintData): string {
   td.r { text-align: right; }
   .total { font-size: 14px; font-weight: bold; text-align: right; }
   .footer { text-align: center; margin-top: 8px; }
-  @page { margin: 0 3mm; }
+  @page { margin: 0; }
 </style>
 </head>
 <body>
@@ -111,18 +115,17 @@ ${remarkLine}
 
 /** A4 单据：表格式明细 + 头部信息 + 打货人/收货人签字行。 */
 export function renderA4Html(data: A4PrintData): string {
-  const rows = data.items
-    .map(
-      (it, i) => `<tr>
+  const rows = (data.stocktakeItems ?? data.items).map((it, i) => {
+    const numbers = 'bookQty' in it ? [it.bookQty, it.actualQty, it.difference] : [it.qty, it.price, it.amount]
+    return `<tr>
   <td>${i + 1}</td>
   <td>${esc(it.name)}</td>
+  <td>${esc(it.spec)}</td>
   <td>${esc(it.unit)}</td>
-  <td class="r">${fmt(it.qty)}</td>
-  <td class="r">${fmt(it.price)}</td>
-  <td class="r">${fmt(it.amount)}</td>
+  ${numbers.map((value) => `<td class="r">${fmt(value)}</td>`).join('')}
 </tr>`
-    )
-    .join('\n')
+  }).join('\n')
+  const columns = data.stocktakeItems ? ['账面数量', '实盘数量', '差异'] : ['数量', '单价', '金额']
   const remarkLine = data.remark ? `<div class="remark">备注：${esc(data.remark)}</div>` : ''
   return `<!DOCTYPE html>
 <html>
@@ -151,6 +154,7 @@ export function renderA4Html(data: A4PrintData): string {
 <div class="meta">
   <span>往来单位：${esc(data.partnerName) || '—'}</span>
   <span>仓库：${esc(data.warehouseName) || '—'}</span>
+  ${data.warehouseInName ? `<span>调入仓库：${esc(data.warehouseInName)}</span>` : ''}
   <span>单号：${esc(data.docNo)}</span>
   <span>日期：${esc(data.date)}</span>
 </div>
@@ -159,17 +163,16 @@ export function renderA4Html(data: A4PrintData): string {
 <tr>
   <th style="width:36px">序号</th>
   <th>商品名称</th>
+  <th>规格</th>
   <th style="width:70px">单位</th>
-  <th class="r" style="width:80px">数量</th>
-  <th class="r" style="width:90px">单价</th>
-  <th class="r" style="width:100px">金额</th>
+  ${columns.map((label) => `<th class="r" style="width:90px">${label}</th>`).join('')}
 </tr>
 </thead>
 <tbody>
 ${rows}
 </tbody>
 </table>
-<div class="total">合计：¥${fmt(data.total)}</div>
+${data.stocktakeItems ? '' : `<div class="total">合计：¥${fmt(data.total)}</div>`}
 ${remarkLine}
 <div class="sign">
   <span>打货人：＿＿＿＿＿＿</span>

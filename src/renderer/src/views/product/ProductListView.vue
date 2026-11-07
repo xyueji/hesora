@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { productApi } from '../../api/product'
 import { csvApi, readCsvFile } from '../../api/csv'
+import { hasPermission } from '../../stores/auth'
 import type { ImportResult } from '../../api/csv'
 import type { Product } from '../../../../shared/types/product'
 
@@ -57,10 +58,10 @@ const importing = ref(false)
 const exporting = ref(false)
 const importInput = ref<HTMLInputElement | null>(null)
 
-async function doExport(): Promise<void> {
+async function doExport(kind: 'products' | 'product-template' = 'products'): Promise<void> {
   exporting.value = true
   try {
-    const path = await csvApi.export('products')
+    const path = await csvApi.export(kind)
     ElMessage.success(`已导出到：${path}`)
   } catch (e) {
     const msg = (e as Error).message
@@ -120,8 +121,9 @@ onMounted(load)
               <el-button @click="search">搜索</el-button>
             </template>
           </el-input>
-          <el-button :loading="importing" @click="pickImport">导入</el-button>
-          <el-button :loading="exporting" @click="doExport">导出</el-button>
+          <el-button v-if="hasPermission('data.import')" :loading="importing" @click="pickImport">导入 CSV</el-button>
+          <el-button v-if="hasPermission('data.import') && hasPermission('data.export')" :loading="exporting" @click="doExport('product-template')">下载模板</el-button>
+          <el-button v-if="hasPermission('data.export')" :loading="exporting" @click="doExport()">导出 CSV</el-button>
           <el-button type="primary" @click="router.push('/product/edit')">新增商品</el-button>
         </div>
       </div>

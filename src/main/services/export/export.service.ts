@@ -1,6 +1,6 @@
 // 导出服务（纯）：把各域数据转成 CSV 文本。禁止 import electron / fs —— 文件写入在 main 的薄层。
 import type { Database } from 'better-sqlite3'
-import { buildCsv } from '../../../shared/csv'
+import { buildCsv, OPENING_STOCK_IMPORT_COLUMNS, PRODUCT_IMPORT_COLUMNS } from '../../../shared/csv'
 import type { DocType } from '../../../shared/types/doc'
 import { createInventoryService } from '../inventory/inventory.service'
 import { createDocService } from '../doc/doc.service'
@@ -60,7 +60,7 @@ export function createExportService(db: DB) {
       `)
       .all() as ProductExportRow[]
     return buildCsv(
-      ['编码', '名称', '基本单位', '零售价', '批发价', '进价', '追踪方式', '商品类型', '停用'],
+      [...PRODUCT_IMPORT_COLUMNS, '商品类型', '停用'],
       rows.map((r) => [
         r.code,
         r.name,
@@ -176,7 +176,7 @@ export function createExportService(db: DB) {
           p?.code ?? String(it.product_id),
           p?.name ?? '',
           it.unit || p?.base_unit || '',
-          it.qty * it.rate,
+          it.qty,
           it.price,
           it.amount
         ])
@@ -185,7 +185,11 @@ export function createExportService(db: DB) {
     return buildCsv(['单号', '日期', '类型', '商品编码', '商品名称', '单位', '数量', '单价', '金额'], rows)
   }
 
-  return { products, customers, suppliers, stock, docs }
+  function importTemplate(kind: 'products' | 'opening-stock'): string {
+    return buildCsv(kind === 'products' ? PRODUCT_IMPORT_COLUMNS : OPENING_STOCK_IMPORT_COLUMNS, [])
+  }
+
+  return { products, customers, suppliers, stock, docs, importTemplate }
 }
 
 export type ExportService = ReturnType<typeof createExportService>

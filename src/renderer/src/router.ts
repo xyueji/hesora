@@ -1,6 +1,8 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 
 const routes: RouteRecordRaw[] = [
+  { path: '/doc/workflow', name: 'doc-workflow', component: () => import('./views/doc/WorkflowView.vue') },
+  { path: '/about', name: 'about', component: () => import('./views/AboutView.vue') },
   { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },
   { path: '/guide', name: 'guide', component: () => import('./views/guide/GuideView.vue') },
   { path: '/activate', name: 'activate', component: () => import('./views/activate/ActivateView.vue') },
@@ -14,6 +16,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/warehouse/list', name: 'warehouse-list', component: () => import('./views/warehouse/WarehouseListView.vue') },
   { path: '/warehouse/edit/:id?', name: 'warehouse-edit', component: () => import('./views/warehouse/WarehouseEditView.vue') },
   { path: '/account/list', name: 'account-list', component: () => import('./views/fund/FundAccountListView.vue') },
+  { path: '/account/ledger', name: 'account-ledger', component: () => import('./views/fund/FundLedgerView.vue') },
   { path: '/account/edit/:id?', name: 'account-edit', component: () => import('./views/fund/FundAccountEditView.vue') },
   { path: '/purchase/list', name: 'purchase-list', component: () => import('./views/purchase/PurchaseListView.vue') },
   { path: '/purchase/edit', name: 'purchase-edit', component: () => import('./views/purchase/PurchaseEditView.vue') },
@@ -34,9 +37,10 @@ const routes: RouteRecordRaw[] = [
   { path: '/stocktake/edit', name: 'stocktake-edit', component: () => import('./views/stocktake/StocktakeEditView.vue') },
   { path: '/assemble/list', name: 'assemble-list', component: () => import('./views/assemble/AssembleListView.vue') },
   { path: '/assemble/edit', name: 'assemble-edit', component: () => import('./views/assemble/AssembleEditView.vue') },
-  { path: '/inventory/statistics', name: 'inventory-statistics', component: () => import('./views/InventoryStatisticsView.vue') },
+  { path: '/inventory/statistics', name: 'inventory-statistics', redirect: '/inventory/stock' },
   { path: '/inventory/stock', name: 'inventory-stock', component: () => import('./views/inventory/StockListView.vue') },
   { path: '/stats/arrears', name: 'stats-arrears', component: () => import('./views/stats/ArrearsView.vue') },
+  { path: '/stats/business', name: 'stats-business', component: () => import('./views/stats/BusinessReportView.vue') },
   { path: '/doc/search', name: 'doc-search', component: () => import('./views/doc/DocSearchView.vue') },
   { path: '/opening', name: 'opening', component: () => import('./views/opening/OpeningView.vue') },
   { path: '/setting', name: 'setting', component: () => import('./views/setting/SettingView.vue') },

@@ -1,7 +1,9 @@
 // 导入服务（纯）：解析 CSV 文本并写入主档 / 期初库存。禁止 import electron / fs。
 import type { Database } from 'better-sqlite3'
 import { parseCsv } from '../../../shared/csv'
+import { BizError } from '../../../shared/result'
 import type { TrackingType } from '../../../shared/types/product'
+import type { OpeningStockPreview } from '../../../shared/types/opening'
 import { createProductService } from '../product/product.service'
 import { createInventoryService } from '../inventory/inventory.service'
 
@@ -18,10 +20,12 @@ export interface ImportResult {
   errors: ImportError[]
 }
 
-function toNum(v: string | undefined): number | undefined {
+function toNum(v: string | undefined, label: string): number | undefined {
   if (v === undefined || v.trim() === '') return undefined
   const n = Number(v)
-  return Number.isFinite(n) ? n : undefined
+  if (!Number.isFinite(n)) throw new BizError('VALIDATION', `${label}必须是数字`)
+  if (n < 0) throw new BizError('VALIDATION', `${label}不能为负数`)
+  return n
 }
 
 const TRACKING: Record<string, TrackingType> = {
@@ -50,10 +54,13 @@ export function createImportService(db: DB) {
         if (name === '') throw new Error('名称不能为空')
         const baseUnit = (cols[2] ?? '').trim()
         if (baseUnit === '') throw new Error('基本单位不能为空')
-        const retail = toNum(cols[3]) ?? 0
-        const trade = toNum(cols[4]) ?? 0
-        const purchase = toNum(cols[5]) ?? 0
+        const retail = toNum(cols[3], '零售价') ?? 0
+        const trade = toNum(cols[4], '批发价') ?? 0
+        const purchase = toNum(cols[5], '进价') ?? 0
         const trackingRaw = (cols[6] ?? '').trim()
+        if (trackingRaw && !Object.hasOwn(TRACKING, trackingRaw)) {
+          throw new BizError('VALIDATION', '追踪方式须为无、批次或序列号')
+        }
         const tracking = TRACKING[trackingRaw] ?? 'none'
 
         const existing = db
@@ -91,52 +98,55 @@ export function createImportService(db: DB) {
     return result
   }
 
-  function importOpeningStock(csvText: string, warehouseId: number): ImportResult {
+  function previewOpeningStock(csvText: string): OpeningStockPreview {
     const rows = parseCsv(csvText)
-    const result: ImportResult = { created: 0, updated: 0, errors: [] }
-    const changes: Array<{ row: number; product_id: number; batch_no: string; qty: number; cost: number }> = []
+    const result: OpeningStockPreview = { lines: [], errors: [] }
+    const findProduct = db.prepare('SELECT id, name FROM product WHERE code = ?')
     for (let i = 1; i < rows.length; i++) {
       const rowNo = i + 1
       const cols = rows[i] ?? []
       try {
         const code = (cols[0] ?? '').trim()
         if (code === '') throw new Error('商品编码不能为空')
-        const p = db
-          .prepare('SELECT id FROM product WHERE code = ?')
-          .get(code) as { id: number } | undefined
+        const p = findProduct.get(code) as { id: number; name: string } | undefined
         if (!p) throw new Error(`商品不存在：${code}`)
-        const qty = toNum(cols[1])
+        const qty = toNum(cols[1], '数量')
         if (qty === undefined) throw new Error('数量不能为空且必须是数字')
-        if (qty < 0) throw new Error('数量不能为负数')
-        const cost = toNum(cols[2]) ?? 0
-        if (cost < 0) throw new Error('成本单价不能为负数')
+        if (qty === 0) throw new BizError('VALIDATION', '数量必须大于 0')
+        const cost = toNum(cols[2], '成本单价') ?? 0
         const batch = (cols[3] ?? '').trim()
-        changes.push({ row: rowNo, product_id: p.id, batch_no: batch, qty, cost })
+        result.lines.push({ row: rowNo, product_id: p.id, product_code: code, product_name: p.name, batch_no: batch, qty, unit_cost: cost })
       } catch (e) {
         result.errors.push({ row: rowNo, message: String((e as Error)?.message ?? e) })
       }
     }
-    if (changes.length === 0) return result
+    return result
+  }
+
+  function importOpeningStock(csvText: string, warehouseId: number): ImportResult {
+    const { lines, errors } = previewOpeningStock(csvText)
+    const result: ImportResult = { created: 0, updated: 0, errors }
+    if (lines.length === 0) return result
     try {
       inventoryService.applyChanges(
-        changes.map((c) => ({
+        lines.map((c) => ({
           product_id: c.product_id,
           warehouse_id: warehouseId,
           batch_no: c.batch_no,
           change_qty: c.qty,
-          unit_cost: c.cost,
+          unit_cost: c.unit_cost,
           source: 'import'
         }))
       )
-      result.created = changes.length
+      result.created = lines.length
     } catch (e) {
       // 整批事务失败（如仓库不存在）时按行无法定位，报首行
-      result.errors.push({ row: changes[0]!.row, message: String((e as Error)?.message ?? e) })
+      result.errors.push({ row: lines[0]!.row, message: String((e as Error)?.message ?? e) })
     }
     return result
   }
 
-  return { importProducts, importOpeningStock }
+  return { importProducts, importOpeningStock, previewOpeningStock }
 }
 
 export type ImportService = ReturnType<typeof createImportService>

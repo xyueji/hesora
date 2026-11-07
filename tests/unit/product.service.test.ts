@@ -83,6 +83,15 @@ describe('product.service', () => {
     expect(s.query({ page: 1, pageSize: 10, includeDisabled: true }).total).toBe(1)
   })
 
+  it('looks up the exact active product by barcode', () => {
+    const id = s.create({ ...base, barcodes: ['12345'] })
+    s.create({ ...base, code: 'P002', barcodes: ['123456'] })
+    expect(s.getByBarcode(' 12345 ')?.id).toBe(id)
+    expect(s.getByBarcode('1234')).toBeNull()
+    s.disable(id)
+    expect(s.getByBarcode('12345')).toBeNull()
+  })
+
   it('update duplicate code throws DUP_CODE', () => {
     s.create(base)
     const id2 = s.create({ ...base, code: 'P002' })

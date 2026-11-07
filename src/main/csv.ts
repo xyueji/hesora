@@ -7,18 +7,22 @@ import { BizError } from '../shared/result'
 import { createExportService } from './services/export/export.service'
 import { createImportService, type ImportResult } from './services/import/import.service'
 import type { DocType } from '../shared/types/doc'
+import type { ReportQuery } from '../shared/types/report'
+import { createReportService } from './services/stats/report.service'
 
-export type ExportKind = 'products' | 'customers' | 'suppliers' | 'stock' | 'purchase' | 'sale'
+export type ExportKind = 'products' | 'customers' | 'suppliers' | 'stock' | 'purchase' | 'sale' | 'product-template' | 'opening-stock-template' | 'report'
 
 export interface ExportParams {
   warehouse_id?: number
   date_from?: string
   date_to?: string
+  report?: ReportQuery
 }
 
 export function createCsvIpc(db: Database) {
   const exportService = createExportService(db)
   const importService = createImportService(db)
+  const reportService = createReportService(db)
 
   function defaultName(kind: string): string {
     const d = new Date()
@@ -40,6 +44,14 @@ export function createCsvIpc(db: Database) {
         break
       case 'stock':
         csv = exportService.stock(params.warehouse_id)
+        break
+      case 'product-template':
+      case 'opening-stock-template':
+        csv = exportService.importTemplate(kind === 'product-template' ? 'products' : 'opening-stock')
+        break
+      case 'report':
+        if (!params.report) throw new BizError('VALIDATION', '请选择要导出的报表')
+        csv = reportService.exportCsv(params.report)
         break
       case 'purchase':
       case 'sale':
@@ -68,7 +80,7 @@ export function createCsvIpc(db: Database) {
     return importService.importOpeningStock(String(fileContent), Number(warehouseId))
   }
 
-  return { exportCsv, importProducts, importOpeningStock }
+  return { exportCsv, importProducts, importOpeningStock, previewOpeningStock: importService.previewOpeningStock }
 }
 
 export type CsvIpc = ReturnType<typeof createCsvIpc>

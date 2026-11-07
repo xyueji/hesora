@@ -1,5 +1,7 @@
 import type { DocRow } from './doc'
 
+export type PaymentType = 'receipt' | 'payment' | 'other_in' | 'other_out'
+
 /** 收付款单创建输入（收款单/付款单共用，partner_id 为客户或供应商，可空） */
 export interface PaymentCreateInput {
   partner_id?: number

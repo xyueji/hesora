@@ -1,68 +1,88 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { mkdtemp, rm, writeFile, readFile } from 'fs/promises'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import Database from 'better-sqlite3'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openMemDb } from '../helpers/mem-db'
-import { createBackupService } from '../../src/main/services/backup/backup.service'
+import * as backup from '../../src/main/services/backup/backup.service'
+import { runMigrations } from '../../src/main/db/migrate'
 
 let dir: string
 let dbFile: string
+let db: Database.Database
 
-beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'zhjs-backup-'))
-  dbFile = join(dir, 'zhjs-erp.db')
-  await writeFile(dbFile, 'hello-db')
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'hesora-backup-'))
+  dbFile = join(dir, 'hesora-inventory.db')
+  db = new Database(dbFile)
+  runMigrations(db, join(process.cwd(), 'src/main/db/migrations'))
+  db.pragma('journal_mode = WAL')
+  db.prepare("INSERT INTO app_setting VALUES ('example', 'v1')").run()
 })
 
-afterAll(async () => {
-  await rm(dir, { recursive: true, force: true })
+afterEach(() => {
+  if (db.open) db.close()
+  rmSync(dir, { recursive: true, force: true })
 })
+
+function value(db: Database.Database, key = 'example') {
+  return db.prepare('SELECT value FROM app_setting WHERE key = ?').pluck().get(key)
+}
 
 describe('backup.service', () => {
-  it('backupTo creates timestamped file and returns path', async () => {
-    const svc = createBackupService(openMemDb(), dbFile)
-    const p = svc.backupTo(dir)
-    expect(p).toMatch(/zhjs-erp-backup-\d{8}-\d{6}\.db$/)
-    expect(await readFile(p, 'utf8')).toBe('hello-db')
-  })
-
-  it('listBackups returns only *.db sorted desc', async () => {
-    await writeFile(join(dir, 'zhjs-erp-backup-20240101-000000.db'), 'old')
-    await writeFile(join(dir, 'readme.txt'), 'noise')
-    const svc = createBackupService(openMemDb(), dbFile)
-    const list = svc.listBackups(dir)
-    expect(list.length).toBeGreaterThanOrEqual(2)
-    expect(list.every((b) => b.name.endsWith('.db'))).toBe(true)
-    for (let i = 1; i < list.length; i++) {
-      expect(list[i - 1]!.mtime >= list[i]!.mtime).toBe(true)
+  it('takes a standalone snapshot containing committed WAL writes', () => {
+    const svc = backup.createBackupService(db, dbFile)
+    const path = svc.backupTo(dir)
+    const snapshot = new Database(path, { readonly: true })
+    try {
+      expect(value(snapshot)).toBe('v1')
+    } finally {
+      snapshot.close()
     }
-    expect(list.some((b) => b.name === 'readme.txt')).toBe(false)
   })
 
-  it('checkpoint does not throw', () => {
-    const db = openMemDb()
-    db.prepare('CREATE TABLE IF NOT EXISTS t (x)').run()
-    const svc = createBackupService(db, dbFile)
-    expect(() => svc.backupTo(dir)).not.toThrow()
+  it('keeps separate backups within the same second', () => {
+    const svc = backup.createBackupService(db, dbFile)
+    const first = svc.backupTo(dir)
+    expect(svc.backupTo(dir)).not.toBe(first)
   })
 
-  it('restoreFrom replaces content and creates before-restore safety copy', async () => {
-    const backupDir = await mkdtemp(join(tmpdir(), 'zhjs-restore-'))
-    const current = join(backupDir, 'zhjs-erp.db')
-    await writeFile(current, 'current-content')
-    const backup = join(backupDir, 'zhjs-erp-backup-20240102-030405.db')
-    await writeFile(backup, 'backup-content')
-    const svc = createBackupService(openMemDb(), current)
-    svc.restoreFrom(backup, current)
-    expect(await readFile(current, 'utf8')).toBe('backup-content')
-    const safety = svc.listBackups(backupDir).filter((b) => b.name.includes('before-restore'))
-    expect(safety.length).toBe(1)
-    expect(await readFile(join(backupDir, safety[0]!.name), 'utf8')).toBe('current-content')
-    await rm(backupDir, { recursive: true, force: true })
+  it('rejects invalid restore sources before changing live data', () => {
+    const svc = backup.createBackupService(db, dbFile)
+    const invalid = join(dir, 'invalid.db')
+    writeFileSync(invalid, 'not a database')
+    expect(() => svc.restoreFrom(invalid, dbFile)).toThrow(/备份文件无效/)
+    expect(value(db)).toBe('v1')
   })
 
-  it('restoreFrom throws when backup file missing', () => {
-    const svc = createBackupService(openMemDb(), dbFile)
-    expect(() => svc.restoreFrom(join(dir, 'nope.db'), dbFile)).toThrow()
+  it('stages a restore and applies it after closing the live database', () => {
+    const svc = backup.createBackupService(db, dbFile)
+    const path = svc.backupTo(dir)
+    db.prepare("UPDATE app_setting SET value = 'v2' WHERE key = 'example'").run()
+    db.prepare("INSERT INTO app_setting VALUES ('license.install_id', 'local-device')").run()
+    svc.restoreFrom(path, dbFile)
+    expect(value(db)).toBe('v2')
+    db.close()
+
+    expect(backup.applyPendingRestore(dbFile)).toBe(true)
+    db = new Database(dbFile)
+    expect(value(db)).toBe('v1')
+    expect(value(db, 'license.install_id')).toBe('local-device')
+    expect(svc.listBackups(dir).some((entry) => entry.name.includes('before-restore'))).toBe(true)
+    expect(backup.applyPendingRestore(dbFile)).toBe(false)
   })
+})
+
+it('keeps one automatic backup per day and retains the latest 30', () => {
+  const service = backup.createBackupService(db, dbFile)
+  const backupsDir = join(dir, 'backups')
+  service.dailyBackup(backupsDir)
+  service.dailyBackup(backupsDir)
+  expect(service.listBackups(backupsDir)).toHaveLength(1)
+  for (let i = 1; i <= 31; i++) {
+    const name = `zhjs-erp-backup-202401${String(i).padStart(2, '0')}-000000.db`
+    writeFileSync(join(backupsDir, name), 'legacy')
+  }
+  service.dailyBackup(backupsDir)
+  expect(service.listBackups(backupsDir)).toHaveLength(30)
+  expect(service.listBackups(backupsDir).some(({ name }) => name.includes('-daily-'))).toBe(true)
 })

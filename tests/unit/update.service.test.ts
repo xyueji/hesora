@@ -69,3 +69,12 @@ describe('update.service', () => {
     expect((await svc.check()).hasUpdate).toBe(true)
   })
 })
+
+it('rejects an insecure manifest download link', async () => {
+  const svc = createUpdateService({
+    currentVersion: '1.0.0',
+    updateUrl: 'https://x/latest.json',
+    fetchImpl: okFetcher(JSON.stringify({ version: '1.1.0', url: 'http://x/dl.exe' }))
+  })
+  expect(await svc.check()).toEqual({ hasUpdate: false })
+})

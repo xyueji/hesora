@@ -102,4 +102,10 @@ describe('export.service', () => {
     const csvNone = exportSvc.docs('purchase', '2027-01-01')
     expect(csvNone.split('\r\n')).toHaveLength(2) // BOM 行 + 表头行
   })
+
+  it('exports the quantity in the same unit as the document line', () => {
+    const { productId, warehouseId } = seedBasics()
+    createPurchaseService(db).create({ warehouse_id: warehouseId, items: [{ product_id: productId, unit: '箱', qty: 2, rate: 24, price: 30 }] })
+    expect(exportSvc.docs('purchase')).toContain(',箱,2,30,60')
+  })
 })

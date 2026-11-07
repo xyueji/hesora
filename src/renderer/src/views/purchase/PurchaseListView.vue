@@ -7,8 +7,6 @@ import { csvApi } from '../../api/csv'
 import { supplierApi } from '../../api/supplier'
 import { productApi } from '../../api/product'
 import type { DocRow, DocItemRow } from '../../../../shared/types/doc'
-import type { Supplier } from '../../../../shared/types/supplier'
-import type { Product } from '../../../../shared/types/product'
 
 const keyword = ref('')
 const dateRange = ref<[string, string] | null>(null)

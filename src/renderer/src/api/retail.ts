@@ -1,20 +1,8 @@
-import type { RetailCreateInput, RetailQuery } from '../../../shared/types/retail'
-import type { Result } from '../../../shared/result'
+import type { RetailCreateInput, RetailHeldCart, RetailQuery } from '../../../shared/types/retail'
+import { call } from './call'
 import type { DocItemRow, DocPageResult, DocRow } from '../../../shared/types/doc'
 
 export { type RetailCreateInput, type RetailQuery, type RetailItemInput } from '../../../shared/types/retail'
-
-interface WinApi {
-  invoke: (channel: string, payload?: unknown) => Promise<unknown>
-}
-
-const api = (window as unknown as { api: WinApi }).api
-
-async function call<T>(channel: string, payload?: unknown): Promise<T> {
-  const r = (await api.invoke(channel, payload)) as Result<T>
-  if (!r.ok) throw new Error(r.msg || r.code)
-  return r.data as T
-}
 
 export interface RetailDetail {
   doc: DocRow
@@ -23,6 +11,9 @@ export interface RetailDetail {
 
 export const retailApi = {
   create: (p: RetailCreateInput) => call<DocRow>('retail:create', p),
+  hold: (p: RetailCreateInput) => call<number>('retail:hold', p),
+  listHeld: () => call<RetailHeldCart[]>('retail:listHeld'),
+  discardHeld: (id: number) => call<void>('retail:discardHeld', id),
   getDetail: (id: number) => call<RetailDetail>('retail:getDetail', id),
   query: (q: RetailQuery) => call<DocPageResult>('retail:query', q)
 }

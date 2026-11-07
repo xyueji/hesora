@@ -3,13 +3,15 @@
 import type { Database } from 'better-sqlite3'
 import { BizError } from '../../../shared/result'
 import type { A4PrintData, ReceiptPrintData } from '../../../shared/print/templates'
+import { DOC_A4_PRINTABLE, DOC_TYPE_LABELS, type DocType } from '../../../shared/types/doc'
+import { createSettingService } from '../setting/setting.service'
 
 export type DB = Database
 
 interface DocRowLite {
   id: number
   no: string
-  type: string
+  type: DocType
   date: string
   partner_id: number | null
   warehouse_id: number | null
@@ -21,21 +23,11 @@ interface DocRowLite {
 
 interface ItemRow {
   name: string
+  spec: string
   unit: string
   qty: number
   price: number
   amount: number
-}
-
-const A4_TITLES: Record<string, string> = {
-  purchase: '采购单',
-  sale: '销售单',
-  purchase_return: '采购退货单',
-  sale_return: '销售退货单',
-  transfer: '调拨单',
-  stocktake: '盘点单',
-  assemble: '组装单',
-  disassemble: '拆卸单'
 }
 
 function todayLocal(): string {
@@ -49,6 +41,7 @@ function pad(n: number, len: number): string {
 }
 
 export function createPrintService(db: DB) {
+  const settings = createSettingService(db)
   function getDoc(docId: number): DocRowLite {
     const doc = db.prepare('SELECT * FROM doc WHERE id = ?').get(docId) as DocRowLite | undefined
     if (!doc) throw new BizError('NOT_FOUND', `单据不存在：${docId}`)
@@ -56,21 +49,15 @@ export function createPrintService(db: DB) {
   }
 
   function shopHeader(): string {
-    const receiptHeader = db.prepare("SELECT value FROM app_setting WHERE key = 'shop.receipt_header'").get() as
-      | { value: string }
-      | undefined
-    if (receiptHeader && receiptHeader.value) return receiptHeader.value
-    const name = db.prepare("SELECT value FROM app_setting WHERE key = 'shop.name'").get() as
-      | { value: string }
-      | undefined
-    return name && name.value ? name.value : '智销进销存'
+    return settings.get('shop.receipt_header') || settings.get('shop.name') || '禾序进销存'
   }
 
   // doc_item 无商品名——JOIN product 取名称。amount 存的是 qty*rate*price，明细行直接用存储值。
   function itemsOf(docId: number): ItemRow[] {
     return db
       .prepare(
-        `SELECT COALESCE(p.name, '未知商品') AS name, i.unit, i.qty, i.price, i.amount
+        `SELECT COALESCE(p.name, '未知商品') AS name, COALESCE(p.spec, '') AS spec,
+                COALESCE(NULLIF(i.unit, ''), p.base_unit, '') AS unit, i.qty, i.price, i.amount
          FROM doc_item i LEFT JOIN product p ON p.id = i.product_id
          WHERE i.doc_id = ? ORDER BY i.id`
       )
@@ -103,13 +90,14 @@ export function createPrintService(db: DB) {
   }
 
   /** 小票打印数据：仅零售单（兜底销售单）。 */
-  function receiptData(docId: number): ReceiptPrintData {
+  function receiptData(docId: number, widthMm?: 58 | 80): ReceiptPrintData {
     const doc = getDoc(docId)
     if (doc.type !== 'retail' && doc.type !== 'sale') {
       throw new BizError('VALIDATION', `该单据类型不支持小票打印：${doc.type}`)
     }
     const paymentMethod = accountName(doc.account_id)
     return {
+      widthMm: widthMm ?? (settings.get('print.receipt_width') === '80' ? 80 : 58),
       shopName: shopHeader(),
       docNo: doc.no,
       date: doc.date,
@@ -117,25 +105,32 @@ export function createPrintService(db: DB) {
       total: doc.total_amount,
       paymentMethod,
       remark: doc.remark ?? '',
-      footer: '谢谢惠顾'
+      footer: settings.get('print.receipt_footer') ?? '谢谢惠顾'
     }
   }
 
   /** A4 打印数据：采购/销售/退货/调拨/盘点/组装/拆卸等业务单据。 */
   function a4Data(docId: number): A4PrintData {
     const doc = getDoc(docId)
-    const title = A4_TITLES[doc.type]
-    if (!title) {
+    if (!DOC_A4_PRINTABLE.has(doc.type)) {
       throw new BizError('VALIDATION', `该单据类型不支持 A4 打印：${doc.type}`)
     }
+    const stocktakeItems = doc.type === 'stocktake'
+      ? db.prepare(`SELECT p.name, COALESCE(p.spec, '') AS spec, p.base_unit AS unit,
+            c.after_qty - c.change_qty AS bookQty, c.after_qty AS actualQty, c.change_qty AS difference
+          FROM cost_log c JOIN product p ON p.id = c.product_id
+          WHERE c.source = 'stocktake' AND c.source_id = ? ORDER BY c.id`).all(docId) as NonNullable<A4PrintData['stocktakeItems']>
+      : undefined
     return {
-      title,
+      title: DOC_TYPE_LABELS[doc.type],
       shopName: shopHeader(),
       partnerName: partnerName(doc.partner_id, doc.type),
       warehouseName: warehouseName(doc.warehouse_id),
+      warehouseInName: warehouseName(doc.warehouse_in_id),
       docNo: doc.no,
       date: doc.date,
       items: itemsOf(docId),
+      stocktakeItems: stocktakeItems?.length ? stocktakeItems : undefined,
       total: doc.total_amount,
       remark: doc.remark ?? '',
       printDate: `${todayLocal()} ${pad(new Date().getHours(), 2)}:${pad(new Date().getMinutes(), 2)}`

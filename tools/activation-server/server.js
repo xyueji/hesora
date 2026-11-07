@@ -1,67 +1,83 @@
-// Activation server (offline Ed25519 license issuance). No deps; node:http only.
-// Reads private.pem from this directory. POST /api/activate {customer, expiresAt?, machine?}
-// → { code }. GET /health → { ok: true }.
-import { sign } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
-import { readFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { generateCode, hashCode, openLicenses, readPrivateKey } from './license.js'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const privateKey = readFileSync(join(__dirname, 'private.pem'), 'utf8')
+const key = readPrivateKey()
+const db = openLicenses()
+const adminToken = process.env.HESORA_LICENSE_ADMIN_TOKEN
+const tokenHash = (value) => createHash('sha256').update(value).digest()
 
-function generateCode(payload: { customer: string; issuedAt: string; expiresAt: string | null; machine: string | null }): string {
-  const canonical = JSON.stringify(payload)
-  const sig = sign(null, Buffer.from(canonical, 'utf8'), privateKey)
-  return `ZHJS1.${Buffer.from(canonical).toString('base64url')}.${sig.toString('base64url')}`
+function respond(res, status, data) {
+  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+  res.end(JSON.stringify(data))
 }
 
-interface ActivateBody {
-  customer?: string
-  expiresAt?: string | null
-  machine?: string | null
-}
-
-const server = createServer((req, res) => {
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true }))
-    return
+async function readBody(req) {
+  const parts = []
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk.length
+    if (size > 4096) throw new Error('body too large')
+    parts.push(chunk)
   }
-  if (req.method === 'POST' && req.url === '/api/activate') {
-    let body = ''
-    req.on('data', (c: Buffer) => {
-      body += c.toString('utf8')
-      if (body.length > 64 * 1024) req.destroy()
-    })
-    req.on('end', () => {
-      try {
-        const parsed = JSON.parse(body) as ActivateBody
-        if (!parsed.customer || typeof parsed.customer !== 'string') {
-          res.writeHead(400, { 'content-type': 'application/json' })
-          res.end(JSON.stringify({ error: 'customer required' }))
-          return
-        }
-        const code = generateCode({
-            customer: parsed.customer,
-            issuedAt: new Date().toISOString(),
-            expiresAt: parsed.expiresAt ?? null,
-            machine: parsed.machine ?? null
-          })
-        res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ code }))
-      } catch {
-        res.writeHead(400, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ error: 'bad request' }))
+  return JSON.parse(Buffer.concat(parts).toString('utf8'))
+}
+
+const server = createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/health') return respond(res, 200, { ok: true })
+  if (req.method !== 'POST' || !['/api/activate', '/api/unbind'].includes(req.url)) {
+    return respond(res, 404, { error: 'not found' })
+  }
+  if (req.url === '/api/unbind' && (!adminToken || !timingSafeEqual(
+    tokenHash(req.headers.authorization || ''), tokenHash(`Bearer ${adminToken}`)
+  ))) return respond(res, 403, { error: 'forbidden' })
+
+  let body
+  try {
+    body = await readBody(req)
+  } catch {
+    return respond(res, 400, { error: 'invalid request' })
+  }
+
+  if (typeof body?.code !== 'string' || !/^HSR-[a-f0-9]{48}$/.test(body.code)) {
+    return respond(res, 400, { error: 'invalid code' })
+  }
+
+  const hash = hashCode(body.code)
+  if (req.url === '/api/unbind') {
+    const result = db.prepare('UPDATE redemption SET machine = NULL WHERE code_hash = ?').run(hash)
+    return respond(res, result.changes ? 200 : 404, { ok: Boolean(result.changes) })
+  }
+  if (typeof body.machine !== 'string' || !/^[a-f0-9]{64}$/.test(body.machine)) {
+    return respond(res, 400, { error: 'invalid machine' })
+  }
+
+  try {
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      const license = db.prepare('SELECT * FROM redemption WHERE code_hash = ?').get(hash)
+      if (!license || (license.expires_at && Date.parse(license.expires_at) <= Date.now())) {
+        db.exec('ROLLBACK')
+        return respond(res, 404, { error: 'code unavailable' })
       }
-    })
-    return
+      if (license.machine && license.machine !== body.machine) {
+        db.exec('ROLLBACK')
+        return respond(res, 409, { error: 'code already bound' })
+      }
+      const code = generateCode({ customer: license.customer, expiresAt: license.expires_at, machine: body.machine }, key)
+      db.prepare('UPDATE redemption SET machine = ? WHERE code_hash = ?').run(body.machine, hash)
+      db.exec('COMMIT')
+      return respond(res, 200, { code })
+    } catch (e) {
+      db.exec('ROLLBACK')
+      throw e
+    }
+  } catch {
+    return respond(res, 500, { error: 'activation unavailable' })
   }
-  res.writeHead(404, { 'content-type': 'application/json' })
-  res.end(JSON.stringify({ error: 'not found' }))
 })
 
-const port = Number(process.env['PORT'] || 7799)
-server.listen(port, () => {
-  console.log(`activation server listening on :${port}`)
+const port = Number(process.env.PORT || 7799)
+server.listen(port, process.env.HOST || '127.0.0.1', () => {
+  console.log(`Activation service listening on port ${port}`)
 })

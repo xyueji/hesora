@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { licenseApi } from '../../api/license'
@@ -8,6 +8,12 @@ const router = useRouter()
 const loading = ref(false)
 const form = reactive({ code: '' })
 
+const onlineAvailable = ref(false)
+const online = ref(false)
+onMounted(async () => {
+  onlineAvailable.value = Boolean((await licenseApi.check().catch(() => null))?.onlineAvailable)
+})
+
 async function submit() {
   if (!form.code.trim()) {
     ElMessage.warning('请输入激活码')
@@ -15,7 +21,7 @@ async function submit() {
   }
   loading.value = true
   try {
-    const payload = await licenseApi.activate(form.code.trim())
+    const payload = await (online.value ? licenseApi.activateOnline : licenseApi.activate)(form.code.trim())
     ElMessage.success(`激活成功，授权给：${payload.customer}`)
     void router.push('/')
   } catch (e) {
@@ -30,23 +36,26 @@ async function submit() {
   <div class="activate-page">
     <el-card class="activate-card">
       <template #header>
-        <div class="activate-title">软件激活</div>
+        <div class="activate-title">禾序进销存 · 软件激活</div>
       </template>
       <el-alert
         type="info"
         :closable="false"
         show-icon
         title="试用说明"
-        description="本软件免费试用 15 天，到期后需输入激活码继续使用。激活码与供应商获取，粘贴到下方输入框即可，激活一次永久有效（除非激活码本身带有效期）。本软件完全离线运行，激活不联网。"
+        description="本软件免费试用 15 天，到期后需输入激活码继续使用。请向供应商获取激活码。在线激活绑定本机设备，成功后可离线使用。"
         style="margin-bottom: 16px"
       />
       <el-form @submit.prevent>
+        <el-form-item v-if="onlineAvailable">
+          <el-checkbox v-model="online">使用兑换码在线激活</el-checkbox>
+        </el-form-item>
         <el-form-item label="激活码">
           <el-input
             v-model="form.code"
             type="textarea"
             :rows="4"
-            placeholder="ZHJS1.xxxx.yyyy"
+            placeholder="请粘贴完整的授权激活码"
             data-test="activate-code"
           />
         </el-form-item>

@@ -30,6 +30,7 @@ export interface DocCreateInput {
   warehouse_id?: number
   warehouse_in_id?: number
   account_id?: number
+  source_doc_id?: number
   remark?: string
   items: DocItemInput[]
 }
@@ -56,6 +57,7 @@ export interface DocRow {
   warehouse_id: number | null
   warehouse_in_id: number | null
   account_id: number | null
+  source_doc_id?: number | null
   total_amount: number
   remark: string | null
   status: 'done'
@@ -72,6 +74,7 @@ export interface DocQuery {
   date_to?: string
   keyword?: string
   partner_id?: number
+  partner_keyword?: string
   page: number
   pageSize: number
 }
@@ -110,8 +113,8 @@ export const DOC_TYPE_LABELS: Record<DocType, string> = {
   disassemble: '拆卸单',
   receipt: '收款单',
   payment: '付款单',
-  other_out: '其他出库',
-  other_in: '其他入库'
+  other_out: '其他支出',
+  other_in: '其他收入'
 }
 
 /** 支持 A4 打印的单据类型（与 print.service 的 A4_TITLES 一致） */

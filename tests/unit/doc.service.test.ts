@@ -34,14 +34,30 @@ describe('doc.service', () => {
     const items = s.getItems(row.id)
     expect(items).toHaveLength(2)
     expect(items[0]!.amount).toBe(20)
-    expect(items[1]!.amount).toBe(1200)
-    expect(s.getById(row.id)?.total_amount).toBe(1220)
+    expect(items[1]!.amount).toBe(100)
+    expect(s.getById(row.id)?.total_amount).toBe(120)
   })
 
   it('second doc same day/type gets 0002', () => {
     s.create(purchaseInput())
     const row = s.create(purchaseInput())
     expect(row.no).toMatch(/^CG\d{8}0002$/)
+  })
+
+  it('continues the sequence beyond four digits', () => {
+    const db = openMemDb()
+    const svc = createDocService(db)
+    const date = '2026-11-07'
+    const insert = db.prepare("INSERT INTO doc (no, type, date) VALUES (?, 'purchase', ?)")
+    insert.run('CG202611079999', date)
+    insert.run('CG2026110710000', date)
+    expect(svc.create({ ...purchaseInput(), date }).no).toBe('CG2026110710001')
+  })
+
+  it.each([0, -1, Infinity, NaN])('rejects an invalid unit conversion rate %s', (rate) => {
+    expect(() =>
+      s.create({ ...purchaseInput(), items: [{ product_id: 1, qty: 1, rate, price: 10 }] })
+    ).toThrowError(/换算率/)
   })
 
   it('different type same day gets its own sequence', () => {
@@ -106,6 +122,18 @@ describe('doc.service', () => {
   })
 
   describe('partner_name resolution', () => {
+    it('filters by partner name and resolves overlapping customer and supplier ids', () => {
+      const db = openMemDbWithPartners()
+      db.prepare(`INSERT INTO supplier (id, code, name) VALUES (101, 'S101', '同号供货商')`).run()
+      const svc = createDocService(db)
+      svc.create({ ...purchaseInput(), type: 'sale', partner_id: 101 })
+      const purchase = svc.create({ ...purchaseInput(), partner_id: 101 })
+      const results = svc.query({ partner_keyword: '供货商', page: 1, pageSize: 10 })
+      expect(results.total).toBe(1)
+      expect(results.items[0]?.partner_name).toBe('同号供货商')
+      expect(svc.getDetailWithItems(purchase.id)?.doc.partner_name).toBe('同号供货商')
+    })
+
     it('query returns partner_name for customer/supplier and null for retail', () => {
       const svc = createDocService(openMemDbWithPartners())
       const sale = svc.create({ ...purchaseInput(), type: 'sale' as const, partner_id: 101 })

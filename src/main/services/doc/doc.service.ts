@@ -20,12 +20,17 @@ interface DocDbRow {
   warehouse_id: number | null
   warehouse_in_id: number | null
   account_id: number | null
+  source_doc_id: number | null
   total_amount: number
   remark: string | null
   status: string
   created_at: string
   partner_name?: string | null
 }
+
+const PARTNER_JOIN = `
+  LEFT JOIN customer c ON c.id = d.partner_id AND d.type IN ('sale','sale_return','retail','receipt')
+  LEFT JOIN supplier s ON s.id = d.partner_id AND d.type IN ('purchase','purchase_return','payment')`
 
 function pad(n: number, len: number): string {
   return String(n).padStart(len, '0')
@@ -46,6 +51,7 @@ function toDocRow(row: DocDbRow): DocRow {
     warehouse_id: row.warehouse_id,
     warehouse_in_id: row.warehouse_in_id,
     account_id: row.account_id,
+    source_doc_id: row.source_doc_id,
     total_amount: row.total_amount,
     remark: row.remark,
     status: row.status as DocRow['status'],
@@ -56,8 +62,8 @@ function toDocRow(row: DocDbRow): DocRow {
 
 export function createDocService(db: DB) {
   const insertDoc = db.prepare(`
-    INSERT INTO doc (no, type, date, partner_id, warehouse_id, warehouse_in_id, account_id, total_amount, remark)
-    VALUES (@no, @type, @date, @partner_id, @warehouse_id, @warehouse_in_id, @account_id, @total_amount, @remark)
+    INSERT INTO doc (no, type, date, partner_id, warehouse_id, warehouse_in_id, account_id, total_amount, remark, source_doc_id)
+    VALUES (@no, @type, @date, @partner_id, @warehouse_id, @warehouse_in_id, @account_id, @total_amount, @remark, @source_doc_id)
   `)
   const insertItem = db.prepare(`
     INSERT INTO doc_item (doc_id, product_id, warehouse_id, batch_no, unit, rate, qty, price, amount)
@@ -68,15 +74,16 @@ export function createDocService(db: DB) {
   function nextDocNo(type: string, date: string): string {
     const compact = date.replace(/-/g, '')
     const prefix = `${DOC_NO_PREFIX[type as keyof typeof DOC_NO_PREFIX]}${compact}`
-    const last = db
-      .prepare("SELECT no FROM doc WHERE no LIKE ? ORDER BY no DESC LIMIT 1")
-      .get(`${prefix}%`) as { no: string } | undefined
-    const seq = last ? Number(last.no.slice(prefix.length)) + 1 : 1
+    const { last } = db
+      .prepare('SELECT MAX(CAST(SUBSTR(no, ?) AS INTEGER)) AS last FROM doc WHERE type = ? AND date = ?')
+      .get(prefix.length + 1, type, date) as { last: number | null }
+    const seq = (last ?? 0) + 1
     return `${prefix}${pad(seq, 4)}`
   }
 
   function getById(id: number): DocRow | null {
-    const row = db.prepare('SELECT * FROM doc WHERE id = ?').get(id) as DocDbRow | undefined
+    const row = db.prepare(`SELECT d.*, COALESCE(c.name, s.name) AS partner_name
+      FROM doc d ${PARTNER_JOIN} WHERE d.id = ?`).get(id) as DocDbRow | undefined
     return row ? toDocRow(row) : null
   }
 
@@ -86,12 +93,59 @@ export function createDocService(db: DB) {
       .all(docId) as DocItemRow[]
   }
 
+  function assertReturnQuantity(input: DocCreateInput, lines: Array<{
+    product_id: number
+    batch_no: string
+    qty: number
+    rate: number
+  }>): void {
+    if (input.source_doc_id === undefined) return
+    if (input.type !== 'purchase_return' && input.type !== 'sale_return') {
+      throw new BizError('VALIDATION', '仅退货单可关联购销原单')
+    }
+    const sourceType = input.type === 'purchase_return' ? 'purchase' : 'sale'
+    const source = getById(input.source_doc_id)
+    if (!source || source.status !== 'done' || source.type !== sourceType) {
+      throw new BizError('NOT_FOUND', '对应的已过账原单不存在')
+    }
+    if (source.partner_id !== (input.partner_id ?? null)) {
+      throw new BizError('VALIDATION', '退货往来单位须与原单一致')
+    }
+    if (source.warehouse_id !== input.warehouse_id) {
+      throw new BizError('VALIDATION', '退货仓库须与原单一致')
+    }
+    const available = db.prepare(`
+      SELECT i.product_id, i.batch_no,
+        SUM(CASE WHEN i.doc_id = @sourceId THEN i.qty * i.rate ELSE -i.qty * i.rate END) AS qty
+      FROM doc_item i JOIN doc d ON d.id = i.doc_id
+      WHERE d.id = @sourceId OR (d.source_doc_id = @sourceId AND d.type = @returnType AND d.status = 'done')
+      GROUP BY i.product_id, i.batch_no
+    `).all({ sourceId: source.id, returnType: input.type }) as Array<{
+      product_id: number
+      batch_no: string
+      qty: number
+    }>
+    const lotKey = (line: { product_id: number; batch_no: string }): string =>
+      JSON.stringify([Number(line.product_id), line.batch_no])
+    const remaining = new Map(available.map((line) => [lotKey(line), line.qty]))
+    for (const line of lines) {
+      const key = lotKey(line)
+      const qty = line.qty * line.rate
+      const current = remaining.get(key) ?? 0
+      const tolerance = 8 * Number.EPSILON * Math.max(qty, current)
+      if (qty - current > tolerance) {
+        throw new BizError('RETURN_LIMIT', `超过原单可退数量，商品 #${line.product_id} 可退 ${Math.max(0, current)} 基本单位`)
+      }
+      remaining.set(key, current - qty)
+    }
+  }
+
   function create(input: DocCreateInput): DocRow {
     const date = input.date ?? todayLocal()
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new BizError('VALIDATION', '单据日期格式应为 yyyy-MM-dd')
-    }    // 收款单/付款单不涉及商品明细，允许空明细；其余单据类型必须有明细行。
-    const needsItems = !['receipt', 'payment'].includes(input.type)
+    }
+    const needsItems = !['receipt', 'payment', 'other_in', 'other_out'].includes(input.type)
     if (needsItems && (!input.items || input.items.length === 0)) {
       throw new BizError('VALIDATION', '单据明细不能为空')
     }
@@ -104,7 +158,13 @@ export function createDocService(db: DB) {
         const qty = Number(it.qty)
         const rate = it.rate === undefined || it.rate === null ? 1 : Number(it.rate)
         const price = it.price === undefined || it.price === null ? 0 : Number(it.price)
-        const amount = qty * price * rate
+        if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(qty * rate)) {
+          throw new BizError('VALIDATION', '明细单位换算率无效')
+        }
+        const amount = qty * price
+        if (price < 0 || !Number.isFinite(amount)) {
+          throw new BizError('VALIDATION', '明细单价或金额无效')
+        }
         return {
           product_id: it.product_id,
           warehouse_id: it.warehouse_id ?? null,
@@ -117,6 +177,7 @@ export function createDocService(db: DB) {
         }
       })
       const totalAmount = lines.reduce((sum, l) => sum + l.amount, 0)
+      assertReturnQuantity(input, lines)
       const no = nextDocNo(input.type, date)
       docId = Number(
         insertDoc.run({
@@ -127,12 +188,13 @@ export function createDocService(db: DB) {
           warehouse_id: input.warehouse_id ?? null,
           warehouse_in_id: input.warehouse_in_id ?? null,
           account_id: input.account_id ?? null,
+          source_doc_id: input.source_doc_id ?? null,
           total_amount: totalAmount,
           remark: input.remark ?? null
         }).lastInsertRowid
       )
       for (const l of lines) insertItem.run({ doc_id: docId, ...l })
-    })()
+    }).immediate()
     return getById(docId) as DocRow
   }
 
@@ -141,40 +203,43 @@ export function createDocService(db: DB) {
     const where: string[] = []
     const params: Record<string, unknown> = {}
     if (q.type) {
-      where.push('type = @type')
+      where.push('d.type = @type')
       params['type'] = q.type
     } else if (q.types && q.types.length > 0) {
-      where.push(`type IN (${q.types.map((_, i) => `@type_${i}`).join(',')})`)
+      where.push(`d.type IN (${q.types.map((_, i) => `@type_${i}`).join(',')})`)
       q.types.forEach((t, i) => {
         params[`type_${i}`] = t
       })
     }
     if (q.date_from) {
-      where.push('date >= @date_from')
+      where.push('d.date >= @date_from')
       params['date_from'] = q.date_from
     }
     if (q.date_to) {
-      where.push('date <= @date_to')
+      where.push('d.date <= @date_to')
       params['date_to'] = q.date_to
     }
     if (q.keyword) {
-      where.push('no LIKE @kw')
+      where.push('d.no LIKE @kw')
       params['kw'] = `%${q.keyword}%`
     }
     if (q.partner_id !== undefined && q.partner_id !== null) {
-      where.push('partner_id = @partner_id')
+      where.push('d.partner_id = @partner_id')
       params['partner_id'] = q.partner_id
+    }
+    const partnerKeyword = q.partner_keyword?.trim()
+    if (partnerKeyword) {
+      where.push('(INSTR(COALESCE(c.name, s.name), @partner_keyword) > 0 OR INSTR(COALESCE(c.code, s.code), @partner_keyword) > 0)')
+      params['partner_keyword'] = partnerKeyword
     }
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
     const total = Number(
-      (db.prepare(`SELECT COUNT(*) AS c FROM doc d ${whereSql}`).get(params) as { c: number }).c
+      (db.prepare(`SELECT COUNT(*) AS c FROM doc d ${PARTNER_JOIN} ${whereSql}`).get(params) as { c: number }).c
     )
     const rows = db
       .prepare(
-        `SELECT d.*, CASE WHEN d.partner_id IS NULL THEN NULL ELSE COALESCE(c.name, s.name) END AS partner_name
-         FROM doc d
-         LEFT JOIN customer c ON c.id = d.partner_id
-         LEFT JOIN supplier s ON s.id = d.partner_id
+        `SELECT d.*, COALESCE(c.name, s.name) AS partner_name
+         FROM doc d ${PARTNER_JOIN}
          ${whereSql} ORDER BY d.id DESC LIMIT @limit OFFSET @offset`
       )
       .all({ ...params, limit: pageSize, offset: (page - 1) * pageSize }) as DocDbRow[]

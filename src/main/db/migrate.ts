@@ -5,12 +5,14 @@ import { join } from 'node:path'
 export function runMigrations(db: Database.Database, dir = join(__dirname, 'migrations')): void {
   const current = db.pragma('user_version', { simple: true }) as number
   const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
+  const latest = Number(files.at(-1)?.split('_')[0] ?? 0)
+  if (current > latest) throw new Error('此账套由更高版本创建，请用相应版本打开。')
   for (const f of files) {
     const ver = Number(f.split('_')[0])
     if (ver <= current) continue
     db.transaction(() => {
       db.exec(readFileSync(join(dir, f), 'utf8'))
+      db.pragma(`user_version = ${ver}`)
     })()
-    db.pragma(`user_version = ${ver}`)
   }
 }

@@ -1,18 +1,19 @@
 {
-  "name": "zhjs-erp",
+  "name": "hesora-inventory",
   "version": "1.0.0",
-  "description": "Offline invoicing/inventory ERP for small merchants (Electron + Vue3 + TS)",
+  "description": "禾序进销存 · HESORA Inventory — 货有数，账有序。",
   "main": "./out/main/index.js",
-  "author": "zhjs-erp",
+  "author": "HESORA",
   "private": true,
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "build:win": "electron-vite build && electron-builder --win",
+    "build:win": "pnpm dist",
     "test": "vitest run",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
-    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
-    "dist": "electron-vite build && electron-builder --win",
+    "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
+    "dist": "node tools/prepare-windows-native.cjs && electron-vite build && electron-builder --win --x64",
+    "dist:release": "node tools/check-website-release.cjs && node tools/prepare-windows-native.cjs && electron-vite build && electron-builder --win --x64 --config.forceCodeSigning=true",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -44,7 +45,7 @@
   },
   "build": {
     "appId": "com.zhjs.erp",
-    "productName": "智销进销存",
+    "productName": "禾序进销存",
     "directories": {
       "output": "dist"
     },
@@ -56,16 +57,25 @@
       {
         "from": "src/main/db/migrations",
         "to": "migrations"
+      },
+      {
+        "from": "resources/hesora.png",
+        "to": "hesora.png"
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "resources/hesora.ico"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "artifactName": "${productName}-${version}-setup.exe"
+      "artifactName": "${productName}-${version}-setup.exe",
+      "shortcutName": "禾序进销存",
+      "uninstallDisplayName": "禾序进销存",
+      "installerIcon": "resources/hesora.ico",
+      "uninstallerIcon": "resources/hesora.ico"
     }
   }
 }

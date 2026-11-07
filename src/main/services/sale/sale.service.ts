@@ -4,35 +4,10 @@ import type { DocItemRow, DocPageResult, DocQuery, DocRow } from '../../../share
 import { createDocService, type DocService } from '../doc/doc.service'
 import { createInventoryService } from '../inventory/inventory.service'
 
+import type { SaleCreateInput, SaleQuery, SaleReturnInput } from '../../../shared/types/sale'
+export type { SaleItemInput, SaleCreateInput, SaleQuery } from '../../../shared/types/sale'
+
 export type DB = Database
-
-export interface SaleItemInput {
-  product_id: number
-  batch_no?: string
-  unit?: string
-  rate?: number
-  qty: number
-  price: number
-}
-
-export interface SaleCreateInput {
-  customer_id?: number
-  warehouse_id: number
-  date?: string
-  remark?: string
-  items: SaleItemInput[]
-}
-
-export interface SaleQuery {
-  date_from?: string
-  date_to?: string
-  keyword?: string
-  partner_id?: number
-  /** 不传返回销售单+退货单；'sale' 仅销售单；'sale_return' 仅退货单 */
-  type?: 'sale' | 'sale_return'
-  page: number
-  pageSize: number
-}
 
 export interface SaleDetail {
   doc: DocRow
@@ -107,13 +82,8 @@ export function createSaleService(db: DB) {
     return doc as DocRow
   }
 
-  /**
-   * 销售退货单：type='sale_return'（编号 XTyyyyMMddNNNN），货入库（IN），
-   * 入库成本按当前库存行的移动加权成本（无库存行则 0）。
-   * 款项按应收减少（退款给客户）处理，统一记资金流水 fund_flow（direction 'in'，doc_type 'sale_return'）。
-   * 不做原单关联校验：退货数量超过历史销量但库存充足时同样允许。
-   */
-  function createReturn(input: SaleCreateInput): DocRow {
+  /** 退货冲减往来余额。选择有效账户时，同时登记实际退款。 */
+  function createReturn(input: SaleReturnInput): DocRow {
     const warehouseId = Number(input.warehouse_id)
     if (!Number.isInteger(warehouseId)) {
       throw new BizError('VALIDATION', '仓库不能为空')
@@ -136,13 +106,20 @@ export function createSaleService(db: DB) {
         throw new BizError('VALIDATION', '明细单价不能为负数')
       }
     }
+    const accountId = input.account_id ?? null
     let doc: DocRow | undefined
     db.transaction(() => {
+      if (accountId !== null) {
+        const account = db.prepare('SELECT id FROM fund_account WHERE id = ? AND disabled = 0').get(accountId)
+        if (!account) throw new BizError('NOT_FOUND', '结算账户不存在或已停用')
+      }
       doc = docService.create({
         type: 'sale_return',
         date: input.date,
         partner_id: input.customer_id,
         warehouse_id: warehouseId,
+        account_id: accountId ?? undefined,
+        source_doc_id: input.source_doc_id,
         remark: input.remark,
         items: input.items.map((it) => ({
           product_id: it.product_id,
@@ -175,19 +152,19 @@ export function createSaleService(db: DB) {
       })
       inventoryService.applyChanges(changes)
       const total = doc?.total_amount ?? 0
-      if (total > 0) {
+      if (accountId !== null && total > 0) {
         db.prepare(
           `INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark)
-           VALUES (?, 'sale_return', ?, ?, 'in', ?, ?)`
+           VALUES (?, 'sale_return', ?, ?, 'out', ?, ?)`
         ).run(
-          1,
+          accountId,
           doc?.id ?? 0,
           total,
           doc?.date ?? '',
           input.remark ?? null
         )
       }
-    })()
+    }).immediate()
     return doc as DocRow
   }
 

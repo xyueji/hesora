@@ -21,3 +21,13 @@ describe('setting.service', () => {
   it('rejects empty key', () => { expect(() => s.set('', 'v')).toThrow() })
   it('remove deletes key', () => { s.set('k','v'); s.remove('k'); expect(s.get('k')).toBeNull() })
 })
+
+it('keeps license and sync secrets outside the generic setting API', () => {
+  const db = openMemDb()
+  db.prepare("INSERT INTO app_setting VALUES ('sync.webdav.password', 'secret')").run()
+  const settings = createSettingService(db)
+  expect(settings.getAll()).toEqual({})
+  expect(settings.get('sync.webdav.password')).toBeNull()
+  expect(() => settings.set('license.start', 'new')).toThrow()
+  expect(() => settings.remove('sync.webdav.password')).toThrow()
+})

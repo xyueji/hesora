@@ -1,7 +1,8 @@
 import type { Database } from 'better-sqlite3'
 import { BizError } from '../../../shared/result'
+import { DOC_TYPE_LABELS } from '../../../shared/types/doc'
 import type { DocPageResult, DocQuery, DocRow } from '../../../shared/types/doc'
-import type { FundFlowRow, PaymentCreateInput, PaymentDetail } from '../../../shared/types/payment'
+import type { FundFlowRow, PaymentCreateInput, PaymentDetail, PaymentType } from '../../../shared/types/payment'
 import { createDocService, type DocService } from '../doc/doc.service'
 
 export type DB = Database
@@ -40,18 +41,24 @@ export function createPaymentService(db: DB) {
     return row ? toFlowRow(row) : null
   }
 
-  function createOne(type: 'receipt' | 'payment', input: PaymentCreateInput): DocRow {
+  function createOne(type: PaymentType, input: PaymentCreateInput): DocRow {
+    if (!['receipt', 'payment', 'other_in', 'other_out'].includes(type)) {
+      throw new BizError('VALIDATION', '无效的资金单据类型')
+    }
     const accountId = Number(input.account_id)
     if (!Number.isInteger(accountId)) {
       throw new BizError('VALIDATION', '结算账户不能为空')
     }
-    const acc = db.prepare('SELECT id FROM fund_account WHERE id = ?').get(accountId)
-    if (!acc) throw new BizError('NOT_FOUND', '账户不存在')
+    const acc = db.prepare('SELECT id FROM fund_account WHERE id = ? AND disabled = 0').get(accountId)
+    if (!acc) throw new BizError('NOT_FOUND', '账户不存在或已停用')
     const amount = Number(input.amount)
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new BizError('VALIDATION', '金额必须大于0')
     }
     if (input.partner_id !== undefined && input.partner_id !== null) {
+      if (type === 'other_in' || type === 'other_out') {
+        throw new BizError('VALIDATION', '其他收支不计入往来余额')
+      }
       const table = type === 'receipt' ? 'customer' : 'supplier'
       const p = db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(Number(input.partner_id))
       if (!p) {
@@ -76,7 +83,7 @@ export function createPaymentService(db: DB) {
         doc_type: type,
         doc_id: docId,
         amount,
-        direction: type === 'receipt' ? 'in' : 'out',
+        direction: type === 'receipt' || type === 'other_in' ? 'in' : 'out',
         date: doc!.date,
         remark: input.remark ?? null
       })
@@ -95,22 +102,32 @@ export function createPaymentService(db: DB) {
     return createOne('payment', input)
   }
 
-  function getDetail(type: 'receipt' | 'payment', id: number): PaymentDetail {
+  function getDetail(type: PaymentType, id: number): PaymentDetail {
     const doc = docService.getById(id)
     if (!doc || doc.type !== type) {
-      throw new BizError('NOT_FOUND', `${type === 'receipt' ? '收款单' : '付款单'}不存在：${id}`)
+      throw new BizError('NOT_FOUND', `${DOC_TYPE_LABELS[type]}不存在：${id}`)
     }
     return { doc, flow: getFlowByDoc(id) }
   }
 
   function query(
-    type: 'receipt' | 'payment',
+    type: PaymentType,
     q: Omit<DocQuery, 'type'>
   ): DocPageResult {
     return docService.query({ ...q, type })
   }
 
-  return { createReceipt, createPayment, getReceiptDetail: (id: number) => getDetail('receipt', id), getPaymentDetail: (id: number) => getDetail('payment', id), queryReceipt: (q: Omit<DocQuery, 'type'>) => query('receipt', q), queryPayment: (q: Omit<DocQuery, 'type'>) => query('payment', q) }
+  return {
+    createOne,
+    createReceipt,
+    createPayment,
+    getDetail,
+    query,
+    getReceiptDetail: (id: number) => getDetail('receipt', id),
+    getPaymentDetail: (id: number) => getDetail('payment', id),
+    queryReceipt: (q: Omit<DocQuery, 'type'>) => query('receipt', q),
+    queryPayment: (q: Omit<DocQuery, 'type'>) => query('payment', q)
+  }
 }
 
 export type PaymentService = ReturnType<typeof createPaymentService>

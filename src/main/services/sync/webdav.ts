@@ -24,7 +24,7 @@ export async function webdavPut(
   password = ''
 ): Promise<DavResponse> {
   const res = await fetch(url, {
-    method: 'PUT',
+    method: 'PUT', redirect: 'error', signal: AbortSignal.timeout(30000),
     headers: headers(username, password, { 'Content-Type': 'application/octet-stream' }),
     body: new Uint8Array(body)
   })
@@ -32,13 +32,23 @@ export async function webdavPut(
 }
 
 export async function webdavGet(url: string, username = '', password = ''): Promise<DavResponse> {
-  const res = await fetch(url, { method: 'GET', headers: headers(username, password) })
+  const res = await fetch(url, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(30000), headers: headers(username, password) })
   return { ok: res.ok, status: res.status, arrayBuffer: () => res.arrayBuffer() }
 }
 
 export async function webdavMkcol(url: string, username = '', password = ''): Promise<DavResponse> {
-  const res = await fetch(url, { method: 'MKCOL', headers: headers(username, password) })
+  const res = await fetch(url, { method: 'MKCOL', redirect: 'error', signal: AbortSignal.timeout(30000), headers: headers(username, password) })
   return { ok: res.ok || res.status === 405, status: res.status, arrayBuffer: () => res.arrayBuffer() }
+}
+
+export async function webdavPropfind(url: string, username = '', password = ''): Promise<DavResponse> {
+  const res = await fetch(url, {
+    method: 'PROPFIND',
+    redirect: 'error',
+    signal: AbortSignal.timeout(30_000),
+    headers: headers(username, password, { Depth: '0' })
+  })
+  return { ok: res.ok, status: res.status, arrayBuffer: () => res.arrayBuffer() }
 }
 
 /** Join a base dir URL and a filename, ensuring exactly one slash between them. */

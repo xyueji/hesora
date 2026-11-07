@@ -1,6 +1,9 @@
 // 零依赖 CSV 工具：导出（BOM + CRLF）与 RFC4180 风格解析。
 const BOM = '\ufeff'
 
+export const PRODUCT_IMPORT_COLUMNS = ['编码', '名称', '基本单位', '零售价', '批发价', '进价', '追踪方式']
+export const OPENING_STOCK_IMPORT_COLUMNS = ['商品编码', '数量', '成本单价', '批次号']
+
 /** 转义单个字段：包含逗号/引号/换行时加双引号，内部引号翻倍。 */
 export function csvEscape(v: string | number | null): string {
   if (v === null || v === undefined) return ''

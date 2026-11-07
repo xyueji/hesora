@@ -70,7 +70,7 @@ describe('arrears.service', () => {
     })
   })
 
-  it('receivables: retail flow counts as received', () => {
+  it('receivables: fully paid retail does not reduce prior debt', () => {
     const { customerId, accountId, warehouseId, productId } = setupBase()
     // 零售单带客户与结算账户 → fund_flow doc_type='retail', direction='in'
     db.transaction(() => {
@@ -90,7 +90,40 @@ describe('arrears.service', () => {
     const rows = svc.receivables()
     const row = rows.find((r) => r.partner_id === customerId)
     expect(row?.settled).toBe(80)
-    expect(row?.balance).toBe(20)
+    expect(row?.amount).toBe(80)
+    expect(row?.balance).toBe(100)
+  })
+
+  it('reduces the net receivable only for returns credited to the customer account', () => {
+    const { customerId, accountId, warehouseId, productId } = setupBase()
+    doSale(customerId, warehouseId, productId, 50)
+    const sale = createSaleService(db)
+    const input = {
+      customer_id: customerId,
+      warehouse_id: warehouseId,
+      items: [{ product_id: productId, qty: 1, price: 10 }]
+    }
+    sale.createReturn(input)
+    sale.createReturn({ ...input, account_id: accountId })
+    expect(svc.receivables()[0]).toMatchObject({ amount: 30, settled: -10, balance: 140 })
+  })
+
+  it('reduces the net payable only for returns credited by the supplier', () => {
+    const { supplierId, accountId, warehouseId, productId } = setupBase()
+    const purchase = createPurchaseService(db)
+    purchase.create({
+      supplier_id: supplierId,
+      warehouse_id: warehouseId,
+      items: [{ product_id: productId, qty: 2, price: 20 }]
+    })
+    const input = {
+      supplier_id: supplierId,
+      warehouse_id: warehouseId,
+      items: [{ product_id: productId, qty: 1, price: 20 }]
+    }
+    purchase.createReturn(input)
+    purchase.createReturn({ ...input, account_id: accountId })
+    expect(svc.payables()[0]).toMatchObject({ amount: 0, settled: -20, balance: 70 })
   })
 
   it('payables: opening + purchases - paid', () => {

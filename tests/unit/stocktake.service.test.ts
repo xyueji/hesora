@@ -67,6 +67,24 @@ describe('stocktake.service', () => {
     expect(detail.items[0]!.qty).toBeCloseTo(30)
   })
 
+  it('rejects repeated counts for the same product and batch without changing stock', () => {
+    const line = { product_id: ctx.productId, actual_qty: 90 }
+    expect(() => ctx.stocktakeService.create({
+      warehouse_id: ctx.whA,
+      items: [line, line]
+    })).toThrow(/重复/)
+    expect(ctx.inventoryService.getByProduct(ctx.productId, ctx.whA)[0]?.qty).toBe(100)
+  })
+
+  it('records the difference in the selected unit while posting base units', () => {
+    const doc = ctx.stocktakeService.create({
+      warehouse_id: ctx.whA,
+      items: [{ product_id: ctx.productId, actual_qty: 8, unit: '箱', rate: 12 }]
+    })
+    expect(ctx.inventoryService.getByProduct(ctx.productId, ctx.whA)[0]?.qty).toBe(96)
+    expect(ctx.stocktakeService.getDetail(doc.id).items[0]?.qty).toBeCloseTo(4 / 12)
+  })
+
   it('无差异 (actual == book) throws VALIDATION 无差异', () => {
     expect(() =>
       ctx.stocktakeService.create({

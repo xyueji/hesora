@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
+import brandIcon from '../assets/hesora.svg'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElNotification } from 'element-plus'
 import { currentUser, hasPermission, logout } from '../stores/auth'
 import { updateApi } from '../api/update'
+import ModuleTour from '../components/ModuleTour.vue'
 import type { PermissionKey } from '../../../shared/permissions'
 
 const route = useRoute()
@@ -23,13 +25,15 @@ interface MenuGroup {
 }
 
 const plainItems: MenuItem[] = [
-  { path: '/', label: '首页', perm: 'report.dashboard' },
+  { path: '/', label: '经营概况', perm: 'report.dashboard' },
+  { path: '/doc/workflow', label: '报价与订单审核', perm: 'system.setting' },
   { path: '/product/list', label: '商品管理', perm: 'product.view' },
   { path: '/customer/list', label: '客户', perm: 'customer.view' },
   { path: '/supplier/list', label: '供应商', perm: 'supplier.view' },
   { path: '/warehouse/list', label: '仓库', perm: 'warehouse.view' },
   { path: '/account/list', label: '资金账户', perm: 'fund.view' },
   { path: '/opening', label: '期初建账', perm: 'opening.edit' },
+  { path: '/about', label: '关于禾序' },
   { path: '/setting', label: '设置', perm: 'system.setting' },
   { path: '/system/users', label: '用户管理', perm: 'system.user' },
   { path: '/sync', label: '同步备份', perm: 'data.sync' },
@@ -75,7 +79,8 @@ const groups: MenuGroup[] = [
     items: [
       { path: '/payment/receipt', label: '收款单', perm: 'doc.payment' },
       { path: '/payment/payment', label: '付款单', perm: 'doc.payment' },
-      { path: '/payment/list', label: '收付款列表', perm: 'doc.payment' }
+      { path: '/payment/list', label: '收付款列表', perm: 'doc.payment' },
+      { path: '/account/ledger', label: '资金余额与转账', perm: 'fund.edit' }
     ]
   },
   {
@@ -98,6 +103,7 @@ const groups: MenuGroup[] = [
     perm: 'report.docSearch',
     items: [
       { path: '/stats/arrears', label: '应收应付', perm: 'report.arrears' },
+      { path: '/stats/business', label: '经营报表', perm: 'report.business' },
       { path: '/doc/search', label: '单据查询', perm: 'report.docSearch' }
     ]
   }
@@ -111,7 +117,7 @@ const visibleGroups = computed(() =>
 )
 
 // 提示式更新：每天最多检查一次，有新版本时弹通知，点击"下载"用系统浏览器打开
-onMounted(async () => {
+async function notifyUpdate() {
   const r = await updateApi.checkDaily()
   if (r && r.hasUpdate) {
     ElNotification({
@@ -124,7 +130,13 @@ onMounted(async () => {
       }
     })
   }
+}
+let updateTimer: ReturnType<typeof setInterval> | undefined
+onMounted(() => {
+  void notifyUpdate()
+  updateTimer = setInterval(() => void notifyUpdate(), 60 * 60 * 1000)
 })
+onUnmounted(() => clearInterval(updateTimer))
 
 async function onLogout() {
   try {
@@ -139,8 +151,8 @@ async function onLogout() {
 
 <template>
   <el-container class="main-layout">
-    <el-aside width="200px" class="layout-aside">
-      <div class="brand">进销存管理系统</div>
+    <el-aside width="216px" class="layout-aside">
+      <div class="brand"><img :src="brandIcon" alt="禾序" /><div><strong>禾序进销存</strong><small>HESORA INVENTORY</small></div></div>
       <el-menu router :default-active="route.path" class="layout-menu">
         <el-menu-item v-for="item in visiblePlain.filter((i) => i.path === '/')" :key="item.path" :index="item.path">
           {{ item.label }}
@@ -156,13 +168,14 @@ async function onLogout() {
     </el-aside>
     <el-container>
       <el-header class="layout-header">
-        <span>默认仓库</span>
+        <div class="workspace-label"><span class="status-dot"></span>本地工作台 <span class="workspace-caption">货有数，账有序。</span></div>
         <div class="user-area">
           <span class="user-name">{{ currentUser?.username }}</span>
           <span class="user-role">{{ currentUser?.role === 'admin' ? '管理员' : '收银员' }}</span>
           <el-button size="small" text type="primary" @click="onLogout">退出登录</el-button>
         </div>
       </el-header>
+      <ModuleTour />
       <el-main>
         <router-view />
       </el-main>

@@ -15,6 +15,11 @@ export interface PurchaseCreateInput {
   items: PurchaseItemInput[]
 }
 
+export interface PurchaseReturnInput extends PurchaseCreateInput {
+  account_id?: number
+  source_doc_id?: number
+}
+
 export interface PurchaseQuery {
   date_from?: string
   date_to?: string

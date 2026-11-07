@@ -30,6 +30,7 @@ describe('inventory.service', () => {
     const r = ctx.inv.getByProduct(ctx.productId, ctx.whId)
     expect(r[0]!.qty).toBe(200)
     expect(r[0]!.moving_cost).toBeCloseTo(2.5)
+    expect(ctx.inv.listCostLogs(ctx.productId)[1]).toMatchObject({ unit_cost: 3, after_cost: 2.5 })
   })
 
   it('OUT deducts at moving_cost and protects negative qty', () => {

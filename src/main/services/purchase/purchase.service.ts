@@ -4,35 +4,10 @@ import type { DocItemRow, DocPageResult, DocQuery, DocRow } from '../../../share
 import { createDocService, type DocService } from '../doc/doc.service'
 import { createInventoryService } from '../inventory/inventory.service'
 
+import type { PurchaseCreateInput, PurchaseQuery, PurchaseReturnInput } from '../../../shared/types/purchase'
+export type { PurchaseItemInput, PurchaseCreateInput, PurchaseQuery } from '../../../shared/types/purchase'
+
 export type DB = Database
-
-export interface PurchaseItemInput {
-  product_id: number
-  batch_no?: string
-  unit?: string
-  rate?: number
-  qty: number
-  price: number
-}
-
-export interface PurchaseCreateInput {
-  supplier_id?: number
-  warehouse_id: number
-  date?: string
-  remark?: string
-  items: PurchaseItemInput[]
-}
-
-export interface PurchaseQuery {
-  date_from?: string
-  date_to?: string
-  keyword?: string
-  partner_id?: number
-  /** 不传返回采购单+退货单；'purchase' 仅采购单；'purchase_return' 仅退货单 */
-  type?: 'purchase' | 'purchase_return'
-  page: number
-  pageSize: number
-}
 
 export interface PurchaseDetail {
   doc: DocRow
@@ -106,12 +81,8 @@ export function createPurchaseService(db: DB) {
     return doc as DocRow
   }
 
-  /**
-   * 采购退货单：type='purchase_return'（编号 CTyyyyMMddNNNN），货出库（OUT，按移动加权成本），
-   * 款项按应付减少处理，统一记资金流水 fund_flow（direction 'out'，doc_type 'purchase_return'）。
-   * 退货金额 total_amount = Σ qty*price*rate。校验规则与采购单一致。
-   */
-  function createReturn(input: PurchaseCreateInput): DocRow {
+  /** 退货冲减往来余额。选择有效账户时，同时登记实际退款。 */
+  function createReturn(input: PurchaseReturnInput): DocRow {
     const warehouseId = Number(input.warehouse_id)
     if (!Number.isInteger(warehouseId)) {
       throw new BizError('VALIDATION', '仓库不能为空')
@@ -134,13 +105,20 @@ export function createPurchaseService(db: DB) {
         throw new BizError('VALIDATION', '明细单价不能为负数')
       }
     }
+    const accountId = input.account_id ?? null
     let doc: DocRow | undefined
     db.transaction(() => {
+      if (accountId !== null) {
+        const account = db.prepare('SELECT id FROM fund_account WHERE id = ? AND disabled = 0').get(accountId)
+        if (!account) throw new BizError('NOT_FOUND', '结算账户不存在或已停用')
+      }
       doc = docService.create({
         type: 'purchase_return',
         date: input.date,
         partner_id: input.supplier_id,
         warehouse_id: warehouseId,
+        account_id: accountId ?? undefined,
+        source_doc_id: input.source_doc_id,
         remark: input.remark,
         items: input.items.map((it) => ({
           product_id: it.product_id,
@@ -166,19 +144,19 @@ export function createPurchaseService(db: DB) {
       })
       inventoryService.applyChanges(changes)
       const total = doc?.total_amount ?? 0
-      if (total > 0) {
+      if (accountId !== null && total > 0) {
         db.prepare(
           `INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark)
-           VALUES (?, 'purchase_return', ?, ?, 'out', ?, ?)`
+           VALUES (?, 'purchase_return', ?, ?, 'in', ?, ?)`
         ).run(
-          1,
+          accountId,
           doc?.id ?? 0,
           total,
           doc?.date ?? '',
           input.remark ?? null
         )
       }
-    })()
+    }).immediate()
     return doc as DocRow
   }
 
@@ -196,6 +174,7 @@ export function createPurchaseService(db: DB) {
       date_from: q.date_from,
       date_to: q.date_to,
       keyword: q.keyword,
+      partner_id: q.partner_id,
       page: q.page,
       pageSize: q.pageSize
     }

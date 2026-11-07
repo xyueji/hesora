@@ -3,3 +3,7 @@ out
 dist
 *.log
 .DS_Store
+
+# Activation server signing material
+tools/activation-server/*.pem
+tools/activation-server/licenses.db*

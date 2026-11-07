@@ -1,7 +1,9 @@
-import { mkdirSync, copyFileSync, statSync, readdirSync } from 'fs'
-import { join, basename } from 'path'
-import type { Database } from 'better-sqlite3'
+import Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, lstatSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { join, basename, dirname, resolve } from 'node:path'
 import { BizError } from '../../../shared/result'
+import { createAuditService } from '../audit/audit.service'
 
 export interface BackupInfo {
   name: string
@@ -14,56 +16,110 @@ function timestamp(d = new Date()): string {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
 }
 
-export function createBackupService(db: Database, dbFilePath: string) {
-  return {
-    /** WAL checkpoint then copy the db file into dirPath; returns the backup file path. */
-    backupTo(dirPath: string, suffix = ''): string {
-      db.pragma('wal_checkpoint(TRUNCATE)')
-      mkdirSync(dirPath, { recursive: true })
-      const base = basename(dbFilePath, '.db')
-      const name = suffix
-        ? `${base}-${suffix}-${timestamp()}.db`
-        : `${base.replace(/-backup(-before-restore)?$/, '') || 'zhjs-erp'}-backup-${timestamp()}.db`
-      const target = join(dirPath, name)
-      copyFileSync(dbFilePath, target)
-      return target
-    },
+function vacuumInto(db: Database.Database, destination: string): void {
+  const temporary = `${destination}.${randomUUID()}.tmp`
+  try {
+    db.prepare('VACUUM INTO ?').run(temporary)
+    renameSync(temporary, destination)
+  } finally {
+    rmSync(temporary, { force: true })
+  }
+}
 
-    listBackups(dirPath: string): BackupInfo[] {
-      let names: string[]
-      try {
-        names = readdirSync(dirPath)
-      } catch {
-        return []
-      }
-      const out: BackupInfo[] = []
-      for (const name of names) {
-        if (!name.endsWith('.db')) continue
-        const full = join(dirPath, name)
-        const st = statSync(full)
-        if (!st.isFile()) continue
-        out.push({ name, mtime: st.mtimeMs, size: st.size })
-      }
-      out.sort((a, b) => b.mtime - a.mtime)
-      return out
-    },
+export function applyPendingRestore(currentDbPath: string): boolean {
+  const pending = `${currentDbPath}.restore`
+  if (!existsSync(pending)) return false
+  // The previous process closes the database before restarting. Refuse to
+  // overwrite a database with outstanding journal files.
+  if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(currentDbPath + suffix))) {
+    throw new BizError('VALIDATION', '数据库存在未处理的事务文件，暂缓恢复')
+  }
+  renameSync(pending, currentDbPath)
+  return true
+}
 
-    /**
-     * Copy backupPath over currentDbPath. Safety: backs up the current db first
-     * with a `before-restore` suffix. Note: the running process keeps its open db
-     * handle — the caller (Electron layer) should relaunch the app after restore.
-     */
-    restoreFrom(backupPath: string, currentDbPath: string): void {
-      try {
-        statSync(backupPath)
-      } catch {
-        throw new BizError('NOT_FOUND', `备份文件不存在：${backupPath}`)
-      }
-      const dir = join(currentDbPath, '..')
-      this.backupTo(dir, 'before-restore')
-      copyFileSync(backupPath, currentDbPath)
+export function createBackupService(db: Database.Database, dbFilePath: string) {
+  function backupTo(dirPath: string, suffix = 'backup'): string {
+    mkdirSync(dirPath, { recursive: true })
+    const base = basename(dbFilePath, '.db')
+    const target = join(dirPath, `${base}-${suffix}-${timestamp()}-${randomUUID()}.db`)
+    vacuumInto(db, target)
+    return target
+  }
+
+  function listBackups(dirPath: string): BackupInfo[] {
+    try {
+      return readdirSync(dirPath, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.db'))
+        .map(({ name }) => {
+          const st = lstatSync(join(dirPath, name))
+          return { name, mtime: st.mtimeMs, size: st.size }
+        })
+        .sort((a, b) => b.mtime - a.mtime)
+    } catch {
+      return []
     }
   }
+
+  function dailyBackup(dirPath: string): void {
+    const today = timestamp().slice(0, 8)
+    const pattern = /^(?:hesora-inventory|zhjs-erp)-(?:daily|backup)-(\d{8}-\d{6})/
+    const daily = () => listBackups(dirPath)
+      .map((entry) => ({ ...entry, date: pattern.exec(entry.name)?.[1] }))
+      .filter((entry) => entry.date !== undefined)
+      .sort((a, b) => b.date!.localeCompare(a.date!))
+    if (!daily().some(({ name }) => name.includes(`-daily-${today}-`))) backupTo(dirPath, 'daily')
+    for (const { name } of daily().slice(30)) rmSync(join(dirPath, name), { force: true })
+  }
+
+  function restoreFrom(backupPath: string, currentDbPath: string, safetyDir = dirname(currentDbPath), operator?: string, remoteSequence = 0): void {
+    if (!existsSync(backupPath)) throw new BizError('NOT_FOUND', '备份文件不存在')
+    if (resolve(backupPath) === resolve(currentDbPath)) throw new BizError('VALIDATION', '请选择独立的备份文件')
+    const pending = `${currentDbPath}.restore`
+    const staged = `${pending}.${randomUUID()}.tmp`
+    const originalVersion = Number(db.pragma('user_version', { simple: true }))
+    try {
+      const source = new Database(backupPath, { readonly: true, fileMustExist: true })
+      try {
+        const version = Number(source.pragma('user_version', { simple: true }))
+        if (version < 1 || version > originalVersion ||
+            source.pragma('quick_check', { simple: true }) !== 'ok') {
+          throw new Error('incompatible snapshot')
+        }
+        vacuumInto(source, staged)
+      } finally {
+        source.close()
+      }
+      const copy = new Database(staged, { fileMustExist: true })
+      try {
+        const settings = db.prepare("SELECT key, value FROM app_setting WHERE key LIKE 'license.%' OR key LIKE 'sync.%'").all() as { key: string; value: string }[]
+        copy.transaction(() => {
+          for (const table of ['product', 'inventory', 'warehouse']) {
+            copy.prepare(`SELECT id FROM ${table} LIMIT 0`).get()
+          }
+          copy.prepare("DELETE FROM app_setting WHERE key LIKE 'license.%' OR key LIKE 'sync.%'").run()
+          const write = copy.prepare('INSERT INTO app_setting (key, value) VALUES (?, ?)')
+          for (const { key, value } of settings) write.run(key, value)
+          if (remoteSequence > 0) {
+            const localSequence = Number(settings.find(({ key }) => key === "sync.sequence")?.value) || 0
+            copy.prepare("INSERT OR REPLACE INTO app_setting VALUES (?, ?)").run("sync.sequence", String(Math.max(localSequence, remoteSequence)))
+          }
+          copy.exec('CREATE TABLE IF NOT EXISTS platform_log (id INTEGER PRIMARY KEY, action TEXT NOT NULL, operator TEXT, detail TEXT NOT NULL, before_value TEXT, after_value TEXT, created_at TEXT NOT NULL)')
+          createAuditService(copy).record('restore', operator, basename(backupPath))
+        })()
+      } finally {
+        copy.close()
+      }
+      backupTo(safetyDir, 'before-restore')
+      renameSync(staged, pending)
+    } catch {
+      throw new BizError('VALIDATION', '备份文件无效，或无法写入恢复暂存文件')
+    } finally {
+      rmSync(staged, { force: true })
+    }
+  }
+
+  return { backupTo, listBackups, dailyBackup, restoreFrom }
 }
 
 export type BackupService = ReturnType<typeof createBackupService>

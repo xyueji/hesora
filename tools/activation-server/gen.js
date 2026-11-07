@@ -1,21 +1,23 @@
 #!/usr/bin/env node
-// Generate a license code: node gen.js "客户名" [days]
-import { sign } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { randomBytes } from 'node:crypto'
+import { generateCode, hashCode, openLicenses, readPrivateKey } from './license.js'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const [customer, daysArg] = process.argv.slice(2)
-if (!customer) {
-  console.error('usage: node gen.js "客户名" [days]')
+const args = process.argv.slice(2)
+const mode = args.shift()
+const [customer, daysArg] = args
+const days = daysArg === undefined ? 0 : Number(daysArg)
+if (!['--redeem', '--offline'].includes(mode) || !customer?.trim() ||
+    !Number.isSafeInteger(days) || days < 0 || days > 36500) {
+  console.error('Usage: node gen.js --redeem|--offline "customer" [days]')
   process.exit(1)
 }
-const privateKey = readFileSync(join(__dirname, 'private.pem'), 'utf8')
-const days = Number(daysArg)
-const expiresAt = days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : null
-const payload = { customer, issuedAt: new Date().toISOString(), expiresAt, machine: null }
-const canonical = JSON.stringify(payload)
-const sig = sign(null, Buffer.from(canonical, 'utf8'), privateKey)
-const code = `ZHJS1.${Buffer.from(canonical).toString('base64url')}.${sig.toString('base64url')}`
-console.log(code)
+const expiresAt = days ? new Date(Date.now() + days * 86_400_000).toISOString() : null
+if (mode === '--offline') {
+  console.log(generateCode({ customer, expiresAt }, readPrivateKey()))
+} else {
+  const db = openLicenses()
+  const code = `HSR-${randomBytes(24).toString('hex')}`
+  db.prepare('INSERT INTO redemption (code_hash, customer, expires_at) VALUES (?, ?, ?)').run(hashCode(code), customer, expiresAt)
+  db.close()
+  console.log(code)
+}

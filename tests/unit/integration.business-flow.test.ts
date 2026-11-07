@@ -198,7 +198,7 @@ describe('integration: business flow end-to-end', () => {
     expect(ctx.stock(productB, main).qty).toBeCloseTo(35)
     expect(ctx.stock(productB, main).moving_cost).toBeCloseTo((30 * 5 + 5 * 3) / 35)
 
-    // ── 10. 采购退货 B 2（老王，退价 5 → 应付减 10，资金流出 10）──
+    // ── 10. 采购退货 B 2（老王，退价 5，冲减应付 10）──
     // B 主仓 35-2=33（注：退货 OUT 按当前移动加权成本 (150+15)/35=4.714… 计）
     ctx.purchase.createReturn({
       supplier_id: laowang,
@@ -207,7 +207,7 @@ describe('integration: business flow end-to-end', () => {
     })
     expect(ctx.stock(productB, main).qty).toBeCloseTo(33)
 
-    // ── 11. 销售退货 A 3（张三，退价 3 → 应收减 9，资金流入 9）────
+    // ── 11. 销售退货 A 3（张三，退价 3，冲减应收 9）────
     // 退货入库成本 = 当前 A moving_cost 2.15625（第 9 步后）
     ctx.sale.createReturn({
       customer_id: zhangsan,
@@ -218,16 +218,14 @@ describe('integration: business flow end-to-end', () => {
     expect(ctx.stock(productA, main).moving_cost).toBeCloseTo(2.15625)
 
     // ── 12. 应收应付汇总 ────────────────────────────────────────
-    // 张三余额 = 期初0 + 销售60 − 收款30 = 30。
-    // 已知限制：销售退货单不计入应收（arrears 统计仅汇总 type='sale'），
-    // 因此退货减少的 9 不从余额扣除，余额仍为 30。
+    // 张三余额 = 期初0 + 销售60 − 退货9 − 收款30 = 21。
     const recv = ctx.arrears.receivables().find((r) => r.partner_id === zhangsan)
-    expect(recv).toMatchObject({ opening: 0, amount: 60, settled: 30, balance: 30 })
+    expect(recv).toMatchObject({ opening: 0, amount: 51, settled: 30, balance: 21 })
     const pay = ctx.arrears.payables().find((r) => r.partner_id === laowang)
-    expect(pay).toMatchObject({ opening: 0, amount: 250, settled: 0, balance: 250 })
+    expect(pay).toMatchObject({ opening: 0, amount: 240, settled: 0, balance: 240 })
 
     // ── 13. 资金流水合计 ────────────────────────────────────────
-    // 流入 = 零售15 + 收款30 + 销售退货9 = 54；流出 = 采购退货10
-    expect(ctx.flowTotals()).toEqual({ in: 54, out: 10 })
+    // 流入 = 零售15 + 收款30，两笔退货均冲减往来。
+    expect(ctx.flowTotals()).toEqual({ in: 45, out: 0 })
   })
 })

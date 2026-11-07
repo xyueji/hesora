@@ -7,6 +7,7 @@ import { createWarehouseService } from '../../src/main/services/warehouse/wareho
 import { createCustomerService } from '../../src/main/services/customer/customer.service'
 import { createSupplierService } from '../../src/main/services/supplier/supplier.service'
 import { createInventoryService } from '../../src/main/services/inventory/inventory.service'
+import { createFundService } from '../../src/main/services/fund/fund.service'
 import type { DB } from '../../src/main/services/doc/doc.service'
 
 function setup() {
@@ -40,7 +41,11 @@ function setup() {
     name: '测试供应商',
     opening_payable: 0
   })
+  const fund = createFundService(db)
+  fund.create({ name: '备用现金', type: 'cash' })
+  const accountId = fund.create({ name: '结算账户', type: 'bank' })
   return {
+    accountId,
     db,
     saleService,
     purchaseService,
@@ -65,8 +70,8 @@ describe('return.service', () => {
     ctx = setup()
   })
 
-  it('purchase return: stock reduced, doc CT, fund_flow out row', () => {
-    const { db, purchaseService, productId, whId, supplierId } = ctx
+  it('purchase return: stock reduced and supplier refund flows into selected account', () => {
+    const { db, purchaseService, productId, whId, supplierId, accountId } = ctx
     purchaseService.create({
       supplier_id: supplierId,
       warehouse_id: whId,
@@ -75,6 +80,7 @@ describe('return.service', () => {
     expect(stockOf(db, productId, whId).qty).toBe(10)
 
     const doc = purchaseService.createReturn({
+      account_id: accountId,
       supplier_id: supplierId,
       warehouse_id: whId,
       items: [{ product_id: productId, qty: 4, price: 2 }]
@@ -86,13 +92,12 @@ describe('return.service', () => {
     const flow = db
       .prepare("SELECT * FROM fund_flow WHERE doc_id = ? AND doc_type = 'purchase_return'")
       .get(doc.id) as { direction: string; amount: number } | undefined
-    expect(flow).toBeDefined()
-    expect(flow?.direction).toBe('out')
-    expect(flow?.amount).toBe(8)
+    expect(doc.account_id).toBe(accountId)
+    expect(flow).toMatchObject({ account_id: accountId, direction: 'in', amount: 8 })
   })
 
-  it('sale return after sale: stock increased at current moving_cost, doc XT, fund_flow in', () => {
-    const { db, purchaseService, saleService, productId, whId, customerId } = ctx
+  it('sale return: stock increased at moving cost and refund flows out of selected account', () => {
+    const { db, purchaseService, saleService, productId, whId, customerId, accountId } = ctx
     purchaseService.create({
       warehouse_id: whId,
       items: [{ product_id: productId, qty: 100, price: 2 }]
@@ -105,6 +110,7 @@ describe('return.service', () => {
     expect(stockOf(db, productId, whId)).toEqual({ qty: 90, moving_cost: 2 })
 
     const doc = saleService.createReturn({
+      account_id: accountId,
       customer_id: customerId,
       warehouse_id: whId,
       items: [{ product_id: productId, qty: 10, price: 3 }]
@@ -117,8 +123,8 @@ describe('return.service', () => {
     const flow = db
       .prepare("SELECT * FROM fund_flow WHERE doc_id = ? AND doc_type = 'sale_return'")
       .get(doc.id) as { direction: string; amount: number } | undefined
-    expect(flow?.direction).toBe('in')
-    expect(flow?.amount).toBe(30)
+    expect(doc.account_id).toBe(accountId)
+    expect(flow).toMatchObject({ account_id: accountId, direction: 'out', amount: 30 })
 
     const costLog = db
       .prepare("SELECT * FROM cost_log WHERE source = 'sale_return' AND source_id = ?")
@@ -126,6 +132,76 @@ describe('return.service', () => {
     expect(costLog?.change_qty).toBe(10)
     expect(costLog?.unit_cost).toBe(2)
     expect(saleDoc).toBeDefined()
+  })
+
+  it('records a credit return without creating a cash movement', () => {
+    const { db, saleService, productId, whId, customerId } = ctx
+    const doc = saleService.createReturn({
+      customer_id: customerId,
+      warehouse_id: whId,
+      items: [{ product_id: productId, qty: 1, price: 3 }]
+    })
+    expect(doc.account_id).toBeNull()
+    expect(db.prepare('SELECT * FROM fund_flow WHERE doc_id = ?').get(doc.id)).toBeUndefined()
+  })
+
+  it('caps linked purchase returns by original lot and remaining base units', () => {
+    const { db, purchaseService, productId, whId, supplierId } = ctx
+    const source = purchaseService.create({
+      supplier_id: supplierId,
+      warehouse_id: whId,
+      items: [{ product_id: productId, batch_no: 'A', qty: 2, rate: 12, price: 24 }]
+    })
+    purchaseService.create({
+      warehouse_id: whId,
+      items: [{ product_id: productId, batch_no: 'A', qty: 20, price: 2 }]
+    })
+    const input = { source_doc_id: source.id, supplier_id: supplierId, warehouse_id: whId }
+    const returned = purchaseService.createReturn({
+      ...input, items: [{ product_id: productId, batch_no: 'A', qty: 1, rate: 12, price: 24 }]
+    })
+    expect(purchaseService.getDetail(returned.id).doc.source_doc_id).toBe(source.id)
+    expect(() => purchaseService.createReturn({
+      ...input,
+      items: [
+        { product_id: productId, batch_no: 'A', qty: 6, price: 2 },
+        { product_id: productId, batch_no: 'A', qty: 7, price: 2 }
+      ]
+    })).toThrow(/可退数量/)
+    expect(() => purchaseService.createReturn({
+      ...input, items: [{ product_id: productId, batch_no: 'B', qty: 1, price: 2 }]
+    })).toThrow(/可退数量/)
+    expect(purchaseService.query({ type: 'purchase_return', page: 1, pageSize: 10 }).total).toBe(1)
+    expect(ctx.inventoryService.getByProduct(productId, whId)[0]?.qty).toBe(32)
+    expect(db.prepare('SELECT * FROM fund_flow').all()).toHaveLength(0)
+  })
+
+  it('rejects a linked sale return when the source customer differs', () => {
+    const { purchaseService, saleService, productId, whId, customerId } = ctx
+    const items = [{ product_id: productId, qty: 1, price: 3 }]
+    purchaseService.create({ warehouse_id: whId, items })
+    const source = saleService.create({ customer_id: customerId, warehouse_id: whId, items })
+    expect(() => saleService.createReturn({
+      source_doc_id: source.id, warehouse_id: whId, items
+    })).toThrow(/往来单位/)
+    const returned = saleService.createReturn({
+      source_doc_id: source.id, customer_id: customerId, warehouse_id: whId, items
+    })
+    expect(saleService.getDetail(returned.id).doc.source_doc_id).toBe(source.id)
+    expect(() => saleService.createReturn({
+      source_doc_id: source.id, customer_id: customerId, warehouse_id: whId, items
+    })).toThrow(/可退数量/)
+  })
+
+  it('rejects refunds to an invalid account before changing stock', () => {
+    const { db, saleService, productId, whId } = ctx
+    expect(() => saleService.createReturn({
+      account_id: 99999,
+      warehouse_id: whId,
+      items: [{ product_id: productId, qty: 1, price: 3 }]
+    })).toThrowError(/账户/)
+    expect(stockOf(db, productId, whId).qty).toBe(0)
+    expect(db.prepare('SELECT * FROM doc').all()).toHaveLength(0)
   })
 
   it('sale return more than sold but within stock: allowed', () => {

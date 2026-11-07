@@ -93,16 +93,17 @@ describe('license.service', () => {
   })
 
   it('stored code tampered in db → falls back to trial', () => {
-    const svc = makeService()
+    const db = openMemDb()
+    const svc = createLicenseService(db, pubPem)
     const code = generateLicenseCode({ customer: 'a', issuedAt: '2026-01-01T00:00:00Z' }, privPem)
     svc.activate(code)
     // corrupt the stored code directly
-    svc._testSetStoredCode?.('ZHJS1.broken.sig')
+    db.prepare("UPDATE app_setting SET value = 'ZHJS1.broken.sig' WHERE key = 'license.code'").run()
     const s = svc.getStatus()
     expect(s.mode).toBe('trial')
   })
 
-  it('expired license code still verifies but reports licensed (expiry optional)', () => {
+  it('accepts a license with a future expiry', () => {
     const svc = makeService()
     const code = generateLicenseCode(
       { customer: 'a', issuedAt: '2020-01-01T00:00:00Z', expiresAt: '2030-01-01T00:00:00Z' },
@@ -113,4 +114,59 @@ describe('license.service', () => {
     expect(s.mode).toBe('licensed')
     expect(s.customer).toBe('a')
   })
+})
+
+describe('license enforcement', () => {
+  it('rejects an expired license', () => {
+    const svc = makeService()
+    const code = generateLicenseCode({
+      customer: 'a', issuedAt: '2020-01-01T00:00:00Z', expiresAt: '2021-01-01T00:00:00Z'
+    }, privPem)
+    expect(() => svc.activate(code)).toThrow(/过期/)
+  })
+
+  it('rejects a license bound to a different machine', () => {
+    const svc = createLicenseService(openMemDb(), pubPem, { machine: () => 'my-device' })
+    const code = generateLicenseCode({ customer: 'a', issuedAt: '2020-01-01T00:00:00Z', machine: 'other-device' }, privPem)
+    expect(() => svc.activate(code)).toThrow(/设备/)
+  })
+
+  it('uses up the grace allowance on separate rollback events', () => {
+    const db = openMemDb()
+    let now = Date.parse('2026-11-07T00:00:00Z')
+    const svc = createLicenseService(db, pubPem, { now: () => now })
+    expect(svc.getStatus().daysLeft).toBe(TRIAL_DAYS)
+    for (let i = 0; i < 3; i++) {
+      now -= 60 * 60 * 1000
+      const days = svc.getStatus().daysLeft
+      expect(svc.getStatus().daysLeft).toBe(days)
+      expect(days).toBe(i < 2 ? TRIAL_DAYS : 0)
+      now += 60 * 60 * 1000
+      svc.getStatus()
+    }
+    expect(db.prepare("SELECT value FROM app_setting WHERE key = 'license.install_id'").pluck().get()).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('requires online activation to return a token bound to this machine', async () => {
+    const code = generateLicenseCode({ customer: 'a', issuedAt: '2020-01-01T00:00:00Z' }, privPem)
+    const svc = createLicenseService(openMemDb(), pubPem, {
+      machine: () => 'my-device', activationUrl: 'https://activation.example/api/activate',
+      fetchImpl: async () => new Response(JSON.stringify({ code }), { status: 200 })
+    })
+    await expect(svc.activateOnline('redeem')).rejects.toThrow(/设备/)
+    expect(svc.getStatus().mode).toBe('trial')
+  })
+})
+
+it('counts each app launch with a rolled-back clock once', () => {
+  const db = openMemDb()
+  let time = Date.parse('2026-11-07T00:00:00Z')
+  const now = () => time
+  createLicenseService(db, pubPem, { now }).getStatus()
+  time -= 60 * 60 * 1000
+  for (let launch = 1; launch <= 3; launch++) {
+    const svc = createLicenseService(db, pubPem, { now })
+    expect(svc.getStatus().daysLeft).toBe(launch < 3 ? TRIAL_DAYS : 0)
+    expect(svc.getStatus().daysLeft).toBe(launch < 3 ? TRIAL_DAYS : 0)
+  }
 })

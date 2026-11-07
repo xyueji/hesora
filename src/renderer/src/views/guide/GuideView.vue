@@ -32,8 +32,8 @@ const guideDone = ref(true)
 
 onMounted(async () => {
   try {
-    const show = await settingApi.get('guide.show')
-    guideDone.value = show === '0'
+    const show = await settingApi.get('guide.welcome_completed')
+    guideDone.value = show === '1'
     if (!replay.value) {
       // 试用剩余天数提示（登录页已提示，激活页兜底）
       try {
@@ -53,7 +53,7 @@ onMounted(async () => {
 async function finish() {
   try {
     if (!replay.value || !guideDone.value) {
-      await settingApi.set('guide.show', '0')
+      await settingApi.set('guide.welcome_completed', '1')
     }
     ElMessage.success('引导完成，开始使用吧！')
   } catch (e) {
@@ -74,7 +74,7 @@ function skip() {
 <template>
   <div class="guide-page">
     <div class="guide-card">
-      <h1 class="guide-title">欢迎使用进销存管理系统</h1>
+      <h1 class="guide-title">欢迎使用禾序进销存</h1>
       <p class="guide-sub">第一次使用？跟着这几步了解核心流程（约 1 分钟）</p>
 
       <el-steps :active="active" align-center finish-status="success" class="guide-steps">

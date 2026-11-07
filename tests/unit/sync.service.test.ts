@@ -6,6 +6,8 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { openMemDb } from '../helpers/mem-db'
 import { createSyncService } from '../../src/main/services/sync/sync.service'
+import Database from 'better-sqlite3'
+import { decodeSnapshot } from '../../src/main/services/sync/sync.service'
 import { webdavPut, webdavGet } from '../../src/main/services/sync/webdav'
 
 describe('webdav client', () => {
@@ -44,7 +46,7 @@ describe('webdav client', () => {
   })
 
   it('put sends body with basic auth header', async () => {
-    const res = await webdavPut(`${base}/dav/zhjs-erp.db`, Buffer.from('data123'), 'u', 'p')
+    const res = await webdavPut(`${base}/dav/`, Buffer.from('data123'), 'u', 'p')
     expect(res.ok).toBe(true)
     const put = seen.find((s) => s.method === 'PUT' && s.body === 'data123')
     expect(put).toBeDefined()
@@ -65,7 +67,7 @@ describe('sync.service', () => {
   let dbFile: string
   let server: Server
   let base: string
-  let uploads: { url: string; auth: string | null; body: string }[] = []
+  let uploads: { url: string; auth: string | null; body: Buffer }[] = []
 
   beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), 'zhjs-sync-'))
@@ -73,18 +75,21 @@ describe('sync.service', () => {
     dbFile = join(dir, 'zhjs-erp.db')
     await writeFile(dbFile, 'db-v1')
     server = createServer((req, res) => {
-      let body = ''
-      req.on('data', (c: Buffer) => (body += c.toString()))
+      const chunks: Buffer[] = []
+      req.on('data', (c: Buffer) => chunks.push(c))
       req.on('end', () => {
+        const body = Buffer.concat(chunks)
         if (req.method === 'PUT') {
           uploads.push({ url: req.url ?? '', auth: req.headers.authorization ?? null, body })
           res.writeHead((req.url ?? '').startsWith('/bad') ? 500 : 201)
         } else if (req.method === 'GET') {
           if ((req.url ?? '').startsWith('/bad')) {
             res.writeHead(500)
-          } else {
+          } else if (req.url?.endsWith('/zhjs-erp.db')) {
             res.writeHead(200)
             res.end('remote-db-content')
+          } else {
+            res.writeHead(404)
           }
         } else {
           res.writeHead(207)
@@ -129,7 +134,17 @@ describe('sync.service', () => {
     svc.saveConfig({ type: 'local', local: { dir: target } })
     const r = await svc.syncNow()
     expect(r.ok).toBe(true)
-    expect(await readFile(join(target, 'zhjs-erp.db'), 'utf8')).toBe('db-v1')
+    const snapshot = decodeSnapshot(await readFile(join(target, 'hesora-inventory.zjsnap')))
+    expect(snapshot.manifest.sequence).toBe(1)
+    const path = await svc.downloadFrom()
+    try {
+      const copy = new Database(path, { readonly: true })
+      expect(copy.prepare('SELECT count(*) FROM product').pluck().get()).toBe(0)
+      expect(copy.prepare("SELECT value FROM app_setting WHERE key LIKE 'sync.%'").all()).toEqual([])
+      copy.close()
+    } finally {
+      await rm(path, { force: true })
+    }
     expect(svc.getConfig().last_time).not.toBe('')
   })
 
@@ -139,9 +154,9 @@ describe('sync.service', () => {
     const r = await svc.syncNow()
     expect(r.ok).toBe(true)
     expect(uploads.length).toBe(1)
-    expect(uploads[0]!.url).toBe('/dav/zhjs-erp.db')
+    expect(uploads[0]!.url).toBe('/dav/hesora-inventory.zjsnap')
     expect(uploads[0]!.auth).toBe(`Basic ${Buffer.from('u:p').toString('base64')}`)
-    expect(uploads[0]!.body).toBe('db-v1')
+    expect(decodeSnapshot(uploads[0]!.body).manifest.sequence).toBe(1)
     expect(svc.listLocalBackups().length).toBeGreaterThanOrEqual(1)
   })
 
@@ -153,9 +168,35 @@ describe('sync.service', () => {
 
   it('downloadFrom writes remote content to temp file', async () => {
     const { svc } = makeSvc()
-    svc.saveConfig({ type: 'webdav', webdav: { url: `${base}/dav/zhjs-erp.db`, username: 'u', password: 'p' } })
+    svc.saveConfig({ type: 'webdav', webdav: { url: `${base}/dav/`, username: 'u', password: 'p' } })
     const p = await svc.downloadFrom()
     expect(await readFile(p, 'utf8')).toBe('remote-db-content')
     expect(p).toMatch(/\.db$/)
+    await rm(p, { force: true })
   })
+})
+
+
+
+it('blocks a second device from overwriting a newer remote snapshot', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hesora-sync-conflict-'))
+  const writerDb = openMemDb()
+  const readerDb = openMemDb()
+  try {
+    const options = { getDbFilePath: () => join(directory, 'hesora-inventory.db'), backupsDir: join(directory, 'backups') }
+    const writer = createSyncService(writerDb, options)
+    const reader = createSyncService(readerDb, options)
+    const config = { type: 'local' as const, local: { dir: join(directory, 'remote') } }
+    writer.saveConfig(config)
+    reader.saveConfig(config)
+    await writer.syncNow()
+    await writer.syncNow()
+    expect(await reader.checkRemote()).toBe(2)
+    await expect(reader.syncNow()).rejects.toThrow(/先恢复/)
+    expect(reader.getConfig().remoteSequence).toBe(2)
+  } finally {
+    writerDb.close()
+    readerDb.close()
+    await rm(directory, { recursive: true, force: true })
+  }
 })

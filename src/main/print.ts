@@ -28,18 +28,19 @@ export function createPrintIpc(db: Database) {
     }
   }
 
-  async function printReceipt(docId: number, deviceName?: string): Promise<boolean> {
-    const html = renderReceiptHtml(printService.receiptData(docId))
-    // wc.print 返回 void（结果由 'did-fail-print' 等事件体现），静默模式按已发送处理。
-    await withHiddenWindow(html, (wc) =>
-      Promise.resolve(
-        wc.print({
-          silent: true,
-          printBackground: true,
-          ...(deviceName ? { deviceName } : {})
-        })
-      )
-    )
+  async function printReceipt(docId: number, deviceName?: string, widthMm?: 58 | 80): Promise<boolean> {
+    const html = renderReceiptHtml(printService.receiptData(docId, widthMm))
+    await withHiddenWindow(html, (wc) => new Promise<void>((resolve, reject) => {
+      wc.print({
+        silent: true,
+        printBackground: true,
+        margins: { marginType: 'none' },
+        ...(deviceName ? { deviceName } : {})
+      }, (success, reason) => {
+        if (success) resolve()
+        else reject(new BizError('PRINT_FAILED', reason ? `小票打印失败：${reason}` : '小票打印失败，请检查打印机连接和纸张'))
+      })
+    }))
     return true
   }
 

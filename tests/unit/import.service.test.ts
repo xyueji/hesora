@@ -31,6 +31,29 @@ function seedProduct(): number {
 }
 
 describe('import.service', () => {
+  it('previews opening inventory without changing stock', () => {
+    const productId = seedProduct()
+    const result = importSvc.previewOpeningStock('商品编码,数量,成本单价,批次号\nP001,3,2,B01\nP999,4,2')
+    expect(result.lines).toEqual([expect.objectContaining({ product_id: productId, qty: 3, unit_cost: 2, batch_no: 'B01' })])
+    expect(result.errors).toEqual([{ row: 3, message: '商品不存在：P999' }])
+    expect(createInventoryService(db).getByProduct(productId)).toHaveLength(0)
+  })
+
+  it('reports invalid optional values without silently replacing them', () => {
+    const result = importSvc.importProducts('编码,名称,基本单位,零售价,批发价,进价,追踪方式\nP1,商品,件,oops,2,3,无\nP2,商品,件,1,2,3,未知\nP3,商品,件,1,2,3,无')
+    expect(result.created).toBe(1)
+    expect(result.errors.map((error) => error.row)).toEqual([2, 3])
+  })
+
+  it('reports zero and invalid opening quantities or costs without rolling back valid rows', () => {
+    const productId = seedProduct()
+    const warehouseId = createWarehouseService(db).create({ name: '主仓', is_default: true })
+    const result = importSvc.importOpeningStock('商品编码,数量,成本单价\nP001,0,2\nP001,5,坏值\nP001,3,1', warehouseId)
+    expect(result.created).toBe(1)
+    expect(result.errors.map((error) => error.row)).toEqual([2, 3])
+    expect(createInventoryService(db).getByProduct(productId, warehouseId)[0]?.qty).toBe(3)
+  })
+
   it('importProducts 新建商品', () => {
     const r = importSvc.importProducts('\ufeff编码,名称,基本单位,零售价,批发价,进价,追踪方式\r\nP100,新商品,个,5,4,3,批次\r\n')
     expect(r.errors).toEqual([])

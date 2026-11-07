@@ -1,5 +1,7 @@
 // CSV 导入导出 API：文件写入在 main（保存对话框），文件内容由渲染层 FileReader 读取后传入。
-import type { Result } from '../../../shared/result'
+import { call } from './call'
+import type { OpeningStockPreview } from '../../../shared/types/opening'
+import type { ReportQuery } from '../../../shared/types/report'
 
 export interface ImportResult {
   created: number
@@ -7,24 +9,13 @@ export interface ImportResult {
   errors: Array<{ row: number; message: string }>
 }
 
-interface WinApi {
-  invoke: (channel: string, payload?: unknown) => Promise<unknown>
-}
-
-const api = (window as unknown as { api: WinApi }).api
-
-async function call<T>(channel: string, payload?: unknown): Promise<T> {
-  const r = (await api.invoke(channel, payload)) as Result<T>
-  if (!r.ok) throw new Error(r.msg || r.code)
-  return r.data as T
-}
-
-export type CsvExportKind = 'products' | 'customers' | 'suppliers' | 'stock' | 'purchase' | 'sale'
+export type CsvExportKind = 'products' | 'customers' | 'suppliers' | 'stock' | 'purchase' | 'sale' | 'product-template' | 'opening-stock-template' | 'report'
 
 export interface CsvExportParams {
   warehouse_id?: number
   date_from?: string
   date_to?: string
+  report?: ReportQuery
 }
 
 /** 读取用户选择的文件内容（渲染层 input[type=file]，不碰 fs）。 */
@@ -44,5 +35,7 @@ export const csvApi = {
   importProducts: (fileContent: string) =>
     call<ImportResult>('csv:importProducts', { fileContent }),
   importOpeningStock: (fileContent: string, warehouseId: number) =>
-    call<ImportResult>('csv:importOpeningStock', { fileContent, warehouse_id: warehouseId })
+    call<ImportResult>('csv:importOpeningStock', { fileContent, warehouse_id: warehouseId }),
+  previewOpeningStock: (fileContent: string) =>
+    call<OpeningStockPreview>('csv:previewOpeningStock', { fileContent })
 }

@@ -4,29 +4,6 @@ import { createUserService } from '../../src/main/services/user/user.service'
 import { BizError } from '../../src/shared/result'
 
 describe('user.service', () => {
-  it('ensureDefaultAdmin seeds admin/admin123 once and is idempotent', () => {
-    const db = openMemDb()
-    const svc = createUserService(db)
-    svc.ensureDefaultAdmin()
-    svc.ensureDefaultAdmin()
-    const users = svc.query()
-    expect(users).toHaveLength(1)
-    expect(users[0]!.username).toBe('admin')
-    expect(users[0]!.role).toBe('admin')
-    expect(JSON.stringify(users[0])).not.toContain('password')
-    const login = svc.verify('admin', 'admin123')
-    expect(login).not.toBeNull()
-    expect(login?.role).toBe('admin')
-  })
-
-  it('ensureDefaultAdmin skips when any user already exists', () => {
-    const db = openMemDb()
-    const svc = createUserService(db)
-    svc.create({ username: 'boss', password: 'pw123456', role: 'admin' })
-    svc.ensureDefaultAdmin()
-    expect(svc.query().map((u) => u.username)).toEqual(['boss'])
-  })
-
   it('verify ok / wrong password / unknown / disabled', () => {
     const db = openMemDb()
     const svc = createUserService(db)
@@ -63,7 +40,7 @@ describe('user.service', () => {
   it('prevents disabling the last admin', () => {
     const db = openMemDb()
     const svc = createUserService(db)
-    svc.ensureDefaultAdmin()
+    svc.setupAdmin('admin', 'secret-123')
     const admin = svc.query().find((u) => u.role === 'admin')!
     expect(() => svc.update(admin.id, { disabled: true })).toThrowError(
       expect.objectContaining({ code: 'VALIDATION', message: '至少保留一个管理员' })
@@ -82,7 +59,7 @@ describe('user.service', () => {
   it('remove prevents removing the last admin, allows others', () => {
     const db = openMemDb()
     const svc = createUserService(db)
-    svc.ensureDefaultAdmin()
+    svc.setupAdmin('admin', 'secret-123')
     const admin = svc.query().find((u) => u.role === 'admin')!
     expect(() => svc.remove(admin.id)).toThrowError(
       expect.objectContaining({ code: 'VALIDATION' })
@@ -101,4 +78,64 @@ describe('user.service', () => {
       expect('passwordHash' in u).toBe(false)
     }
   })
+})
+
+it('creates an administrator only after first-run setup supplies a strong password', () => {
+  const svc = createUserService(openMemDb())
+  expect(svc.setupStatus()).toEqual({ required: true })
+  expect(() => svc.setupAdmin('owner', '123456')).toThrow()
+  expect(svc.setupAdmin('owner', 'first-run-secret').role).toBe('admin')
+  expect(svc.setupStatus()).toEqual({ required: false })
+  expect(() => svc.setupAdmin('new-owner', 'first-run-secret')).toThrow()
+})
+
+it('does not accept the published default password on an existing installation', () => {
+  const svc = createUserService(openMemDb())
+  const owner = svc.create({ username: 'admin', password: 'admin123', role: 'admin' })
+  expect(svc.verify('admin', 'admin123')).toBeNull()
+  expect(svc.setupStatus()).toEqual({ required: true, username: 'admin' })
+  expect(svc.setupAdmin('admin', 'changed-secret').id).toBe(owner.id)
+  expect(svc.verify('admin', 'changed-secret')?.id).toBe(owner.id)
+})
+
+it('keeps the last active administrator when another admin is disabled', () => {
+  const svc = createUserService(openMemDb())
+  const active = svc.create({ username: 'a1', password: 'secret-123', role: 'admin' })
+  const inactive = svc.create({ username: 'a2', password: 'secret-123', role: 'admin' })
+  svc.update(inactive.id, { disabled: true })
+  expect(() => svc.remove(active.id)).toThrow(/至少保留一个管理员/)
+})
+
+it('assigns a custom role and refreshes its exact permission set', () => {
+  const svc = createUserService(openMemDb())
+  const role = svc.createRole({ name: '仓库主管', permissions: ['inventory.view', 'inventory.adjust'] })
+  const user = svc.create({ username: 'warehouse', password: 'secret-123', role: role.id })
+  const session = svc.verify('warehouse', 'secret-123')
+  expect(session?.roleName).toBe('仓库主管')
+  expect(svc.can(session, 'inventory.adjust')).toBe(true)
+  expect(svc.can(session, 'data.export')).toBe(false)
+  svc.updateRole(role.id, { permissions: ['inventory.view'] })
+  expect(svc.can(svc.sessionById(user.id), 'inventory.adjust')).toBe(false)
+  expect(() => svc.removeRole(role.id)).toThrow(/操作员/)
+  svc.update(user.id, { role: 'cashier' })
+  svc.removeRole(role.id)
+  expect(svc.listRoles().map(({ id }) => id)).toEqual(['admin', 'cashier'])
+})
+
+it('protects built-in roles and rejects undefined or privileged grants', () => {
+  const svc = createUserService(openMemDb())
+  expect(() => svc.removeRole('admin')).toThrow(/内置/)
+  expect(() => svc.updateRole('cashier', { name: 'everyone' })).toThrow(/内置/)
+  expect(() => svc.createRole({ name: '坏权限', permissions: ['unregistered' as never] })).toThrow()
+  expect(() => svc.createRole({ name: '超级角色', permissions: ['system.role'] })).toThrow()
+  expect(() => svc.createRole({ name: '提权角色', permissions: ['system.user'] })).toThrow()
+  expect(() => svc.createRole({ name: '管理员', permissions: [] })).toThrow(/已存在/)
+  expect(svc.can({ id: 1, username: 'a', role: 'admin' }, 'unregistered' as never)).toBe(false)
+})
+
+it('cannot demote the sole administrator to a custom role', () => {
+  const svc = createUserService(openMemDb())
+  const admin = svc.setupAdmin('admin', 'strong-password')
+  const role = svc.createRole({ name: '库管', permissions: [] })
+  expect(() => svc.update(admin.id, { role: role.id })).toThrow(/至少保留一个管理员/)
 })
