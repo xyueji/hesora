@@ -29,9 +29,21 @@ export function createRetailService(db: DB) {
     }
     const wh = db.prepare('SELECT id FROM warehouse WHERE id = ?').get(warehouseId)
     if (!wh) throw new BizError('NOT_FOUND', `仓库不存在：${warehouseId}`)
-    if (input.account_id !== undefined && input.account_id !== null) {
-      const acc = db.prepare('SELECT id FROM fund_account WHERE id = ? AND disabled = 0').get(Number(input.account_id))
-      if (!acc) throw new BizError('NOT_FOUND', `账户不存在：${input.account_id}`)
+    // 组合收款优先；未传 payments 时回退单一 account_id（向后兼容）。
+    const legs = paymentLegsOf(input)
+    for (const leg of legs) {
+      const acc = db.prepare('SELECT id FROM fund_account WHERE id = ? AND disabled = 0').get(Number(leg.account_id))
+      if (!acc) throw new BizError('NOT_FOUND', `账户不存在：${leg.account_id}`)
+      // 单一 account_id 回退腿的金额在 create 时按折后总额落账（NaN 占位），不做金额校验。
+      if (!Number.isNaN(leg.amount) && (!Number.isFinite(leg.amount) || leg.amount <= 0)) {
+        throw new BizError('VALIDATION', '收款金额必须大于0')
+      }
+    }
+    if (input.discount !== undefined && input.discount !== null) {
+      const d = Number(input.discount)
+      if (!Number.isFinite(d) || d <= 0 || d > 1) {
+        throw new BizError('VALIDATION', '整单折扣率必须在 0 到 1 之间（不含 0）')
+      }
     }
     if (input.customer_id !== undefined && input.customer_id !== null) {
       const cus = db.prepare('SELECT id FROM customer WHERE id = ?').get(Number(input.customer_id))
@@ -54,6 +66,18 @@ export function createRetailService(db: DB) {
       }
     }
     return warehouseId
+  }
+
+  /** 收款腿列表：payments 优先，否则单一 account_id 转换为一腿（全额）。 */
+  function paymentLegsOf(input: RetailCreateInput): Array<{ account_id: number; amount: number }> {
+    if (input.payments !== undefined && input.payments !== null && input.payments.length > 0) {
+      return input.payments.map((p) => ({ account_id: Number(p.account_id), amount: Number(p.amount) }))
+    }
+    if (input.account_id !== undefined && input.account_id !== null) {
+      // 单腿金额在 create 时按折后总额落账，这里只标记账户。
+      return [{ account_id: Number(input.account_id), amount: Number.NaN }]
+    }
+    return []
   }
 
   function assertOperator(operatorId: number): void {
@@ -144,15 +168,25 @@ export function createRetailService(db: DB) {
         }
       })
       inventoryService.applyChanges(changes)
-      // 指定收款账户时记录资金流水（零售收款，流入）。
-      if (input.account_id !== undefined && input.account_id !== null) {
+      // 整单折扣：total_amount = Σ(amount) * discount，四舍五入两位；明细金额保持原价。
+      const discount = input.discount === undefined || input.discount === null ? 1 : Number(input.discount)
+      const grossTotal = docItems.reduce((sum, it) => sum + Number(it.amount), 0)
+      const netTotal = Number((grossTotal * discount).toFixed(2))
+      if (netTotal !== Number(doc?.total_amount)) {
+        db.prepare('UPDATE doc SET total_amount = ? WHERE id = ?').run(netTotal, doc?.id ?? 0)
+        doc = { ...(doc as DocRow), total_amount: netTotal }
+      }
+      // 收款腿：payments 优先（每腿一条流水）；否则单一 account_id 写一条全额流水（向后兼容）。
+      const legs = paymentLegsOf(input)
+      for (const leg of legs) {
+        const amount = Number.isNaN(leg.amount) ? netTotal : leg.amount
         db.prepare(
           `INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark)
            VALUES (?, 'retail', ?, ?, 'in', ?, ?)`
         ).run(
-          Number(input.account_id),
+          leg.account_id,
           doc?.id ?? 0,
-          doc?.total_amount ?? 0,
+          amount,
           doc?.date ?? '',
           input.remark ?? null
         )

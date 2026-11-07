@@ -61,6 +61,8 @@ export interface DocRow {
   warehouse_in_id: number | null
   account_id: number | null
   source_doc_id?: number | null
+  /** 红冲关联：本单作为红冲单时指向被红冲的原单；本单被红冲后，红冲单的 reversal_of 指向本单 */
+  reversal_of?: number | null
   /** 业务员（操作员用户名）；NULL 表示无业务员（旧数据或未传） */
   operator?: string | null
   total_amount: number

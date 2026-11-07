@@ -21,6 +21,7 @@ interface DocDbRow {
   warehouse_in_id: number | null
   account_id: number | null
   source_doc_id: number | null
+  reversal_of: number | null
   operator: string | null
   total_amount: number
   remark: string | null
@@ -53,6 +54,7 @@ function toDocRow(row: DocDbRow): DocRow {
     warehouse_in_id: row.warehouse_in_id,
     account_id: row.account_id,
     source_doc_id: row.source_doc_id,
+    reversal_of: (row as { reversal_of?: number | null }).reversal_of ?? null,
     operator: (row as { operator?: string | null }).operator ?? null,
     total_amount: row.total_amount,
     remark: row.remark,

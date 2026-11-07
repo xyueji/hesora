@@ -9,6 +9,8 @@ import { customerApi } from '../../api/customer'
 import { productApi } from '../../api/product'
 import { warehouseApi } from '../../api/warehouse'
 import { workflowApi } from '../../api/workflow'
+import { customerPriceApi } from '../../api/customer-price'
+import { watch } from 'vue'
 import { hasPermission } from '../../stores/auth'
 import type { Customer } from '../../../../shared/types/customer'
 import type { Product, ProductUnit } from '../../../../shared/types/product'
@@ -23,6 +25,8 @@ interface Line extends TrackingItemInput {
   batch_no: string
   qty: number | null
   price: number | null
+  /** 用户手动改过价：客户变化时不自动覆盖 */
+  priceManual: boolean
 }
 
 
@@ -46,7 +50,7 @@ const warehouseOptions = ref<Warehouse[]>([])
 const lines = ref<Line[]>([emptyLine()])
 
 function emptyLine(): Line {
-  return { product_id: null, product: null, unit: '', rate: 1, unitOptions: [], batch_no: '', qty: null, price: null }
+  return { product_id: null, product: null, unit: '', rate: 1, unitOptions: [], batch_no: '', qty: null, price: null, priceManual: false }
 }
 
 const saving = ref(false)
@@ -101,13 +105,39 @@ function onProductSelect(line: Line): void {
   line.unitOptions = [base, ...units]
   line.unit = base.unit ?? ''
   line.rate = 1
-  // 售价默认带出零售价
+  // 售价默认带出零售价（选中客户后由按客户取价逻辑覆盖）
+  line.priceManual = false
   if (!p || p.retail_price === undefined) {
     line.price = null
   } else {
     line.price = p.retail_price
   }
 }
+
+/** 按客户取价：刷新未手动改价的行（专属价 > 等级价 > 零售价，由服务端解析） */
+async function applyCustomerPrices(): Promise<void> {
+  if (form.customer_id === null) return
+  try {
+    const specials = await customerPriceApi.listByCustomer(form.customer_id)
+    const specialMap = new Map<number, number>()
+    for (const s of specials) specialMap.set(s.product_id, s.price)
+    for (const l of lines.value) {
+      if (l.product_id === null || l.priceManual) continue
+      const special = specialMap.get(l.product_id)
+      if (special !== undefined) {
+        l.price = special / l.rate
+      } else {
+        // 无专属价时回退零售价
+        const p = productOptions.value.find((x) => x.id === l.product_id)
+        if (p?.retail_price !== undefined) l.price = p.retail_price
+      }
+    }
+  } catch {
+    /* 静默：取价失败不影响录单 */
+  }
+}
+
+watch(() => form.customer_id, () => void applyCustomerPrices())
 
 function lineAmount(l: Line): number {
   return (l.qty ?? 0) * (l.price ?? 0)
@@ -270,7 +300,7 @@ void loadWarehouses()
         </el-table-column>
         <el-table-column label="售价" width="130">
           <template #default="{ row }">
-            <el-input-number v-model="row.price" :min="0" :precision="2" controls-position="right" style="width: 100%" />
+            <el-input-number v-model="row.price" :min="0" :precision="2" controls-position="right" style="width: 100%" @change="row.priceManual = true" />
           </template>
         </el-table-column>
         <el-table-column label="批次号" width="120">

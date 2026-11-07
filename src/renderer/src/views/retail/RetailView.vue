@@ -47,12 +47,31 @@ const totalAmount = computed(() =>
 const payVisible = ref(false)
 const payForm = reactive({
   account_id: null as number | null,
-  received: null as number | null
+  received: null as number | null,
+  discount: 1 as number,
+  payLines: [] as Array<{ account_id: number | null; amount: number | null }>
 })
 const changeAmount = computed(() => {
   const received = Number(payForm.received ?? 0)
-  return Number((received - Number(totalAmount.value.toFixed(2))).toFixed(2))
+  return Number((received - Number(discountedTotal.value.toFixed(2))).toFixed(2))
 })
+
+/** 整单折扣后金额 = 合计 × 折扣率（两位小数）。 */
+const discountedTotal = computed(() =>
+  Number((totalAmount.value * (payForm.discount > 0 && payForm.discount <= 1 ? payForm.discount : 1)).toFixed(2))
+)
+
+const payLinesTotal = computed(() =>
+  Number(payForm.payLines.reduce((sum, l) => sum + Number(l.amount ?? 0), 0).toFixed(2))
+)
+
+function addPayLine(): void {
+  payForm.payLines.push({ account_id: null, amount: null })
+}
+
+function removePayLine(index: number): void {
+  payForm.payLines.splice(index, 1)
+}
 
 function focusBarcode(): void {
   void nextTick(() => barcodeInput.value?.focus())
@@ -236,12 +255,30 @@ function openPay(): void {
     return
   }
   payForm.received = Number(totalAmount.value.toFixed(2))
+  payForm.discount = 1
+  payForm.payLines = []
   payVisible.value = true
 }
 
 async function savePay(): Promise<void> {
   if (saving.value) return
-  if (payForm.account_id === null) {
+  const d = Number(payForm.discount)
+  if (!Number.isFinite(d) || d <= 0 || d > 1) {
+    ElMessage.warning('整单折扣率需在 (0, 1] 之间')
+    return
+  }
+  // 组合收款：填了多账户行则按行校验并组装 payments；否则回退单一账户语义。
+  const filledLines = payForm.payLines.filter((l) => l.account_id !== null)
+  if (filledLines.length > 0) {
+    if (filledLines.some((l) => l.amount === null || Number(l.amount) <= 0)) {
+      ElMessage.warning('组合收款每行请填写账户与大于 0 的金额')
+      return
+    }
+    if (payLinesTotal.value !== discountedTotal.value) {
+      ElMessage.warning(`组合收款各行合计 ¥${payLinesTotal.value.toFixed(2)} 需等于折后金额 ¥${discountedTotal.value.toFixed(2)}`)
+      return
+    }
+  } else if (payForm.account_id === null) {
     ElMessage.warning('请选择收款账户')
     return
   }
@@ -253,11 +290,16 @@ async function savePay(): Promise<void> {
   try {
     const doc = await retailApi.create({
       ...cartPayload(),
-      account_id: payForm.account_id
+      ...(filledLines.length > 0
+        ? {
+            payments: filledLines.map((l) => ({ account_id: l.account_id as number, amount: Number(l.amount) })),
+            discount: d !== 1 ? d : undefined
+          }
+        : { account_id: payForm.account_id as number, discount: d !== 1 ? d : undefined })
     })
     payVisible.value = false
     lastReceiptDocId.value = doc.id
-    ElMessage.success(`收款完成，合计 ¥${totalAmount.value.toFixed(2)}，找零 ¥${Math.max(changeAmount.value, 0).toFixed(2)}`)
+    ElMessage.success(`收款完成，合计 ¥${discountedTotal.value.toFixed(2)}，找零 ¥${Math.max(changeAmount.value, 0).toFixed(2)}`)
     clearCart()
     void offerPrintReceipt(doc.id)
   } catch (e) {
@@ -397,10 +439,31 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onCashShortcut))
         <el-form-item label="合计金额">
           <span class="pay-total">¥{{ fmt(totalAmount) }}</span>
         </el-form-item>
+        <el-form-item label="整单折扣">
+          <el-input-number v-model="payForm.discount" :min="0.01" :max="1" :step="0.05" :precision="2" style="width: 160px" />
+          <span class="discount-total">折后：¥{{ fmt(discountedTotal) }}</span>
+        </el-form-item>
         <el-form-item label="收款账户">
-          <el-select v-model="payForm.account_id" placeholder="选择账户" style="width: 100%">
+          <el-select v-model="payForm.account_id" placeholder="选择账户" style="width: 100%" :disabled="payForm.payLines.length > 0">
             <el-option v-for="a in accountOptions" :key="a.id" :label="a.name" :value="a.id as number" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="组合收款">
+          <div class="pay-lines">
+            <div v-for="(line, idx) in payForm.payLines" :key="idx" class="pay-line">
+              <el-select v-model="line.account_id" placeholder="账户" style="width: 55%">
+                <el-option v-for="a in accountOptions" :key="a.id" :label="a.name" :value="a.id as number" />
+              </el-select>
+              <el-input-number v-model="line.amount" :min="0.01" :precision="2" placeholder="金额" style="width: 30%" />
+              <el-button link type="danger" @click="removePayLine(idx)">删除</el-button>
+            </div>
+            <div class="pay-lines-foot">
+              <el-button size="small" @click="addPayLine">+ 添加账户行</el-button>
+              <span v-if="payForm.payLines.length > 0" class="pay-lines-sum">
+                行合计 ¥{{ fmt(payLinesTotal) }} / 折后 ¥{{ fmt(discountedTotal) }}
+              </span>
+            </div>
+          </div>
         </el-form-item>
         <el-form-item label="实收金额">
           <el-input-number v-model="payForm.received" :min="0" :precision="2" :step="1" style="width: 100%" @keyup.enter="savePay" />
@@ -470,5 +533,27 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onCashShortcut))
 .change.neg,
 .neg-tip {
   color: var(--el-color-danger);
+}
+.discount-total {
+  margin-left: 12px;
+  color: var(--el-color-primary);
+}
+.pay-lines {
+  width: 100%;
+}
+.pay-line {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.pay-lines-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pay-lines-sum {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 </style>

@@ -66,6 +66,46 @@ export function createCustomerService(db: DB) {
   }
 
   return {
+    /** 客户详情聚合：基础信息 + 应收余额（ arrears 同口径） + 最近 20 笔交易。 */
+    getDetail(id: number): {
+      customer: Customer
+      arrears: number
+      transactions: Array<{ id: number; no: string; type: string; date: string; total_amount: number; status: string }>
+    } | null {
+      const customer = getById(id)
+      if (!customer) return null
+      const arrearsRow = db.prepare(`
+        WITH traded AS (
+          SELECT partner_id,
+            SUM(CASE WHEN type = 'sale_return' THEN -total_amount ELSE total_amount END) AS amount
+          FROM doc
+          WHERE status = 'done' AND type IN ('sale', 'retail', 'sale_return')
+          GROUP BY partner_id
+        ),
+        settled AS (
+          SELECT d.partner_id,
+            SUM(CASE WHEN f.doc_type = 'sale_return' THEN -f.amount ELSE f.amount END) AS amount
+          FROM fund_flow f JOIN doc d ON d.id = f.doc_id AND d.type = f.doc_type
+          WHERE d.status = 'done' AND (
+            (f.doc_type IN ('receipt', 'retail') AND f.direction = 'in')
+            OR (f.doc_type = 'sale_return' AND f.direction = 'out' AND f.account_id = d.account_id)
+          )
+          GROUP BY d.partner_id
+        )
+        SELECT c.opening_receivable + COALESCE(t.amount, 0) - COALESCE(s.amount, 0) AS balance
+        FROM customer c
+        LEFT JOIN traded t ON t.partner_id = c.id
+        LEFT JOIN settled s ON s.partner_id = c.id
+        WHERE c.id = ?
+      `).get(id) as { balance: number | null } | undefined
+      const transactions = db.prepare(`
+        SELECT id, no, type, date, total_amount, status FROM doc
+        WHERE partner_id = ? AND type IN ('sale', 'retail', 'sale_return')
+        ORDER BY date DESC, id DESC LIMIT 20
+      `).all(id) as Array<{ id: number; no: string; type: string; date: string; total_amount: number; status: string }>
+      return { customer, arrears: Number(arrearsRow?.balance ?? customer.opening_receivable), transactions }
+    },
+
     create(c: Omit<Customer, 'id'>): number {
       const code = requireText(c.code, '编码')
       const name = requireText(c.name, '名称')

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { docApi } from '../../api/doc'
 import { printApi } from '../../api/print'
 import { productApi } from '../../api/product'
@@ -25,6 +25,10 @@ const detailVisible = ref(false)
 const detailDoc = ref<DocRow | null>(null)
 const detailItems = ref<DocItemRow[]>([])
 const productNames = ref<Record<number, string>>({})
+/** 当前详情单的红冲单（0 或 1 张） */
+const detailReversal = ref<DocRow | null>(null)
+/** 已被红冲过的单据 id 集合（列表页标记用） */
+const reversedIds = ref<Set<number>>(new Set())
 
 async function load(): Promise<void> {
   loading.value = true
@@ -70,9 +74,41 @@ async function viewDetail(row: DocRow): Promise<void> {
     detailDoc.value = d.doc
     detailItems.value = d.items
     detailVisible.value = true
+    detailReversal.value = null
+    void docApi.reversals(row.id).then((revs) => {
+      detailReversal.value = revs[0] ?? null
+    })
     void loadProductNames(d.items)
   } catch (e) {
     ElMessage.error((e as Error).message)
+  }
+}
+
+/** 红冲当前详情单：二次确认（需输入单号确认）后生成负向镜像单 */
+const reversing = ref(false)
+async function reverseDoc(): Promise<void> {
+  const doc = detailDoc.value
+  if (!doc || doc.status !== 'done' || detailReversal.value) return
+  try {
+    await ElMessageBox.prompt(
+      `将为单据 ${doc.no}（${typeName(doc.type)}，金额 ${fmt(doc.total_amount)}）生成全额负向红冲单，并回退库存/资金。此操作不可撤销。请输入单号 ${doc.no} 确认：`,
+      '红冲确认',
+      { confirmButtonText: '确认红冲', cancelButtonText: '取消', inputPattern: new RegExp(`^${doc.no}$`), inputErrorMessage: `请输入完整单号 ${doc.no}` }
+    )
+  } catch {
+    return
+  }
+  reversing.value = true
+  try {
+    const rev = await docApi.reverse(doc.id)
+    ElMessage.success(`已生成红冲单 ${rev.no}`)
+    detailReversal.value = rev
+    reversedIds.value = new Set([...reversedIds.value, doc.id])
+    void load()
+  } catch (e) {
+    ElMessage.error(`红冲失败：${(e as Error).message}`)
+  } finally {
+    reversing.value = false
   }
 }
 
@@ -177,6 +213,12 @@ onMounted(() => {
         <el-table-column label="总金额" width="120" align="right">
           <template #default="{ row }">{{ fmt(row.total_amount) }}</template>
         </el-table-column>
+        <el-table-column label="红冲" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.reversal_of || reversedIds.has(row.id)" type="warning" size="small">红冲单</el-tag>
+            <el-tag v-else-if="row.remark?.startsWith('红冲')" type="warning" size="small">红冲单</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
         <el-table-column label="操作" width="90" align="center">
           <template #default="{ row }">
@@ -204,6 +246,12 @@ onMounted(() => {
           <el-descriptions-item label="往来单位">{{ detailDoc.partner_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="总金额">{{ fmt(detailDoc.total_amount) }}</el-descriptions-item>
           <el-descriptions-item label="备注">{{ detailDoc.remark || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="红冲状态">
+            <el-tag v-if="detailReversal" type="danger" size="small">已被红冲：{{ detailReversal.no }}</el-tag>
+            <el-tag v-else-if="detailDoc.reversal_of" type="warning" size="small">红冲单</el-tag>
+            <el-tag v-else-if="detailDoc.status === 'done'" type="success" size="small">正常</el-tag>
+            <el-tag v-else size="small">草稿</el-tag>
+          </el-descriptions-item>
         </el-descriptions>
         <el-table :data="detailItems" stripe size="small">
           <el-table-column label="商品" min-width="180">
@@ -221,6 +269,12 @@ onMounted(() => {
         </el-table>
       </template>
       <template #footer>
+        <el-button
+          v-if="detailDoc?.status === 'done' && !detailReversal && !detailDoc.reversal_of"
+          type="danger"
+          :loading="reversing"
+          @click="reverseDoc"
+        >红冲</el-button>
         <el-button v-if="canPrintA4" :loading="printingA4" @click="printA4">打印 A4</el-button>
         <el-button @click="detailVisible = false">关闭</el-button>
       </template>

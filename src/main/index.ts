@@ -17,6 +17,7 @@ import { isPermissionKey, type PermissionKey, type RoleInput } from '../shared/p
 import { WORKFLOW_KINDS, type FulfillmentRequest, type WorkflowKind } from '../shared/types/workflow'
 import { createProductService } from './services/product/product.service'
 import { createPriceLevelService } from './services/product/price-level.service'
+import { createCustomerPriceService } from './services/product/customer-price.service'
 import { createShelfLifeService } from './services/product/shelf-life.service'
 import { createCustomerService } from './services/customer/customer.service'
 import { createSupplierService } from './services/supplier/supplier.service'
@@ -34,6 +35,7 @@ import { createSaleService } from './services/sale/sale.service'
 import { createRetailService } from './services/retail/retail.service'
 import { createDocService } from './services/doc/doc.service'
 import { createDocCopyService } from './services/doc/copy.service'
+import { createReversalService } from './services/doc/reversal.service'
 import { createPaymentService } from './services/payment/payment.service'
 import { createArrearsService } from './services/stats/arrears.service'
 import { createDashboardService } from './services/stats/dashboard.service'
@@ -42,6 +44,8 @@ import { createTransferService } from './services/transfer/transfer.service'
 import { createStocktakeService } from './services/stocktake/stocktake.service'
 import { createAssembleService } from './services/assemble/assemble.service'
 import { createPrintIpc } from './print'
+import { createPrintTemplateService } from './services/print/template.service'
+import type { TemplateInput } from './services/print/template.service'
 import { createCsvIpc } from './csv'
 import { createBackupIpc } from './backup'
 import { registerUpdateIpc } from './update'
@@ -395,6 +399,29 @@ function initialize(): void {
     }
   })
 
+  // 客户×商品专属价 + 变价记录
+  const customerPriceSvc = createCustomerPriceService(getDb())
+  registerIpc({
+    'customerPrice:set': (_evt, payload) => {
+      const { customerId, productId, price } = payload as {
+        customerId: number
+        productId: number
+        price: number
+      }
+      return customerPriceSvc.setPrice(Number(customerId), Number(productId), price, getCurrentUser()?.username)
+    },
+    'customerPrice:remove': (_evt, payload) => {
+      const { customerId, productId } = payload as { customerId: number; productId: number }
+      customerPriceSvc.removePrice(Number(customerId), Number(productId))
+      return true
+    },
+    'customerPrice:listByCustomer': (_evt, payload) =>
+      customerPriceSvc.listByCustomer(Number(payload)),
+    'customerPrice:listByProduct': (_evt, payload) => customerPriceSvc.listByProduct(Number(payload)),
+    'customerPrice:changeLog': (_evt, payload) =>
+      customerPriceSvc.changeLog((payload ?? {}) as never)
+  })
+
   const customerSvc = getCustomerService()
   registerIpc({
     'customer:create': (_evt, payload) => customerSvc.create(payload as never),
@@ -405,7 +432,8 @@ function initialize(): void {
     'customer:get': (_evt, payload) => customerSvc.getById(Number(payload)),
     'customer:query': (_evt, payload) => customerSvc.query(payload as never),
     'customer:disable': (_evt, payload) => customerSvc.disable(Number(payload)),
-    'customer:enable': (_evt, payload) => customerSvc.enable(Number(payload))
+    'customer:enable': (_evt, payload) => customerSvc.enable(Number(payload)),
+    'customer:detail': (_evt, payload) => customerSvc.getDetail(Number(payload))
   })
 
   const supplierSvc = getSupplierService()
@@ -570,6 +598,24 @@ function initialize(): void {
     }
   })
 
+  // 已过账单据红冲（负向镜像单）
+  const docReversalSvc = createReversalService(getDb())
+  registerIpc({
+    'doc:reverse': (_evt, payload) => {
+      const { docId, operator } = payload as { docId: number; operator?: string }
+      const id = Number(docId)
+      assertDocumentVisible(id)
+      const user = getCurrentUser()
+      const rev = docReversalSvc.reverse(id, operator ?? user?.username)
+      auditSvc.record('doc.reverse', operator ?? user?.username, `红冲单据 ${rev.no}`, undefined, JSON.stringify({ id: rev.id, reversal_of: id }))
+      return rev
+    },
+    'doc:reversals': (_evt, payload) => {
+      assertDocumentVisible(Number(payload))
+      return docReversalSvc.listReversals(Number(payload))
+    }
+  })
+
   const purchaseSvc = getPurchaseService()
   registerIpc({
     'purchase:create': (_evt, payload) => {
@@ -719,6 +765,14 @@ function initialize(): void {
       assertDocumentVisible(id)
       return printIpc.printA4Pdf(id)
     }
+  })
+
+  const printTemplateSvc = createPrintTemplateService(getDb())
+  registerIpc({
+    'printTemplate:list': () => printTemplateSvc.list(),
+    'printTemplate:save': (_evt, payload) => printTemplateSvc.save(payload as TemplateInput),
+    'printTemplate:remove': (_evt, payload) => printTemplateSvc.remove(Number(payload)),
+    'printTemplate:setDefault': (_evt, payload) => printTemplateSvc.setDefault(Number(payload))
   })
 
   const csvIpc = createCsvIpc(getDb())

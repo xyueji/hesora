@@ -9,6 +9,11 @@ import type { Customer } from '../../../../shared/types/customer'
 
 const router = useRouter()
 
+/** 行点击跳转客户详情聚合页。 */
+function openDetail(row: Customer): void {
+  void router.push(`/customer/detail/${row.id}`)
+}
+
 const keyword = ref('')
 const loading = ref(false)
 const list = ref<Customer[]>([])
@@ -94,7 +99,7 @@ onActivated(load)
         </div>
       </div>
 
-      <el-table v-loading="loading" :data="list" stripe class="table">
+      <el-table v-loading="loading" :data="list" stripe class="table" @row-click="openDetail">
         <el-table-column prop="code" label="编码" width="130" />
         <el-table-column prop="name" label="名称" min-width="160" />
         <el-table-column prop="contact" label="联系人" width="110" />

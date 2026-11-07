@@ -6,7 +6,8 @@ export interface SaleItemInput extends TrackingItemInput {
   unit?: string
   rate?: number
   qty: number
-  price: number
+  /** 单价：可省略，服务层未传时按 客户专属价>等级价>零售价 兜底解析 */
+  price?: number
 }
 
 export interface SaleCreateInput {

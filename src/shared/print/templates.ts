@@ -61,12 +61,30 @@ function fmt(n: number): string {
   return Number(n).toFixed(2)
 }
 
+/** 打印模板开关（差距 8 简化版）。字段缺省 = 回退现状（开启）行为。 */
+export interface PrintTemplateOptions {
+  /** 显示店铺头（小票 h1 / A4 店名行） */
+  showShopHeader?: boolean
+  /** 显示金额列（A4 明细"单价/金额"列）；小票行金额随行固定显示，不走此开关 */
+  showAmountColumn?: boolean
+  /** 显示备注 */
+  showRemark?: boolean
+  /** 显示收款方式行（小票） */
+  showPaymentMethod?: boolean
+  /** 显示页脚（小票） */
+  showFooter?: boolean
+}
+
+function on(v: boolean | undefined): boolean {
+  return v !== false
+}
+
 function esc(s: string | null | undefined): string {
   return escapeHtml(String(s ?? ''))
 }
 
 /** 58mm 热敏小票：等宽字体、窄边距、明细逐行"名称 数量x单价 金额"。 */
-export function renderReceiptHtml(data: ReceiptPrintData): string {
+export function renderReceiptHtml(data: ReceiptPrintData, options?: PrintTemplateOptions): string {
   const width = data.widthMm === 80 ? 80 : 58
   const rows = data.items
     .map(
@@ -79,8 +97,12 @@ export function renderReceiptHtml(data: ReceiptPrintData): string {
 </tr>`
     )
     .join('\n')
-  const payLine = data.paymentMethod ? `<div class="line">收款方式：${esc(data.paymentMethod)}</div>` : ''
-  const remarkLine = data.remark ? `<div class="line">备注：${esc(data.remark)}</div>` : ''
+  const payLine = options?.showPaymentMethod === false
+    ? ''
+    : data.paymentMethod ? `<div class="line">收款方式：${esc(data.paymentMethod)}</div>` : ''
+  const remarkLine = on(options?.showRemark) && data.remark ? `<div class="line">备注：${esc(data.remark)}</div>` : ''
+  const shopHeader = on(options?.showShopHeader) ? `<h1>${esc(data.shopName)}</h1>\n` : ''
+  const footerLine = on(options?.showFooter) ? `<div class="footer">${esc(data.footer)}</div>` : ''
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -101,8 +123,7 @@ export function renderReceiptHtml(data: ReceiptPrintData): string {
 </style>
 </head>
 <body>
-<h1>${esc(data.shopName)}</h1>
-<div class="meta">单号：${esc(data.docNo)}</div>
+${shopHeader}<div class="meta">单号：${esc(data.docNo)}</div>
 <div class="meta">日期：${esc(data.date)}</div>
 <hr>
 <table>
@@ -112,15 +133,16 @@ ${rows}
 <div class="total">合计：¥${fmt(data.total)}</div>
 ${payLine}
 ${remarkLine}
-<div class="footer">${esc(data.footer)}</div>
+${footerLine}
 </body>
 </html>`
 }
 
 /** A4 单据：表格式明细 + 头部信息 + 打货人/收货人签字行。 */
-export function renderA4Html(data: A4PrintData): string {
+export function renderA4Html(data: A4PrintData, options?: PrintTemplateOptions): string {
   const rows = (data.stocktakeItems ?? data.items).map((it, i) => {
-    const numbers = 'bookQty' in it ? [it.bookQty, it.actualQty, it.difference] : [it.qty, it.price, it.amount]
+    const allNumbers = 'bookQty' in it ? [it.bookQty, it.actualQty, it.difference] : [it.qty, it.price, it.amount]
+    const numbers = 'bookQty' in it ? allNumbers : options?.showAmountColumn === false ? [it.qty] : allNumbers
     return `<tr>
   <td>${i + 1}</td>
   <td>${esc(it.name)}</td>
@@ -129,8 +151,10 @@ export function renderA4Html(data: A4PrintData): string {
   ${numbers.map((value) => `<td class="r">${fmt(value)}</td>`).join('')}
 </tr>`
   }).join('\n')
-  const columns = data.stocktakeItems ? ['账面数量', '实盘数量', '差异'] : ['数量', '单价', '金额']
-  const remarkLine = data.remark ? `<div class="remark">备注：${esc(data.remark)}</div>` : ''
+  const columns = data.stocktakeItems
+    ? ['账面数量', '实盘数量', '差异']
+    : options?.showAmountColumn === false ? ['数量'] : ['数量', '单价', '金额']
+  const remarkLine = on(options?.showRemark) && data.remark ? `<div class="remark">备注：${esc(data.remark)}</div>` : ''
   const fundTables = data.settlement && `<table>
 <thead><tr><th>结算账户</th><th>资金方向</th><th class="r">金额</th></tr></thead>
 <tbody>${data.settlement.funds.map((row) => `<tr><td>${esc(row.account)}</td><td>${row.direction === 'in' ? '流入' : '流出'}</td><td class="r">${fmt(row.amount)}</td></tr>`).join('')}</tbody>
@@ -161,7 +185,7 @@ export function renderA4Html(data: A4PrintData): string {
 </head>
 <body>
 <h1>${esc(data.title)}</h1>
-<div class="shop">${esc(data.shopName)}</div>
+${on(options?.showShopHeader) ? `<div class="shop">${esc(data.shopName)}</div>` : ''}
 <div class="meta">
   <span>往来单位：${esc(data.partnerName) || '—'}</span>
   ${data.settlement ? '' : `<span>仓库：${esc(data.warehouseName) || '—'}</span>`}

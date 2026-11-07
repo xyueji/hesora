@@ -16,6 +16,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'customer:update': 'customer.edit',
   'customer:disable': 'customer.edit',
   'customer:enable': 'customer.edit',
+  'customer:detail': 'customer.view',
 
   'supplier:get': 'supplier.view',
   'supplier:query': 'supplier.view',
@@ -78,6 +79,10 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'doc:query': 'doc.viewAll',
   'doc:detail': 'doc.viewAll',
   'print:receipt': 'doc.retail',
+  'printTemplate:list': 'system.setting',
+  'printTemplate:save': 'system.setting',
+  'printTemplate:remove': 'system.setting',
+  'printTemplate:setDefault': 'system.setting',
   'print:a4pdf': 'doc.viewAll',
 
   'payment:createReceipt': 'doc.payment',
@@ -163,6 +168,13 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'product:batches': 'product.shelf',
   'product:saveBatch': 'product.shelf',
 
+  // 客户×商品专属价 / 变价记录（沿用商品价格权限；写入需 customer.edit）
+  'customerPrice:set': 'product.price',
+  'customerPrice:remove': 'product.price',
+  'customerPrice:listByCustomer': 'customer.view',
+  'customerPrice:listByProduct': 'product.view',
+  'customerPrice:changeLog': 'customer.view',
+
   // 序列号台账
   'serial:registerIn': 'inventory.serial',
   'serial:consumeOut': 'inventory.serial',
@@ -173,5 +185,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'serial:trace': 'inventory.serial',
 
   // 单据复制（再来一单）
-  'doc:copy': 'doc.copy'
+  'doc:copy': 'doc.copy',
+  'doc:reverse': 'doc.reverse',
+  'doc:reversals': 'doc.viewAll'
 }

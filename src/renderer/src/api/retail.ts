@@ -2,7 +2,7 @@ import type { RetailCreateInput, RetailHeldCart, RetailQuery } from '../../../sh
 import { call } from './call'
 import type { DocItemRow, DocPageResult, DocRow } from '../../../shared/types/doc'
 
-export { type RetailCreateInput, type RetailQuery, type RetailItemInput } from '../../../shared/types/retail'
+export { type RetailCreateInput, type RetailQuery, type RetailItemInput, type RetailPaymentLeg } from '../../../shared/types/retail'
 
 export interface RetailDetail {
   doc: DocRow

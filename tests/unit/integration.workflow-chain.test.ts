@@ -21,7 +21,9 @@ import type { DB } from '../../src/main/services/doc/doc.service'
 // 对应验收手册场景 03（报价转单、分批发货、组合收款和毛利）的全自动证据。
 describe('integration: quote → order → partial fulfilment → settlement', () => {
   let ctx: ReturnType<typeof setup>
-  const date = '2026-11-07'
+  // 日期取当天：收付款核销要求核销单据日期不晚于收付款日期，
+  // 而 workflow 转单在跨天时会把订单日期顶到今天（convert: order && currentDate > row.date）。
+  const date = new Date().toLocaleDateString('sv-SE')
   const actor = 1
 
   beforeEach(() => {

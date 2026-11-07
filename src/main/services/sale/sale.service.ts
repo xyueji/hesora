@@ -3,6 +3,7 @@ import { BizError } from '../../../shared/result'
 import type { DocItemRow, DocPageResult, DocQuery, DocRow } from '../../../shared/types/doc'
 import { createDocService, type DocService } from '../doc/doc.service'
 import { createInventoryService } from '../inventory/inventory.service'
+import { resolvePrice } from '../product/customer-price.service'
 
 import type { SaleCreateInput, SaleQuery, SaleReturnInput } from '../../../shared/types/sale'
 export type { SaleItemInput, SaleCreateInput, SaleQuery } from '../../../shared/types/sale'
@@ -23,6 +24,21 @@ export interface SaleDetail {
 export function createSaleService(db: DB) {
   const docService: DocService = createDocService(db)
   const inventoryService = createInventoryService(db)
+
+  /** 明细单价：显式传入（含 0）时原样使用；未传/null 时按取价链路兜底（专属价>等级价>零售价） */
+  function resolveItemPrice(
+    customerId: number | null | undefined,
+    it: { product_id: number; price?: number | null }
+  ): number {
+    if (it.price !== undefined && it.price !== null) return Number(it.price)
+    const priceLevel =
+      customerId != null
+        ? (db.prepare('SELECT price_level FROM customer WHERE id = ?').get(customerId) as
+            | { price_level: string | null }
+            | undefined)?.price_level ?? null
+        : null
+    return resolvePrice(db, { customer_id: customerId, product_id: it.product_id, price_level: priceLevel })
+  }
 
   function create(input: SaleCreateInput): DocRow {
     const warehouseId = Number(input.warehouse_id)
@@ -63,7 +79,7 @@ export function createSaleService(db: DB) {
           unit: it.unit,
           rate: it.rate,
           qty: it.qty,
-          price: it.price
+          price: resolveItemPrice(input.customer_id, it)
         }))
       })
       const docItems = docService.getItems(doc.id)
@@ -135,7 +151,7 @@ export function createSaleService(db: DB) {
           unit: it.unit,
           rate: it.rate,
           qty: it.qty,
-          price: it.price
+          price: resolveItemPrice(input.customer_id, it)
         }))
       })
       const docItems = docService.getItems(doc.id)

@@ -36,6 +36,7 @@ const groups: MenuGroup[] = [
       { path: '/product/list', label: '商品管理', perm: 'product.view' },
       { path: '/product/price-levels', label: '价格等级', perm: 'product.price' },
       { path: '/customer/list', label: '客户', perm: 'customer.view' },
+      { path: '/customer/price', label: '客户专属价', perm: 'customer.view' },
       { path: '/supplier/list', label: '供应商', perm: 'supplier.view' },
       { path: '/warehouse/list', label: '仓库', perm: 'warehouse.view' }
     ]
@@ -124,6 +125,7 @@ const groups: MenuGroup[] = [
       { path: '/opening', label: '期初建账', perm: 'opening.edit' },
       { path: '/setting', label: '设置', perm: 'system.setting' },
       { path: '/setting/categories', label: '收支科目', perm: 'system.setting' },
+      { path: '/setting/print-templates', label: '打印模板', perm: 'system.setting' },
       { path: '/system/users', label: '用户管理', perm: 'system.user' },
       { path: '/system/roles', label: '角色权限', perm: 'system.role' },
       { path: '/sync', label: '同步备份', perm: 'data.sync' },

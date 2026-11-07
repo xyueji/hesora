@@ -9,7 +9,7 @@ export type PermissionKey =
   | 'inventory.report' | 'inventory.price' | 'inventory.serial'
   | 'product.price' | 'product.shelf'
   | 'doc.purchase' | 'doc.sale' | 'doc.retail' | 'doc.return' | 'doc.payment' | 'doc.viewAll'
-  | 'doc.workflow' | 'doc.approve' | 'doc.print' | 'doc.copy'
+  | 'doc.workflow' | 'doc.approve' | 'doc.print' | 'doc.copy' | 'doc.reverse'
   | 'report.cost' | 'report.arrears' | 'report.dashboard' | 'report.docSearch' | 'report.stock' | 'report.business'
   | 'data.import' | 'data.export' | 'data.backup' | 'data.sync'
   | 'opening.edit'
@@ -46,6 +46,7 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   'doc.approve': '审核与过账',
   'doc.print': '打印单据',
   'doc.copy': '复制单据（再来一单）',
+  'doc.reverse': '红冲单据',
   'report.cost': '查看成本与利润',
   'report.arrears': '应收应付报表',
   'report.dashboard': '首页看板',
@@ -92,7 +93,7 @@ export const PERMISSION_GROUPS: { name: string; permissions: PermissionKey[] }[]
     name: '单据处理',
     permissions: [
       'doc.purchase', 'doc.sale', 'doc.retail', 'doc.return', 'doc.payment',
-      'doc.viewAll', 'doc.workflow', 'doc.approve', 'doc.print', 'doc.copy'
+      'doc.viewAll', 'doc.workflow', 'doc.approve', 'doc.print', 'doc.copy', 'doc.reverse'
     ]
   },
   {
