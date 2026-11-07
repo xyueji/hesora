@@ -50,6 +50,7 @@ export function createPurchaseService(db: DB) {
     db.transaction(() => {
       doc = docService.create({
         type: 'purchase',
+        operator: input.operator,
         date: input.date,
         partner_id: input.supplier_id,
         warehouse_id: warehouseId,
@@ -159,14 +160,15 @@ export function createPurchaseService(db: DB) {
       const total = doc?.total_amount ?? 0
       if (accountId !== null && total > 0) {
         db.prepare(
-          `INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark)
-           VALUES (?, 'purchase_return', ?, ?, 'in', ?, ?)`
+          `INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark, partner_id)
+           VALUES (?, 'purchase_return', ?, ?, 'in', ?, ?, ?)`
         ).run(
           accountId,
           doc?.id ?? 0,
           total,
           doc?.date ?? '',
-          input.remark ?? null
+          input.remark ?? null,
+          input.supplier_id ?? null
         )
       }
     }).immediate()

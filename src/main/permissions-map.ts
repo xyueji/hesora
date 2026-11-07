@@ -51,6 +51,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'stocktake:create': 'inventory.adjust',
   'stocktake:getDetail': 'inventory.adjust',
   'stocktake:query': 'inventory.adjust',
+  'stocktake:importSheet': 'inventory.adjust',
   'assemble:create': 'inventory.assemble',
   'assemble:disassemble': 'inventory.assemble',
   'assemble:getDetail': 'inventory.assemble',
@@ -94,6 +95,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'stats:payables': 'report.arrears',
   'stats:summary': 'report.arrears',
   'stats:report': 'report.business',
+  'stats:operatorPerformance': 'report.business',
   'dashboard:summary': 'report.dashboard',
   'dashboard:trend': 'report.dashboard',
   'workflow:list': 'doc.workflow',
@@ -127,6 +129,12 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'setting:set': 'system.setting',
   'setting:getAll': 'system.setting',
   'setting:remove': 'system.setting',
+  'category:list': 'system.setting',
+  'category:create': 'system.setting',
+  'category:update': 'system.setting',
+  'category:remove': 'system.setting',
+  'category:disable': 'system.setting',
+  'category:enable': 'system.setting',
 
   'user:query': 'system.user',
   'user:get': 'system.user',
@@ -162,6 +170,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'serial:flows': 'inventory.serial',
   'serial:validate': 'inventory.serial',
   'serial:stockOf': 'inventory.serial',
+  'serial:trace': 'inventory.serial',
 
   // 单据复制（再来一单）
   'doc:copy': 'doc.copy'

@@ -113,6 +113,7 @@ const groups: MenuGroup[] = [
     perm: 'report.docSearch',
     items: [
       { path: '/stats/business', label: '经营报表', perm: 'report.business' },
+      { path: '/stats/operator', label: '员工业绩', perm: 'report.business' },
       { path: '/doc/search', label: '单据查询', perm: 'report.docSearch' }
     ]
   },
@@ -122,6 +123,7 @@ const groups: MenuGroup[] = [
     items: [
       { path: '/opening', label: '期初建账', perm: 'opening.edit' },
       { path: '/setting', label: '设置', perm: 'system.setting' },
+      { path: '/setting/categories', label: '收支科目', perm: 'system.setting' },
       { path: '/system/users', label: '用户管理', perm: 'system.user' },
       { path: '/system/roles', label: '角色权限', perm: 'system.role' },
       { path: '/sync', label: '同步备份', perm: 'data.sync' },

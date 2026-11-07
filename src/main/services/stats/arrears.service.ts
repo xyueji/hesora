@@ -4,8 +4,11 @@ import type { ArrearsRow, ArrearsSummary } from '../../../shared/types/stats'
 export type DB = Database
 
 /**
- * 往来余额 = 期初 + 购销净额 − 结算净额。
- * 退款冲减结算额，退货冲减购销额。现金退款与退货同时记账时余额不变。
+ * 往来余额 = 期初 + 购销净额 − 结算净额 + 退货冲减。
+ * 挂账退货直接冲减购销额（doc 全量口径）；
+ * 实退现金的流水（fund_flow，022 起带 partner_id）双向对冲：
+ * 退货冲减购销额、现金退款冲减结算额，余额不变——即客户已拿回现金，不再欠这笔。
+ * fund_flow.partner_id 为 NULL 的旧数据经 doc JOIN 兜底归属往来单位。
  */
 export function createArrearsService(db: DB) {
   function queryBalances(partner: 'customer' | 'supplier'): ArrearsRow[] {

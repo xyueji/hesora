@@ -6,10 +6,12 @@ import { createInventoryService } from '../inventory/inventory.service'
 import type { InventoryChange, InventoryRow } from '../../../shared/types/inventory'
 import type {
   StocktakeCreateInput,
+  StocktakeImportRow,
   StocktakeItemInput,
   StocktakeQuery,
   StocktakeSheetRow
 } from '../../../shared/types/stocktake'
+import { parseCsv } from '../../../shared/csv'
 
 export type DB = Database
 
@@ -181,7 +183,79 @@ export function createStocktakeService(db: DB) {
     return docService.query(inner)
   }
 
-  return { getSheet, create, getDetail, query }
+  /**
+   * 盘点 CSV 导入：列「商品编码,实盘数量[,批次号]」（可带表头行，按第一列识别商品编码自动跳过表头）。
+   * 逐行解析：商品编码不存在/实盘数量非法 → 收集错误行继续；全部行有效时返回草稿行
+   * （含账面数量与差异），不自动生成单据，由前端确认后调 create 过账。
+   */
+  function importSheet(csvText: string, options: { warehouse_id: number; date?: string }):
+  { date: string; rows: StocktakeImportRow[]; errors: Array<{ row: number; message: string }> } {
+    const whId = Number(options?.warehouse_id)
+    if (!Number.isInteger(whId)) throw new BizError('VALIDATION', '仓库不能为空')
+    if (!selectWh.get(whId)) throw new BizError('NOT_FOUND', `仓库不存在：${whId}`)
+    const date = options?.date ?? new Date().toISOString().slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new BizError('VALIDATION', '日期格式应为 yyyy-MM-dd')
+
+    const parsed = parseCsv(typeof csvText === 'string' ? csvText : '')
+    // 去掉第一行表头（若首格为"商品编码"）
+    if (parsed.length > 0 && parsed[0]![0]?.trim() === '商品编码') parsed.shift()
+
+    const rows: StocktakeImportRow[] = []
+    const errors: Array<{ row: number; message: string }> = []
+    const seen = new Set<string>()
+    const selectProduct = db.prepare('SELECT id, code, name, base_unit FROM product WHERE code = ?')
+    const selectInv = db.prepare(
+      'SELECT qty FROM inventory WHERE product_id = ? AND warehouse_id = ? AND batch_no = ?'
+    )
+
+    parsed.forEach((cells, index) => {
+      const rowNo = index + 1 // 用户视角：含表头为第1行
+      const code = (cells[0] ?? '').trim()
+      const qtyText = (cells[1] ?? '').trim()
+      const batchNo = (cells[2] ?? '').trim()
+      if (code === '' && qtyText === '' && batchNo === '') return // 跳过空行
+      if (!code) {
+        errors.push({ row: rowNo, message: '商品编码不能为空' })
+        return
+      }
+      const product = selectProduct.get(code) as
+        | { id: number; code: string; name: string; base_unit: string }
+        | undefined
+      if (!product) {
+        errors.push({ row: rowNo, message: `商品编码不存在：${code}` })
+        return
+      }
+      const actualQty = Number(qtyText)
+      if (qtyText === '' || !Number.isFinite(actualQty) || actualQty < 0) {
+        errors.push({ row: rowNo, message: `实盘数量无效：${code}（应为不小于0的数字）` })
+        return
+      }
+      const key = JSON.stringify([product.id, batchNo])
+      if (seen.has(key)) {
+        errors.push({ row: rowNo, message: `同一商品和批次重复导入：${code}（批次：${batchNo || '无'}）` })
+        return
+      }
+      seen.add(key)
+      const bookQty = (selectInv.get(product.id, whId, batchNo) as { qty: number } | undefined)?.qty ?? 0
+      rows.push({
+        product_id: product.id,
+        product_code: product.code,
+        product_name: product.name,
+        unit: product.base_unit,
+        batch_no: batchNo,
+        book_qty: bookQty,
+        actual_qty: actualQty,
+        diff: actualQty - bookQty
+      })
+    })
+
+    if (rows.length === 0 && errors.length === 0) {
+      throw new BizError('VALIDATION', '导入内容为空')
+    }
+    return { date, rows, errors }
+  }
+
+  return { getSheet, create, getDetail, query, importSheet }
 }
 
 export type StocktakeService = ReturnType<typeof createStocktakeService>

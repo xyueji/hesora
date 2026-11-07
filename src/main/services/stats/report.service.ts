@@ -118,5 +118,41 @@ export function createReportService(db: Database) {
     })))
   }
 
-  return { query, exportCsv }
+  /**
+   * 员工业绩：按 doc.operator GROUP BY 的销售类业绩（旧数据无业务员 → operator 为 null 分组）。
+   * 销售额 = sale+retail 金额；退货额 = sale_return 金额；
+   * 毛利近似 = sale 类明细 amount − qty*rate*当前 moving_cost（与现有 profit 口径一致的简化版，
+   * 区别在于以当前 inventory.moving_cost 估算而非 cost_log 逐笔回溯）。
+   */
+  function operatorPerformance(query: { date_from?: string; date_to?: string; operator?: string }) {
+    const dateFrom = query?.date_from || '0001-01-01'
+    const dateTo = query?.date_to || '9999-12-31'
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/
+    if (!datePattern.test(dateFrom) || !datePattern.test(dateTo) || dateFrom > dateTo) {
+      throw new BizError('VALIDATION', '请选择有效的日期范围')
+    }
+    const keyword = query?.operator?.trim() ?? ''
+    const sql = `SELECT d.operator,
+        COALESCE(SUM(CASE WHEN d.type IN ('sale','retail') THEN i.amount END), 0) AS sales_amount,
+        COALESCE(SUM(CASE WHEN d.type = 'sale_return' THEN i.amount END), 0) AS return_amount,
+        COUNT(DISTINCT d.id) AS doc_count,
+        COALESCE(SUM(CASE WHEN d.type IN ('sale','retail','sale_return') THEN (${sign}) * (i.amount - i.qty * i.rate * COALESCE(inv.moving_cost, 0)) END), 0) AS gross_profit
+      FROM doc d
+      JOIN doc_item i ON i.doc_id = d.id
+      LEFT JOIN inventory inv ON inv.product_id = i.product_id AND inv.warehouse_id = COALESCE(i.warehouse_id, d.warehouse_id)
+      WHERE d.status = 'done' AND d.date BETWEEN @date_from AND @date_to
+        AND d.type IN ('sale','retail','sale_return')
+        AND (@keyword = '' OR INSTR(COALESCE(d.operator, ''), @keyword) > 0)
+      GROUP BY d.operator
+      ORDER BY sales_amount DESC, doc_count DESC`
+    return db.prepare(sql).all({ date_from: dateFrom, date_to: dateTo, keyword }) as Array<{
+      operator: string | null
+      sales_amount: number
+      return_amount: number
+      doc_count: number
+      gross_profit: number
+    }>
+  }
+
+  return { query, exportCsv, operatorPerformance }
 }

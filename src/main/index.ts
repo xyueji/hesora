@@ -24,6 +24,7 @@ import { createWarehouseService } from './services/warehouse/warehouse.service'
 import { createFundService } from './services/fund/fund.service'
 import { createFundLedger } from './services/fund/ledger.service'
 import { createSettingService } from './services/setting/setting.service'
+import { createCategoryService } from './services/setting/category.service'
 import { createOpeningService } from './services/opening/opening.service'
 import { createInventoryService } from './services/inventory/inventory.service'
 import { createStockReportService } from './services/inventory/stock-report.service'
@@ -131,6 +132,14 @@ function getSettingService(): ReturnType<typeof createSettingService> {
     settingService = createSettingService(getDb())
   }
   return settingService
+}
+
+let categoryService: ReturnType<typeof createCategoryService> | null = null
+function getCategoryService(): ReturnType<typeof createCategoryService> {
+  if (!categoryService) {
+    categoryService = createCategoryService(getDb())
+  }
+  return categoryService
 }
 
 let openingService: ReturnType<typeof createOpeningService> | null = null
@@ -462,6 +471,23 @@ function initialize(): void {
     'setting:remove': (_evt, payload) => settingSvc.remove(String(payload))
   })
 
+  // 收支科目主档
+  const categorySvc = getCategoryService()
+  registerIpc({
+    'category:list': (_evt, payload) => {
+      const q = (payload ?? {}) as { include_disabled?: boolean; kind?: 'income' | 'expense' }
+      return categorySvc.list(q)
+    },
+    'category:create': (_evt, input) => categorySvc.create(input as never),
+    'category:update': (_evt, payload) => {
+      const { id, ...input } = payload as { id: number } & Record<string, unknown>
+      return categorySvc.update(Number(id), input as never)
+    },
+    'category:remove': (_evt, payload) => categorySvc.remove(Number(payload)),
+    'category:disable': (_evt, payload) => categorySvc.disable(Number(payload)),
+    'category:enable': (_evt, payload) => categorySvc.enable(Number(payload))
+  })
+
   const openingSvc = getOpeningService()
   registerIpc({
     'opening:save': (_evt, payload) => openingSvc.save(payload as never),
@@ -515,7 +541,8 @@ function initialize(): void {
       }
       return serialSvc.validateSns(Number(productId), sns, direction)
     },
-    'serial:stockOf': (_evt, payload) => serialSvc.stockOf(Number(payload))
+    'serial:stockOf': (_evt, payload) => serialSvc.stockOf(Number(payload)),
+    'serial:trace': (_evt, payload) => serialSvc.trace(String(payload))
   })
 
   const docSvc = createDocService(getDb())
@@ -624,7 +651,9 @@ function initialize(): void {
     'stats:receivables': () => arrearsSvc.receivables(),
     'stats:payables': () => arrearsSvc.payables(),
     'stats:summary': () => arrearsSvc.summary(),
-    'stats:report': (_evt, payload) => reportSvc.query(payload as never)
+    'stats:report': (_evt, payload) => reportSvc.query(payload as never),
+    'stats:operatorPerformance': (_evt, payload) =>
+      reportSvc.operatorPerformance(payload as never)
   })
 
   const dashboardSvc = getDashboardService()
@@ -656,7 +685,18 @@ function initialize(): void {
     },
     'stocktake:create': (_evt, payload) => stocktakeSvc.create(payload as never),
     'stocktake:getDetail': (_evt, payload) => stocktakeSvc.getDetail(Number(payload)),
-    'stocktake:query': (_evt, payload) => stocktakeSvc.query(payload as never)
+    'stocktake:query': (_evt, payload) => stocktakeSvc.query(payload as never),
+    'stocktake:importSheet': (_evt, payload) => {
+      const { csv_text, warehouse_id, date } = payload as {
+        csv_text: string
+        warehouse_id: number
+        date?: string
+      }
+      return stocktakeSvc.importSheet(String(csv_text), {
+        warehouse_id: Number(warehouse_id),
+        date
+      })
+    }
   })
 
   const assembleSvc = getAssembleService()

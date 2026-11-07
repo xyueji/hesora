@@ -9,6 +9,8 @@ import type {
   SerialStockPageResult,
   SerialStockQuery,
   SerialStockRow,
+  SerialTraceEvent,
+  SerialTraceResult,
   SerialValidateDirection,
   ValidateSnResult
 } from '../../../shared/types/serial'
@@ -461,7 +463,58 @@ export function createSerialService(db: DB) {
     return Number(row.c)
   }
 
-  return { registerIn, consumeOut, restoreIn, listStock, listFlow, validateSns, stockOf }
+  /**
+   * 序列号去向：serial_flow JOIN doc / product 输出该 SN 的完整事件链
+   * （入库单号/出库单号/时间/来源），附当前状态与所在仓库。
+   */
+  function trace(snInput: string): SerialTraceResult {
+    const sn = trimSn(snInput)
+    if (!sn) throw new BizError('VALIDATION', '序列号不能为空')
+    const serial = db
+      .prepare('SELECT sn, product_id, warehouse_id, status FROM serial_number WHERE sn = ?')
+      .get(sn) as { sn: string; product_id: number; warehouse_id: number; status: string } | undefined
+    if (!serial) throw new BizError('NOT_FOUND', `序列号不存在：${sn}`)
+    const rows = db
+      .prepare(
+        `SELECT f.direction, f.qty, f.created_at, f.doc_id, f.doc_item_id,
+                d.no AS doc_no, d.type AS doc_type,
+                p.id AS product_id, p.code AS product_code
+         FROM serial_flow f
+         LEFT JOIN doc d ON d.id = f.doc_id
+         LEFT JOIN product p ON p.id = f.product_id
+         WHERE f.sn = ?
+         ORDER BY f.created_at, f.id`
+      )
+      .all(sn) as Array<{
+      direction: string
+      qty: number
+      created_at: string
+      doc_id: number | null
+      doc_item_id: number | null
+      doc_no: string | null
+      doc_type: string | null
+      product_id: number | null
+      product_code: string | null
+    }>
+    const events: SerialTraceEvent[] = rows.map((r) => ({
+      direction: r.direction as SerialTraceEvent['direction'],
+      doc_id: r.doc_id ?? null,
+      doc_no: r.doc_no ?? null,
+      doc_type: r.doc_type ?? null,
+      doc_item_id: r.doc_item_id ?? null,
+      product_id: Number(r.product_id ?? serial.product_id),
+      product_code: r.product_code ?? '',
+      qty: r.qty,
+      created_at: r.created_at
+    }))
+    return {
+      sn,
+      current: { status: serial.status, warehouse_id: serial.warehouse_id },
+      events
+    }
+  }
+
+  return { registerIn, consumeOut, restoreIn, listStock, listFlow, validateSns, stockOf, trace }
 }
 
 export type SerialService = ReturnType<typeof createSerialService>

@@ -128,3 +128,26 @@ export interface ValidateSnResult {
 
 /** 序列号校验方向：入库登记 / 出库核销 */
 export type SerialValidateDirection = 'in' | 'out'
+
+/** 序列号去向单条事件（trace 用） */
+export interface SerialTraceEvent {
+  direction: SerialDirection
+  doc_id: number | null
+  doc_no: string | null
+  doc_type: string | null
+  doc_item_id: number | null
+  product_id: number
+  product_code: string
+  qty: number
+  created_at: string
+}
+
+/** 序列号去向（完整事件链 + 当前位置） */
+export interface SerialTraceResult {
+  sn: string
+  current: {
+    status: string
+    warehouse_id: number
+  }
+  events: SerialTraceEvent[]
+}

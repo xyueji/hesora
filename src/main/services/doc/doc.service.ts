@@ -21,6 +21,7 @@ interface DocDbRow {
   warehouse_in_id: number | null
   account_id: number | null
   source_doc_id: number | null
+  operator: string | null
   total_amount: number
   remark: string | null
   status: string
@@ -52,6 +53,7 @@ function toDocRow(row: DocDbRow): DocRow {
     warehouse_in_id: row.warehouse_in_id,
     account_id: row.account_id,
     source_doc_id: row.source_doc_id,
+    operator: (row as { operator?: string | null }).operator ?? null,
     total_amount: row.total_amount,
     remark: row.remark,
     status: row.status as DocRow['status'],
@@ -62,8 +64,8 @@ function toDocRow(row: DocDbRow): DocRow {
 
 export function createDocService(db: DB) {
   const insertDoc = db.prepare(`
-    INSERT INTO doc (no, type, date, partner_id, warehouse_id, warehouse_in_id, account_id, total_amount, remark, source_doc_id)
-    VALUES (@no, @type, @date, @partner_id, @warehouse_id, @warehouse_in_id, @account_id, @total_amount, @remark, @source_doc_id)
+    INSERT INTO doc (no, type, date, partner_id, warehouse_id, warehouse_in_id, account_id, total_amount, remark, source_doc_id, operator)
+    VALUES (@no, @type, @date, @partner_id, @warehouse_id, @warehouse_in_id, @account_id, @total_amount, @remark, @source_doc_id, @operator)
   `)
   const insertItem = db.prepare(`
     INSERT INTO doc_item (doc_id, product_id, warehouse_id, batch_no, unit, rate, qty, price, amount)
@@ -196,6 +198,7 @@ export function createDocService(db: DB) {
           warehouse_in_id: input.warehouse_in_id ?? null,
           account_id: input.account_id ?? null,
           source_doc_id: input.source_doc_id ?? null,
+          operator: input.operator?.trim() ? input.operator.trim() : null,
           total_amount: totalAmount,
           remark: input.remark ?? null
         }).lastInsertRowid

@@ -6,6 +6,7 @@ import type {
   SerialFlowQuery,
   SerialStockPageResult,
   SerialStockQuery,
+  SerialTraceResult,
   ValidateSnResult
 } from '../../../shared/types/serial'
 
@@ -24,5 +25,7 @@ export const serialApi = {
   validate: (productId: number, sns: string[], direction: 'in' | 'out' = 'in') =>
     call<ValidateSnResult>('serial:validate', { productId, sns, direction }),
   /** 某商品在库序列号数 */
-  stockOf: (productId: number) => call<number>('serial:stockOf', productId)
+  stockOf: (productId: number) => call<number>('serial:stockOf', productId),
+  /** 序列号去向：完整事件链 + 当前位置 */
+  trace: (sn: string) => call<SerialTraceResult>('serial:trace', sn)
 }

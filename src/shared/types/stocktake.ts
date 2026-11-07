@@ -33,3 +33,14 @@ export interface StocktakeQuery {
   page: number
   pageSize: number
 }
+
+export interface StocktakeImportRow {
+  product_id: number
+  product_code: string
+  product_name: string
+  unit: string
+  batch_no: string
+  book_qty: number
+  actual_qty: number
+  diff: number
+}

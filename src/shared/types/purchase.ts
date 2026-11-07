@@ -14,6 +14,8 @@ export interface PurchaseCreateInput {
   warehouse_id: number
   date?: string
   remark?: string
+  /** 业务员（操作员用户名） */
+  operator?: string
   items: PurchaseItemInput[]
 }
 

@@ -13,3 +13,23 @@ export const arrearsApi = {
 export const reportApi = {
   query: (query: ReportQuery) => call<ReportPage>('stats:report', query)
 }
+
+export interface OperatorPerformanceQuery {
+  date_from?: string
+  date_to?: string
+  /** 业务员关键字（模糊匹配 doc.operator） */
+  operator?: string
+}
+
+export interface OperatorPerformanceRow {
+  operator: string | null
+  sales_amount: number
+  return_amount: number
+  doc_count: number
+  gross_profit: number
+}
+
+export const operatorPerformanceApi = {
+  query: (query: OperatorPerformanceQuery) =>
+    call<OperatorPerformanceRow[]>('stats:operatorPerformance', query)
+}

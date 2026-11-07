@@ -51,6 +51,7 @@ export function createSaleService(db: DB) {
     db.transaction(() => {
       doc = docService.create({
         type: 'sale',
+        operator: input.operator,
         date: input.date,
         partner_id: input.customer_id,
         warehouse_id: warehouseId,
@@ -167,14 +168,15 @@ export function createSaleService(db: DB) {
       const total = doc?.total_amount ?? 0
       if (accountId !== null && total > 0) {
         db.prepare(
-          `INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark)
-           VALUES (?, 'sale_return', ?, ?, 'out', ?, ?)`
+          `INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark, partner_id)
+           VALUES (?, 'sale_return', ?, ?, 'out', ?, ?, ?)`
         ).run(
           accountId,
           doc?.id ?? 0,
           total,
           doc?.date ?? '',
-          input.remark ?? null
+          input.remark ?? null,
+          input.customer_id ?? null
         )
       }
     }).immediate()

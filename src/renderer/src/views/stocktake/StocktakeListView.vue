@@ -2,7 +2,8 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { stocktakeApi, type StocktakeDetail } from '../../api/stocktake'
+import { stocktakeApi, type StocktakeDetail, type StocktakeImportRow } from '../../api/stocktake'
+import type { Warehouse } from '../../../../shared/types/warehouse'
 import { warehouseApi } from '../../api/warehouse'
 import { productApi } from '../../api/product'
 import type { DocRow, DocItemRow } from '../../../../shared/types/doc'
@@ -22,6 +23,43 @@ const productNames = ref<Record<number, string>>({})
 
 const detailVisible = ref(false)
 const detail = ref<StocktakeDetail | null>(null)
+
+// 盘点 CSV 导入
+const importVisible = ref(false)
+const importLoading = ref(false)
+const importCsv = ref('')
+const importWarehouseId = ref<number | undefined>()
+const importDate = ref<string | null>(null)
+const importWarehouses = ref<Warehouse[]>([])
+const importResult = ref<{ rows: StocktakeImportRow[]; errors: Array<{ row: number; message: string }> } | null>(null)
+
+function openImport(): void {
+  importCsv.value = ''
+  importResult.value = null
+  importVisible.value = true
+}
+
+async function doImport(): Promise<void> {
+  if (!importWarehouseId.value) {
+    ElMessage.warning('请选择仓库')
+    return
+  }
+  importLoading.value = true
+  try {
+    const res = await stocktakeApi.importSheet(
+      importCsv.value,
+      importWarehouseId.value,
+      importDate.value || undefined
+    )
+    importResult.value = { rows: res.rows, errors: res.errors }
+    if (res.errors.length === 0) ElMessage.success(`解析成功，共 ${res.rows.length} 行，请到「开盘点单」确认过账`)
+    else ElMessage.warning(`解析完成：有效 ${res.rows.length} 行，错误 ${res.errors.length} 行`)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    importLoading.value = false
+  }
+}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -93,6 +131,14 @@ function whName(id: number | null): string {
 
 onMounted(() => {
   void load()
+  void warehouseApi
+    .query({ page: 1, pageSize: 100 })
+    .then((r) => {
+      importWarehouses.value = r.list
+    })
+    .catch(() => {
+      importWarehouses.value = []
+    })
 })
 </script>
 
@@ -102,6 +148,7 @@ onMounted(() => {
       <div class="toolbar">
         <h3 class="title">盘点单</h3>
         <div class="actions">
+          <el-button @click="openImport">导入盘点</el-button>
           <el-button type="primary" @click="router.push('/stocktake/edit')">新增盘点</el-button>
           <el-date-picker
             v-model="dateRange"
@@ -171,6 +218,44 @@ onMounted(() => {
             </template>
           </el-table-column>
         </el-table>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="importVisible" title="导入盘点（CSV）" width="720px">
+      <el-form label-width="80px">
+        <el-form-item label="仓库">
+          <el-select v-model="importWarehouseId" placeholder="选择仓库" style="width: 200px">
+            <el-option v-for="w in importWarehouses" :key="w.id" :label="w.name" :value="w.id!" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="盘点日期">
+          <el-date-picker v-model="importDate" type="date" value-format="YYYY-MM-DD" placeholder="默认今天" />
+        </el-form-item>
+        <el-form-item label="CSV 内容">
+          <el-input v-model="importCsv" type="textarea" :rows="8"
+            placeholder="商品编码,实盘数量[,批次号]&#10;P001,80&#10;P002,60,B1" />
+        </el-form-item>
+      </el-form>
+      <template v-if="importResult">
+        <el-alert v-if="importResult.errors.length" type="warning" :closable="false"
+          :title="`错误行 ${importResult.errors.length} 条`" style="margin-bottom: 8px" />
+        <el-table :data="importResult.rows" size="small" border max-height="220">
+          <el-table-column prop="product_code" label="商品编码" width="110" />
+          <el-table-column prop="product_name" label="商品名称" min-width="120" />
+          <el-table-column prop="batch_no" label="批次" width="90">
+            <template #default="{ row }">{{ row.batch_no || '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="book_qty" label="账面" width="80" align="right" />
+          <el-table-column prop="actual_qty" label="实盘" width="80" align="right" />
+          <el-table-column prop="diff" label="差异" width="80" align="right" />
+        </el-table>
+        <el-table v-if="importResult.errors.length" :data="importResult.errors" size="small" border max-height="160" style="margin-top: 8px">
+          <el-table-column prop="row" label="行号" width="80" />
+          <el-table-column prop="message" label="错误" min-width="240" />
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="importVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="importLoading" @click="doImport">解析</el-button>
       </template>
     </el-dialog>
   </div>

@@ -109,6 +109,7 @@ export function createRetailService(db: DB) {
       }
       doc = docService.create({
         type: 'retail',
+        operator: input.operator,
         date: input.date,
         partner_id: input.customer_id ?? undefined,
         account_id: input.account_id ?? undefined,

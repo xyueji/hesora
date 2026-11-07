@@ -31,6 +31,8 @@ export interface DocCreateInput {
   warehouse_in_id?: number
   account_id?: number
   source_doc_id?: number
+  /** 业务员（操作员用户名）；NULL 表示无业务员（旧数据或未传） */
+  operator?: string
   remark?: string
   items: DocItemInput[]
 }
@@ -59,6 +61,8 @@ export interface DocRow {
   warehouse_in_id: number | null
   account_id: number | null
   source_doc_id?: number | null
+  /** 业务员（操作员用户名）；NULL 表示无业务员（旧数据或未传） */
+  operator?: string | null
   total_amount: number
   remark: string | null
   status: 'done'

@@ -44,7 +44,7 @@
 ### 2.3 报表（设计 9 种 → 实现）
 
 - ✅ 经营仪表盘（sales/retail/receipt/payment/stock_amount/应收应付 + 趋势）
-- ✅ 应收应付（经 doc JOIN，fund_flow 无 partner_id 为已知限制——退货不冲减应收，见 audit-p3.md）
+- ✅ 应收应付（fund_flow.partner_id 自 022 起记录往来归属，退货冲减应收/应付已修复，见 tests/unit/return-arrears.test.ts）
 - ✅ 经营报表 BusinessReportView（7 种 REPORT_LABELS：sales/purchases/profit/fund/hot/stockSheet/stocktake）
 - ✅ 单据查询中心（13 类型过滤 + partner_name + 条件打印）
 - ✅ 库存明细/成本变动明细/库存流水/库存预警（stock-report.service，017）
@@ -72,7 +72,7 @@
 
 ## 三、已知限制（上架可接受，1.2 迭代）
 
-1. 应收应付不含退货冲减（fund_flow 无 partner_id）。
+1. ~~应收应付不含退货冲减（fund_flow 无 partner_id）~~ → 已修复（migration 022_fund_flow_partner.sql，退货流水带 partner_id 并计入往来冲减）。
 2. 打印模板内置不可编辑。
 3. 客户对账明细/账龄、员工业绩报表缺失。
 4. 单据审核流仅 workflow 表 3 类（quote/order），13 类直过账单据无审核位。

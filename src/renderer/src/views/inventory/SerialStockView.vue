@@ -3,7 +3,41 @@ import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { serialApi } from '../../api/serial'
 import { warehouseApi } from '../../api/warehouse'
-import type { SerialStockRow, SerialStatus } from '../../../../shared/types/serial'
+import type { SerialStockRow, SerialStatus, SerialTraceResult } from '../../../../shared/types/serial'
+
+const traceDialog = ref(false)
+const traceLoading = ref(false)
+const traceSn = ref('')
+const traceSnInput = ref('')
+const traceResult = ref<SerialTraceResult | null>(null)
+
+async function openTrace(sn: string): Promise<void> {
+  traceSn.value = sn
+  traceResult.value = null
+  traceDialog.value = true
+  traceLoading.value = true
+  try {
+    traceResult.value = await serialApi.trace(sn)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+    traceDialog.value = false
+  } finally {
+    traceLoading.value = false
+  }
+}
+
+function traceByInput(): void {
+  const sn = traceSnInput.value.trim()
+  if (!sn) {
+    ElMessage.warning('请输入序列号')
+    return
+  }
+  void openTrace(sn)
+}
+
+const TRACE_DIRECTION_LABELS: Record<string, string> = { in: '入库', out: '出库' }
+const TRACE_STATUS_LABELS: Record<string, string> = { in_stock: '在库', out: '已出库' }
+
 
 const keyword = ref('')
 const warehouseId = ref<number | undefined>(undefined)
@@ -83,6 +117,10 @@ onMounted(() => {
           <el-option label="已出库" value="out" />
         </el-select>
       </el-form-item>
+      <el-form-item label="查询去向">
+        <el-input v-model="traceSnInput" placeholder="输入序列号查去向" style="width: 200px" @keyup.enter="traceByInput" />
+        <el-button style="margin-left: 8px" @click="traceByInput">查询去向</el-button>
+      </el-form-item>
       <el-form-item>
         <el-button type="primary" @click="search">查询</el-button>
         <el-button @click="reset">重置</el-button>
@@ -107,6 +145,11 @@ onMounted(() => {
       <el-table-column prop="out_date" label="出库日期" width="110" />
       <el-table-column prop="out_source_no" label="出库单号" width="140" />
       <el-table-column prop="remark" label="备注" min-width="100" />
+      <el-table-column label="操作" width="100" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="openTrace(row.sn)">去向</el-button>
+        </template>
+      </el-table-column>
     </el-table>
 
     <el-pagination
@@ -119,6 +162,30 @@ onMounted(() => {
       @current-change="load"
       @size-change="search"
     />
+    <el-dialog v-model="traceDialog" :title="`序列号去向：${traceSn}`" width="720px">
+      <div v-loading="traceLoading" style="min-height: 120px">
+        <template v-if="traceResult">
+          <p>
+            当前状态：<el-tag size="small">{{ TRACE_STATUS_LABELS[traceResult.current.status] ?? traceResult.current.status }}</el-tag>
+            &nbsp;所在仓库 ID：{{ traceResult.current.warehouse_id }}&nbsp;&nbsp;共 {{ traceResult.events.length }} 条流转记录
+          </p>
+          <el-table :data="traceResult.events" border size="small">
+            <el-table-column label="方向" width="80">
+              <template #default="{ row }">{{ TRACE_DIRECTION_LABELS[row.direction] ?? row.direction }}</template>
+            </el-table-column>
+            <el-table-column prop="doc_no" label="单据号" min-width="140">
+              <template #default="{ row }">{{ row.doc_no || '—' }}</template>
+            </el-table-column>
+            <el-table-column prop="doc_type" label="单据类型" width="110">
+              <template #default="{ row }">{{ row.doc_type || '—' }}</template>
+            </el-table-column>
+            <el-table-column prop="product_code" label="商品编码" width="110" />
+            <el-table-column prop="qty" label="数量" width="70" align="right" />
+            <el-table-column prop="created_at" label="时间" min-width="150" />
+          </el-table>
+        </template>
+      </div>
+    </el-dialog>
   </div>
 </template>
 

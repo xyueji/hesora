@@ -30,18 +30,19 @@ afterEach(() => {
   rmSync(temp, { recursive: true, force: true })
 })
 
-it('upgrades a version 18 account and safely restores the original snapshot with historical links', () => {
+it('upgrades a version 21 account and safely restores the original snapshot with historical links', () => {
   const oldMigrations = join(temp, 'old-migrations')
   const legacyProfile = join(temp, 'zhjs-erp')
   mkdirSync(oldMigrations)
   mkdirSync(legacyProfile)
-  for (const name of readdirSync(migrations).filter((name) => /^\d+_.*\.sql$/.test(name) && Number(name.split('_')[0]) <= 18)) {
+  for (const name of readdirSync(migrations).filter((name) => /^\d+_.*\.sql$/.test(name) && Number(name.split('_')[0]) <= 21)) {
     copyFileSync(join(migrations, name), join(oldMigrations, name))
   }
 
   const legacyDb = join(legacyProfile, 'zhjs-erp.db')
   db = openDb(legacyDb, oldMigrations)
-  expect(db.pragma('user_version', { simple: true })).toBe(18)
+  expect(db.pragma('user_version', { simple: true })).toBe(21)
+  // 基线随迁移演进至 021（doc.operator/income_category 已就位），fixture 可直接用现有服务造数据。
   const owner = createUserService(db).setupAdmin('旧账管理员', 'legacy-owner-password')
   db.prepare("INSERT INTO app_setting VALUES ('shop.name', '老店'), ('license.install_id', 'legacy-device')").run()
   const customer = createCustomerService(db).create({ code: 'C18', name: '旧客户', opening_receivable: 5 })
