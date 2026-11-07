@@ -285,6 +285,17 @@ function initialize(): void {
   const licenseSvc = createDesktopLicenseService(getDb())
   licenseSvc.getStatus()
   const auditSvc = createAuditService(getDb())
+  // 敏感操作审计：危险/敏感通道在执行后写 platform_log（AGENTS.md §5 红线要求）。
+  const operator = () => getCurrentUser()?.username
+  const audit = (action: string, detail: string, before?: unknown, after?: unknown): void => {
+    auditSvc.record(
+      action,
+      operator(),
+      detail,
+      before === undefined ? undefined : JSON.stringify(before),
+      after === undefined ? undefined : JSON.stringify(after)
+    )
+  }
   const prevGuard = (channel: string): boolean => {
     const perm = PERMISSION_MAP[channel]
     return perm !== undefined && can(perm)
@@ -413,7 +424,9 @@ function initialize(): void {
     },
     'customerPrice:remove': (_evt, payload) => {
       const { customerId, productId } = payload as { customerId: number; productId: number }
+      const before = customerPriceSvc.listByCustomer(Number(customerId)).find((p) => p.product_id === Number(productId))
       customerPriceSvc.removePrice(Number(customerId), Number(productId))
+      audit('customerPrice:remove', `客户 ${customerId} 商品 ${productId}`, before ?? null)
       return true
     },
     'customerPrice:listByCustomer': (_evt, payload) =>
@@ -497,7 +510,12 @@ function initialize(): void {
       settingSvc.set(key, value)
     },
     'setting:getAll': () => settingSvc.getAll(),
-    'setting:remove': (_evt, payload) => settingSvc.remove(String(payload))
+    'setting:remove': (_evt, payload) => {
+      const key = String(payload)
+      const before = settingSvc.get(key)
+      settingSvc.remove(key)
+      audit('setting:remove', key, before ?? null)
+    }
   })
 
   // 收支科目主档
@@ -513,7 +531,12 @@ function initialize(): void {
       const { id, ...input } = payload as { id: number } & Record<string, unknown>
       return categorySvc.update(Number(id), input as never)
     },
-    'category:remove': (_evt, payload) => categorySvc.remove(Number(payload)),
+    'category:remove': (_evt, payload) => {
+      const id = Number(payload)
+      const before = categorySvc.list({}).find((c) => c.id === id)
+      categorySvc.remove(id)
+      audit('category:remove', `收支科目 #${id}`, before ?? null)
+    },
     'category:disable': (_evt, payload) => categorySvc.disable(Number(payload)),
     'category:enable': (_evt, payload) => categorySvc.enable(Number(payload))
   })
@@ -528,7 +551,12 @@ function initialize(): void {
       const { id, ...input } = payload as { id: number } & Record<string, unknown>
       formulaSvc.update(Number(id), input as never)
     },
-    'formula:remove': (_evt, payload) => formulaSvc.remove(Number(payload)),
+    'formula:remove': (_evt, payload) => {
+      const id = Number(payload)
+      const before = formulaSvc.getById(id)
+      formulaSvc.remove(id)
+      audit('formula:remove', `配方 #${id}${before ? ` ${before.name}` : ''}`, before ?? null)
+    },
     'formula:disable': (_evt, payload) => formulaSvc.disable(Number(payload)),
     'formula:enable': (_evt, payload) => formulaSvc.enable(Number(payload))
   })
@@ -822,7 +850,12 @@ function initialize(): void {
     'backup:now': () => backupIpc.backupNow(),
     'backup:pickDir': () => backupIpc.pickDir(),
     'backup:list': () => backupIpc.backupList(),
-    'backup:restore': (_evt, payload) => backupIpc.restoreBackup(String(payload)),
+    'backup:restore': (_evt, payload) => {
+      const file = String(payload)
+      const result = backupIpc.restoreBackup(file)
+      audit('backup:restore', file)
+      return result
+    },
     'sync:getConfig': () => backupIpc.syncGetConfig(),
     'sync:saveConfig': (_evt, payload) => backupIpc.syncSaveConfig(payload),
     'sync:now': () => backupIpc.syncNow(),
@@ -861,27 +894,44 @@ function initialize(): void {
     },
     'user:query': () => userSvc.query(),
     'user:get': (_evt, payload) => userSvc.getById(Number(payload)),
-    'user:create': (_evt, payload) =>
-      userSvc.create(payload as { username: string; password: string; role: string }),
+    'user:create': (_evt, payload) => {
+      const input = payload as { username: string; password: string; role: string }
+      const created = userSvc.create(input)
+      audit('user:create', `操作员 ${input.username} 角色 ${input.role}`, undefined, { username: created.username, role: created.role })
+      return created
+    },
     'user:update': (_evt, payload) => {
       const { id, patch } = payload as {
         id: number
         patch: { password?: string; role?: string; disabled?: number | boolean }
       }
-      return userSvc.update(Number(id), patch)
+      const before = userSvc.getById(Number(id))
+      const result = userSvc.update(Number(id), patch)
+      audit(
+        'user:update',
+        `操作员 #${id}`,
+        before ? { role: before.role, disabled: before.disabled } : null,
+        { role: patch.role, disabled: patch.disabled, passwordChanged: patch.password !== undefined }
+      )
+      return result
     },
     'user:remove': (_evt, payload) => {
-      userSvc.remove(Number(payload))
+      const id = Number(payload)
+      const before = userSvc.getById(id)
+      userSvc.remove(id)
+      audit('user:remove', `操作员 #${id}${before ? ` ${before.username}` : ''}`, before ? { username: before.username, role: before.role } : null)
       return true
     },
     // 角色（RBAC）：自定义角色的增删改查，权限点由 roleHas 判定
     'role:list': () => userSvc.listRoles(),
     'role:create': (_evt, payload) => {
       const { name, permissions } = payload as { name: string; permissions: string[] }
-      return userSvc.createRole({
+      const created = userSvc.createRole({
         name: String(name ?? ''),
         permissions: (Array.isArray(permissions) ? permissions : []).filter(isPermissionKey)
       })
+      audit('role:create', `角色 ${name}`, undefined, { id: created })
+      return created
     },
     'role:update': (_evt, payload) => {
       const { id, patch } = payload as {
@@ -893,10 +943,16 @@ function initialize(): void {
       if (patch?.permissions !== undefined) {
         next.permissions = (Array.isArray(patch.permissions) ? patch.permissions : []).filter(isPermissionKey)
       }
-      return userSvc.updateRole(String(id), next)
+      const before = userSvc.listRoles().find((r) => r.id === String(id)) ?? null
+      const result = userSvc.updateRole(String(id), next)
+      audit('role:update', `角色 #${id}${patch?.name ? ` ${patch.name}` : ''}`, before, next)
+      return result
     },
     'role:remove': (_evt, payload) => {
-      userSvc.removeRole(String(payload))
+      const id = String(payload)
+      const before = userSvc.listRoles().find((r) => r.id === id) ?? null
+      userSvc.removeRole(id)
+      audit('role:remove', `角色 ${id}`, before)
       return true
     }
   })
