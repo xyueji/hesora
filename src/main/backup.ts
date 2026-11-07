@@ -3,12 +3,13 @@ import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { BizError } from '../shared/result'
 import { getCurrentUser } from './auth'
+import { runMigrations } from './db/migrate'
 import { createBackupService } from './services/backup/backup.service'
 import { createSyncService } from './services/sync/sync.service'
 
-export function createBackupIpc(db: Database) {
+export function createBackupIpc(db: Database, migrationsDir: string) {
   const backupsDir = join(app.getPath('userData'), 'backups')
-  const backupService = createBackupService(db, db.name)
+  const backupService = createBackupService(db, db.name, (candidate) => runMigrations(candidate, migrationsDir))
   const syncService = createSyncService(db, { getDbFilePath: () => db.name, backupsDir, backupService })
   let restoring = false
   let checking = false
@@ -99,6 +100,7 @@ export function createBackupIpc(db: Database) {
       }
     },
     syncGetConfig: () => syncService.getConfig(),
+    syncCheckTargets: () => syncService.checkTargets(),
     syncSaveConfig(partial: unknown) {
       syncService.saveConfig(partial as Parameters<typeof syncService.saveConfig>[0])
 
@@ -107,15 +109,16 @@ export function createBackupIpc(db: Database) {
       if (restoring) throw new BizError('SYNC_FAIL', '恢复进行中')
       return syncService.syncNow()
     },
-    async syncDownload() {
+    async syncDownload(source?: 'local' | 'webdav') {
       if (restoring) throw new BizError('SYNC_FAIL', '恢复进行中')
-      return syncService.downloadFrom()
+      return syncService.prepareRestore(source)
     },
-    async restoreFromCloud(tempPath: string): Promise<{ needRestart: boolean }> {
+    cancelSyncRestore: (token: string) => syncService.discardPreview(token),
+    async restoreFromCloud(token: string, acceptLocalChanges: boolean): Promise<{ needRestart: boolean }> {
       if (restoring) throw new BizError('SYNC_FAIL', '恢复进行中')
       restoring = true
       try {
-        await syncService.restoreDownloaded(tempPath, getCurrentUser()?.username)
+        await syncService.restorePreview(token, acceptLocalChanges, getCurrentUser()?.username)
         return restart()
       } finally {
         restoring = false

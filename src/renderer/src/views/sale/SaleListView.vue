@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onActivated, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { hasPermission } from '../../stores/auth'
 import { printApi } from '../../api/print'
 import { saleApi, type SaleDetail } from '../../api/sale'
 import { csvApi } from '../../api/csv'
@@ -245,6 +246,8 @@ async function printA4(): Promise<void> {
       </template>
       <template #footer>
         <el-button :loading="printingA4" @click="printA4">打印 (A4)</el-button>
+        <el-button v-if="detail?.doc.type === 'sale' && detail.doc.partner_id && hasPermission('doc.payment')"
+          @click="detailVisible = false; $router.push({ path: '/payment/receipt', query: { partner: detail.doc.partner_id, source: detail.doc.id } })">收款核销</el-button>
         <el-button @click="detailVisible = false">关闭</el-button>
       </template>
     </el-dialog>

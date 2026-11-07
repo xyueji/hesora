@@ -33,6 +33,9 @@ export interface RegisterSerialInput {
 export interface ConsumeSerialInput {
   product_id: number
   sn: string
+  warehouse_id?: number
+  batch_no?: string
+  original_purchase_id?: number
   /** 默认 1 */
   qty?: number
   /** 来源单据类型，如 'sale' */

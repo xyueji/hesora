@@ -66,6 +66,7 @@ export type BatchStatus = '正常' | '临期' | '已过期'
 
 /** 批次效期行（含商品/仓库冗余名称，便于列表直接展示） */
 export interface ProductBatch {
+  qty?: number
   id: number
   product_id: number
   warehouse_id: number

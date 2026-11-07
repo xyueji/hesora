@@ -7,12 +7,13 @@ export function runMigrations(db: Database.Database, dir = join(__dirname, 'migr
   const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
   const latest = Number(files.at(-1)?.split('_')[0] ?? 0)
   if (current > latest) throw new Error('此账套由更高版本创建，请用相应版本打开。')
-  for (const f of files) {
-    const ver = Number(f.split('_')[0])
-    if (ver <= current) continue
-    db.transaction(() => {
+  if (current === latest) return
+  db.transaction(() => {
+    for (const f of files) {
+      const version = Number(f.split('_')[0])
+      if (version <= current) continue
       db.exec(readFileSync(join(dir, f), 'utf8'))
-      db.pragma(`user_version = ${ver}`)
-    })()
-  }
+      db.pragma(`user_version = ${version}`)
+    }
+  })()
 }

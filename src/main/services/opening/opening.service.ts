@@ -40,8 +40,8 @@ export function createOpeningService(db: DB) {
           source: 'opening' as const
         }))
         if (changes.length > 0) inventory.applyChanges(changes)
-        for (const c of payload.customers) updateCustomer.run(c.receivable, c.customer_id)
-        for (const s of payload.suppliers) updateSupplier.run(s.payable, s.supplier_id)
+        for (const c of payload.customers ?? []) updateCustomer.run(c.receivable, c.customer_id)
+        for (const s of payload.suppliers ?? []) updateSupplier.run(s.payable, s.supplier_id)
         settings.set(DONE_KEY, '1')
       })()
     },

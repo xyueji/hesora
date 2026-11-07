@@ -62,3 +62,21 @@ it('rolls back both schema changes and migration version on failure and supports
     db.close()
   }
 })
+
+it('rolls back all pending migrations when a later script fails', () => {
+  const dir = tempDirectory()
+  const db = new Database(':memory:')
+  try {
+    writeFileSync(join(dir, '001_base.sql'), 'CREATE TABLE initial (id INTEGER);')
+    runMigrations(db, dir)
+    writeFileSync(join(dir, '002_valid.sql'), 'INSERT INTO initial VALUES (1); CREATE TABLE intermediate (id INTEGER);')
+    writeFileSync(join(dir, '003_invalid.sql'), 'SELECT * FROM missing;')
+
+    expect(() => runMigrations(db, dir)).toThrow()
+    expect(db.pragma('user_version', { simple: true })).toBe(1)
+    expect(db.prepare('SELECT * FROM initial').all()).toEqual([])
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'intermediate'").get()).toBeUndefined()
+  } finally {
+    db.close()
+  }
+})

@@ -8,6 +8,7 @@ import { settingApi } from '../api/setting'
 import { setSession } from '../stores/auth'
 
 const router = useRouter()
+const isDemo = new URLSearchParams(window.location.search).get('mode') === 'demo'
 const loading = ref(false)
 const form = reactive({ username: '', password: '', confirm: '' })
 const setup = ref<{ required: boolean; username?: string }>({ required: false })
@@ -67,6 +68,7 @@ async function submit() {
     <el-card class="login-card">
       <template #header>
         <div class="login-title">{{ setup.required ? '设置管理员' : '登录禾序进销存' }}</div>
+        <el-tag v-if="isDemo" type="warning" size="small">独立演示账套</el-tag>
       </template>
       <el-form label-width="80px" @submit.prevent>
         <el-form-item label="用户名">

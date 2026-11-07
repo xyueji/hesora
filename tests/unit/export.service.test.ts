@@ -76,8 +76,8 @@ describe('export.service', () => {
     const w2 = w.create({ name: '次仓' } as never)
     const inv = createInventoryService(db)
     inv.applyChanges([
-      { product_id: productId, warehouse_id: warehouseId, batch_no: '', change_qty: 5, unit_cost: 1, source: 'test' },
-      { product_id: productId, warehouse_id: w2, batch_no: '', change_qty: 7, unit_cost: 1, source: 'test' }
+      { product_id: productId, warehouse_id: warehouseId, batch_no: 'B01', change_qty: 5, unit_cost: 1, source: 'test' },
+      { product_id: productId, warehouse_id: w2, batch_no: 'B01', change_qty: 7, unit_cost: 1, source: 'test' }
     ])
     const csv = exportSvc.stock(warehouseId)
     expect(csv).toContain('主仓')
@@ -91,7 +91,7 @@ describe('export.service', () => {
       type: 'purchase',
       date: '2026-11-07',
       warehouse_id: warehouseId,
-      items: [{ product_id: productId, qty: 10, price: 2 }]
+      items: [{ product_id: productId, qty: 10, price: 2, batch_no: 'B01' }]
     } as never)
     expect(doc).toBeTruthy()
     const csv = exportSvc.docs('purchase', '2026-11-01', '2026-11-30')
@@ -105,7 +105,7 @@ describe('export.service', () => {
 
   it('exports the quantity in the same unit as the document line', () => {
     const { productId, warehouseId } = seedBasics()
-    createPurchaseService(db).create({ warehouse_id: warehouseId, items: [{ product_id: productId, unit: '箱', qty: 2, rate: 24, price: 30 }] })
+    createPurchaseService(db).create({ warehouse_id: warehouseId, items: [{ product_id: productId, unit: '箱', qty: 2, rate: 24, price: 30, batch_no: 'B01' }] })
     expect(exportSvc.docs('purchase')).toContain(',箱,2,30,60')
   })
 })

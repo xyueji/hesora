@@ -68,6 +68,9 @@ describe('sync.service', () => {
   let server: Server
   let base: string
   let uploads: { url: string; auth: string | null; body: Buffer }[] = []
+  let davHead: Buffer | undefined
+  let rejectDavWrite = false
+  const davConditions: Array<string | string[] | undefined> = []
 
   beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), 'zhjs-sync-'))
@@ -79,6 +82,18 @@ describe('sync.service', () => {
       req.on('data', (c: Buffer) => chunks.push(c))
       req.on('end', () => {
         const body = Buffer.concat(chunks)
+        if (req.url?.startsWith('/conditional/')) {
+          if (req.method === 'GET') {
+            res.writeHead(davHead ? 200 : 404, davHead ? { ETag: '"snapshot-1"' } : undefined)
+            res.end(davHead)
+          } else {
+            davConditions.push(davHead ? req.headers['if-match'] : req.headers['if-none-match'])
+            if (rejectDavWrite) res.writeHead(412)
+            else { davHead = body; res.writeHead(201) }
+            res.end()
+          }
+          return
+        }
         if (req.method === 'PUT') {
           uploads.push({ url: req.url ?? '', auth: req.headers.authorization ?? null, body })
           res.writeHead((req.url ?? '').startsWith('/bad') ? 500 : 201)
@@ -174,6 +189,29 @@ describe('sync.service', () => {
     expect(p).toMatch(/\.db$/)
     await rm(p, { force: true })
   })
+
+  it('sends conditional WebDAV writes and reports a 412 as a conflict', async () => {
+    const { svc } = makeSvc()
+    svc.saveConfig({ type: 'webdav', webdav: { url: `${base}/conditional`, username: '', password: '' } })
+    await svc.syncNow()
+    rejectDavWrite = true
+    await expect(svc.syncNow()).rejects.toThrow(/快照已变化/)
+    expect(davConditions).toEqual(['*', '"snapshot-1"'])
+    expect(decodeSnapshot(davHead!).manifest.sequence).toBe(1)
+  })
+
+  it('checks each configured target independently when another is offline', async () => {
+    const { svc } = makeSvc()
+    const remote = join(dir, 'probe-directory')
+    svc.saveConfig({ type: 'local', local: { dir: remote } })
+    await svc.syncNow()
+    svc.saveConfig({ type: 'both', webdav: { url: `${base}/bad`, username: '', password: '' } })
+    const statuses = await svc.checkTargets()
+    expect(statuses).toMatchObject([{ target: 'local', state: 'available', sequence: 1 }, { target: 'webdav', state: 'error' }])
+    const preview = await svc.prepareRestore('local')
+    expect(preview).toMatchObject({ source: 'local', sequence: 1 })
+    await svc.discardPreview(preview.token)
+  })
 })
 
 
@@ -198,5 +236,54 @@ it('blocks a second device from overwriting a newer remote snapshot', async () =
     writerDb.close()
     readerDb.close()
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+it('previews remote and local records and blocks stale or unacknowledged replacement', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hesora-sync-preview-'))
+  const writerDb = openMemDb()
+  const localDb = openMemDb()
+  try {
+    const config = { type: 'local' as const, local: { dir: join(dir, 'remote') } }
+    const writer = createSyncService(writerDb, { getDbFilePath: () => join(dir, 'writer.db'), backupsDir: join(dir, 'writer-backups') })
+    const local = createSyncService(localDb, { getDbFilePath: () => join(dir, 'local.db'), backupsDir: join(dir, 'local-backups') })
+    writer.saveConfig(config)
+    local.saveConfig(config)
+    writerDb.exec("INSERT INTO product (code, name, base_unit) VALUES ('P01', '云盘商品', '件')")
+    localDb.exec("INSERT INTO product (code, name, base_unit) VALUES ('LOCAL', '本地新增商品', '件')")
+    await writer.syncNow()
+    const preview = await local.prepareRestore()
+    expect(preview).toMatchObject({ sequence: 1, localChanged: true, local: { products: 1 }, remote: { products: 1 } })
+    await expect(local.restorePreview(preview.token, false)).rejects.toThrow(/确认/)
+    localDb.exec("UPDATE product SET name = '预览后改名' WHERE code = 'LOCAL'")
+    await expect(local.restorePreview(preview.token, true)).rejects.toThrow(/重新预览/)
+    expect(localDb.prepare("SELECT name FROM product WHERE code = 'LOCAL'").pluck().get()).toBe('预览后改名')
+    const latest = await local.prepareRestore()
+    await local.restorePreview(latest.token, true)
+    expect((await readFile(join(dir, 'local.db.restore'))).length).toBeGreaterThan(0)
+  } finally {
+    writerDb.close()
+    localDb.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('allows only one publisher when two local-folder writers observe the same starting point', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hesora-sync-race-'))
+  const first = openMemDb()
+  const second = openMemDb()
+  try {
+    const makeWriter = (db: Database.Database, name: string) => {
+      const svc = createSyncService(db, { getDbFilePath: () => join(dir, name + '.db'), backupsDir: join(dir, name) })
+      svc.saveConfig({ type: 'local', local: { dir: join(dir, 'remote') } })
+      return svc
+    }
+    const results = await Promise.allSettled([makeWriter(first, 'first').syncNow(), makeWriter(second, 'second').syncNow()])
+    expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected'])
+    expect(decodeSnapshot(await readFile(join(dir, 'remote', 'hesora-inventory.zjsnap'))).manifest.sequence).toBe(1)
+  } finally {
+    first.close()
+    second.close()
+    await rm(dir, { recursive: true, force: true })
   }
 })

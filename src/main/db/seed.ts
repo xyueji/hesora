@@ -21,9 +21,13 @@ import { createSerialService } from '../services/inventory/serial.service'
  * （KH/GYS 2001+）、采购/销售/零售/报价→订单→销售转单链/收付款/调拨/盘点全链路单据，
  * 金额与库存自洽（期初库存 - 销售/零售/调拨/盘亏 + 采购 = 期末账面）。
  *
- * 幂等：仅当商品表为空时写入（空库首启一次性注入）。
+ * 只在独立演示账套调用。整套数据一次提交，失败时可重试。
  */
 export function seedDemoData(db: Database): boolean {
+  return db.transaction(() => populateDemoData(db)).immediate()
+}
+
+function populateDemoData(db: Database): boolean {
   const count = (db.prepare('SELECT COUNT(*) AS c FROM product').get() as { c: number }).c
   if (count > 0) return false
 
@@ -47,7 +51,7 @@ export function seedDemoData(db: Database): boolean {
   const d = (offset: number): string => {
     const t = new Date(today)
     t.setDate(t.getDate() - offset)
-    return t.toISOString().slice(0, 10)
+    return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
   }
 
   // ---------- 仓库 / 资金账户 ----------
@@ -126,10 +130,14 @@ export function seedDemoData(db: Database): boolean {
   }
 
   // ---------- 期初建账（opening.done=1 后不可改，因此一次写全） ----------
+  // SP1005 已改为 serial 跟踪：序列号商品不进普通期初库存（一件一码，由后面的序列号台账演示）。
   opening.save({
     inventory: [
-      // 主仓期初库存（对齐 mock stock：120 - i*3）
-      ...productIds.slice(0, 11).map((id, i) => ({ product_id: id, warehouse_id: mainWh, qty: 120 - i * 3, unit_cost: goods[i]!.purchase_price })),
+      // 主仓期初库存（对齐 mock stock：120 - i*3；SP1005 序列号商品不进普通库存）
+      ...productIds.slice(0, 11)
+        .map((id, i) => ({ id, idx: i }))
+        .filter(({ idx }) => idx !== 4)
+        .map(({ id, idx }) => ({ product_id: id, warehouse_id: mainWh, qty: 120 - idx * 3, unit_cost: goods[idx]!.purchase_price })),
       // 副仓少量库存
       ...productIds.slice(0, 4).map((id, i) => ({ product_id: id, warehouse_id: subWh, qty: 24 - i * 2, unit_cost: goods[i]!.purchase_price }))
     ],
@@ -159,11 +167,11 @@ export function seedDemoData(db: Database): boolean {
 
   // 销售 3 单（覆盖 VIP 等级价、批发价、普通零售价）
   sale.create({ customer_id: customerIds[0]!, warehouse_id: mainWh, date: d(4), remark: '阳光超市周补', items: [item(0, 20), item(2, 30, 1.6)] })
-  sale.create({ customer_id: customerIds[3]!, warehouse_id: mainWh, date: d(3), remark: '天天批发部', items: [item(6, 10, 16), item(4, 60, 1.1)] })
+  sale.create({ customer_id: customerIds[3]!, warehouse_id: mainWh, date: d(3), remark: '天天批发部', items: [item(6, 10, 16), item(5, 60, 1.1)] })
   sale.create({ customer_id: customerIds[1]!, warehouse_id: mainWh, date: d(2), remark: '惠民便利', items: [item(8, 24), item(10, 24, 2.5)] })
 
   // 零售 2 笔（现金 + 微信）
-  retail.create({ warehouse_id: mainWh, account_id: cashAcc, date: d(1), items: [item(10, 2, 3), item(4, 2, 1.5)] })
+  retail.create({ warehouse_id: mainWh, account_id: cashAcc, date: d(1), items: [item(10, 2, 3), item(5, 2, 1.5)] })
   retail.create({ warehouse_id: mainWh, account_id: wechatAcc, date: d(0), items: [item(2, 4, 2), item(8, 2, 4.5)] })
 
   // 报价 → 销售订单 → 销售 转单链（操作员 1 = 内置管理员）
@@ -182,8 +190,8 @@ export function seedDemoData(db: Database): boolean {
   // 调拨 1（主仓 → 副仓）
   transfer.create({ warehouse_id: mainWh, warehouse_in_id: subWh, date: d(1), remark: '副仓补货', items: [item(2, 12, 1.2), item(0, 6, 9.5)] })
 
-  // 盘点 1（SP1005 账面 56 件：期初120 − 销售60 − 零售2，实盘 54 → 盘亏 2）
-  stocktake.create({ warehouse_id: mainWh, date: d(0), remark: '月末抽盘', items: [{ product_id: productIds[4]!, actual_qty: 54 }] })
+  // 盘点 1（SP1006 账面 43 件：期初105 − 销售60 − 零售2，实盘 41 → 盘亏 2）
+  stocktake.create({ warehouse_id: mainWh, date: d(0), remark: '月末抽盘', items: [{ product_id: productIds[5]!, actual_qty: 41 }] })
 
   // ---------- 序列号演示（登记 3 台到副仓；序列号台账独立于库存，不影响成本） ----------
   serials.registerIn([

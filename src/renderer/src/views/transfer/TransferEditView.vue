@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import TrackingFields from '../../components/TrackingFields.vue'
+import type { TrackingItemInput } from '../../../../shared/types/inventory'
 import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -8,7 +10,7 @@ import { warehouseApi } from '../../api/warehouse'
 import type { Product, ProductUnit } from '../../../../shared/types/product'
 import type { Warehouse } from '../../../../shared/types/warehouse'
 
-interface Line {
+interface Line extends TrackingItemInput {
   product_id: number | null
   product: Product | null
   unit: string
@@ -82,6 +84,9 @@ async function searchProducts(keyword: string, line: Line): Promise<void> {
 function onProductSelect(line: Line): void {
   const p = productOptions.value.find((x) => x.id === line.product_id)
   line.product = p ?? null
+  line.serial_numbers = undefined
+  line.production_date = undefined
+  line.expire_date = undefined
   const units: ProductUnit[] = p?.units ?? []
   const base: ProductUnit = { unit: p?.base_unit ?? '', rate: 1, is_base: true }
   line.unitOptions = [base, ...units]
@@ -116,6 +121,9 @@ async function save(): Promise<void> {
     .filter((l) => l.product_id !== null && (l.qty ?? 0) > 0)
     .map((l) => ({
       product_id: l.product_id as number,
+      serial_numbers: l.serial_numbers,
+      production_date: l.production_date || undefined,
+      expire_date: l.expire_date || undefined,
       batch_no: l.product?.tracking_type === 'batch' ? l.batch_no || '' : undefined,
       unit: l.unit || undefined,
       rate: l.rate || 1,
@@ -216,6 +224,14 @@ void currentLine
           <template #default="{ row }">
             <el-input v-if="row.product?.tracking_type === 'batch'" v-model="row.batch_no" placeholder="批次号" />
             <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="序列号 / 效期" min-width="180">
+          <template #default="{ row }">
+            <TrackingFields
+              :tracking="row.product?.tracking_type"
+              v-model:serial-numbers="row.serial_numbers"
+            />
           </template>
         </el-table-column>
         <el-table-column label="数量" width="130">

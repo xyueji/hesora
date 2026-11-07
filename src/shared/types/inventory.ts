@@ -24,7 +24,13 @@ export interface StockPageResult {
   items: StockItem[]
 }
 
-export interface InventoryChange {
+export interface TrackingItemInput {
+  serial_numbers?: string[]
+  production_date?: string
+  expire_date?: string
+}
+
+export interface InventoryChange extends TrackingItemInput {
   product_id: number
   warehouse_id: number
   batch_no?: string // '' for non-batch
@@ -32,6 +38,10 @@ export interface InventoryChange {
   unit_cost?: number // required for IN (change_qty > 0); ignored for OUT (uses moving_cost)
   source?: string // e.g. 'purchase', 'sale', 'opening'
   source_id?: number
+  source_doc_id?: number
+  doc_item_id?: number
+  date?: string
+  from_warehouse_id?: number
 }
 
 export interface InventoryRow {

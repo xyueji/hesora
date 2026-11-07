@@ -139,7 +139,7 @@ describe('transfer.service', () => {
   })
 
   it('batch product without batch_no throws VALIDATION', () => {
-    stockUp(ctx.batchProductId, ctx.whA)
+    stockUp(ctx.batchProductId, ctx.whA, 10, 3, 'B2024001')
     expect(() =>
       ctx.transferService.create({
         warehouse_id: ctx.whA,

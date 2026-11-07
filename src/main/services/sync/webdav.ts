@@ -2,6 +2,7 @@
 export interface DavResponse {
   ok: boolean
   status: number
+  etag?: string
   arrayBuffer: () => Promise<ArrayBuffer>
 }
 
@@ -21,11 +22,12 @@ export async function webdavPut(
   url: string,
   body: Buffer,
   username = '',
-  password = ''
+  password = '',
+  condition: Record<string, string> = {}
 ): Promise<DavResponse> {
   const res = await fetch(url, {
     method: 'PUT', redirect: 'error', signal: AbortSignal.timeout(30000),
-    headers: headers(username, password, { 'Content-Type': 'application/octet-stream' }),
+    headers: headers(username, password, { 'Content-Type': 'application/octet-stream', ...condition }),
     body: new Uint8Array(body)
   })
   return { ok: res.ok, status: res.status, arrayBuffer: () => res.arrayBuffer() }
@@ -33,7 +35,7 @@ export async function webdavPut(
 
 export async function webdavGet(url: string, username = '', password = ''): Promise<DavResponse> {
   const res = await fetch(url, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(30000), headers: headers(username, password) })
-  return { ok: res.ok, status: res.status, arrayBuffer: () => res.arrayBuffer() }
+  return { ok: res.ok, status: res.status, etag: res.headers.get('etag') ?? undefined, arrayBuffer: () => res.arrayBuffer() }
 }
 
 export async function webdavMkcol(url: string, username = '', password = ''): Promise<DavResponse> {

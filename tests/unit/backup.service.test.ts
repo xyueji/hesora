@@ -86,3 +86,38 @@ it('keeps one automatic backup per day and retains the latest 30', () => {
   expect(service.listBackups(backupsDir)).toHaveLength(30)
   expect(service.listBackups(backupsDir).some(({ name }) => name.includes('-daily-'))).toBe(true)
 })
+
+it('refuses a newer database and leaves the live profile bootable', () => {
+  const service = backup.createBackupService(db, dbFile)
+  const futureFile = service.backupTo(dir)
+  const future = new Database(futureFile)
+  const originalVersion = Number(db.pragma('user_version', { simple: true }))
+  future.pragma(`user_version = ${originalVersion + 1}`)
+  future.close()
+
+  expect(() => service.restoreFrom(futureFile, dbFile)).toThrow(/备份文件无效/)
+  expect(backup.applyPendingRestore(dbFile)).toBe(false)
+  db.close()
+  db = new Database(dbFile)
+  expect(value(db)).toBe('v1')
+})
+
+it('rejects a valid SQLite file that only imitates the core application tables', () => {
+  const service = backup.createBackupService(db, dbFile)
+  const badPath = join(dir, 'impostor.db')
+  const impostor = new Database(badPath)
+  try {
+    impostor.pragma(`user_version = ${db.pragma('user_version', { simple: true })}`)
+    impostor.exec(`
+      CREATE TABLE app_setting (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE product (id INTEGER PRIMARY KEY);
+      CREATE TABLE inventory (id INTEGER PRIMARY KEY);
+      CREATE TABLE warehouse (id INTEGER PRIMARY KEY);
+    `)
+  } finally {
+    impostor.close()
+  }
+  expect(() => service.restoreFrom(badPath, dbFile)).toThrow(/备份文件无效/)
+  expect(backup.applyPendingRestore(dbFile)).toBe(false)
+  expect(value(db)).toBe('v1')
+})

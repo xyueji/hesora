@@ -46,6 +46,7 @@ export interface DocItemRow {
   qty: number
   price: number
   amount: number
+  serial_numbers?: string[]
 }
 
 export interface DocRow {
@@ -126,7 +127,9 @@ export const DOC_A4_PRINTABLE: ReadonlySet<DocType> = new Set<DocType>([
   'transfer',
   'stocktake',
   'assemble',
-  'disassemble'
+  'disassemble',
+  'receipt',
+  'payment'
 ])
 
 /** 通用单据详情（doc.service.getDetailWithItems 返回） */

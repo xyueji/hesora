@@ -5,6 +5,11 @@ import { createDocService } from '../../src/main/services/doc/doc.service'
 import { createFundService } from '../../src/main/services/fund/fund.service'
 import { createCustomerService } from '../../src/main/services/customer/customer.service'
 import { createSupplierService } from '../../src/main/services/supplier/supplier.service'
+import { createArrearsService } from '../../src/main/services/stats/arrears.service'
+import { createPrintService } from '../../src/main/services/print/print.service'
+import { createSaleService } from '../../src/main/services/sale/sale.service'
+import { createPurchaseService } from '../../src/main/services/purchase/purchase.service'
+import { renderA4Html } from '../../src/shared/print/templates'
 import { BizError } from '../../src/shared/result'
 import type { DB } from '../../src/main/services/doc/doc.service'
 
@@ -90,6 +95,59 @@ describe('payment.service', () => {
     expect(ctx.paymentService.queryPayment({ page: 1, pageSize: 20 }).total).toBe(1)
     const page = ctx.paymentService.queryReceipt({ page: 1, pageSize: 20 })
     expect(page.items[0]!.type).toBe('receipt')
+  })
+
+  it('keeps document lists within their domain even when a forged type is submitted', () => {
+    createDocService(ctx.db).create({ type: 'purchase', items: [{ product_id: 1, qty: 2, price: 50 }] })
+    expect(() => createSaleService(ctx.db).query({ type: 'purchase' as never, page: 1, pageSize: 20 })).toThrow(/类型/)
+    expect(() => createPurchaseService(ctx.db).query({ type: 'receipt' as never, page: 1, pageSize: 20 })).toThrow(/类型/)
+  })
+
+  it('splits one receipt across accounts and reconciles only its allocated amount to the sale', () => {
+    const sale = createDocService(ctx.db).create({ type: 'sale', partner_id: ctx.customerId, items: [{ product_id: 1, qty: 2, price: 50 }] })
+    const bank = createFundService(ctx.db).create({ name: '对公账户', type: 'bank' })
+    const receipt = ctx.paymentService.createReceipt({
+      partner_id: ctx.customerId, amount: 60,
+      accounts: [{ account_id: ctx.accountId, amount: 20 }, { account_id: bank, amount: 40 }],
+      allocations: [{ doc_id: sale.id, amount: 55 }]
+    })
+    const detail = ctx.paymentService.getReceiptDetail(receipt.id)
+    expect(detail.flows.map((row) => row.amount)).toEqual([20, 40])
+    expect(detail.allocations).toEqual([{ doc_id: sale.id, no: sale.no, amount: 55 }])
+    expect(ctx.paymentService.openDocuments('receipt', ctx.customerId)[0]).toMatchObject({ id: sale.id, remaining: 45 })
+    expect(createArrearsService(ctx.db).receivables()[0]).toMatchObject({ settled: 60, balance: 40 })
+    expect(() => ctx.paymentService.createReceipt({ partner_id: ctx.customerId, account_id: bank, amount: 46, allocations: [{ doc_id: sale.id, amount: 46 }] })).toThrow(/待核销/)
+    expect(ctx.paymentService.queryReceipt({ page: 1, pageSize: 20 }).total).toBe(1)
+  })
+
+  it('prints a payment voucher with both account splits and the reconciled bill', () => {
+    const order = createDocService(ctx.db).create({ type: 'purchase', partner_id: ctx.supplierId, items: [{ product_id: 1, qty: 2, price: 50 }] })
+    const bank = createFundService(ctx.db).create({ name: '银行<核对>', type: 'bank' })
+    const payment = ctx.paymentService.createPayment({ partner_id: ctx.supplierId, amount: 80,
+      accounts: [{ account_id: ctx.accountId, amount: 20 }, { account_id: bank, amount: 60 }],
+      allocations: [{ doc_id: order.id, amount: 80 }]
+    })
+    const data = createPrintService(ctx.db).a4Data(payment.id)
+    expect(data.partnerName).toBe('李四供货')
+    const html = renderA4Html(data)
+    for (const text of ['现金', '银行&lt;核对&gt;', '60.00', order.no, '80.00']) expect(html).toContain(text)
+    expect(html).not.toContain('<th>商品名称</th>')
+  })
+
+  it('rolls back split settlement on a mismatch, unrelated document, or second-ledger failure', () => {
+    const doc = createDocService(ctx.db).create({ type: 'purchase', partner_id: ctx.supplierId, items: [{ product_id: 1, qty: 1, price: 100 }] })
+    const bank = createFundService(ctx.db).create({ name: '对公账户', type: 'bank' })
+    const input = {
+      partner_id: ctx.supplierId, amount: 50, accounts: [{ account_id: ctx.accountId, amount: 20 }, { account_id: bank, amount: 30 }],
+      allocations: [{ doc_id: doc.id, amount: 50 }]
+    }
+    expect(() => ctx.paymentService.createPayment({ ...input, amount: 55 })).toThrow(/合计/)
+    expect(() => ctx.paymentService.createReceipt({ ...input, partner_id: ctx.customerId })).toThrow(/待核销/)
+    ctx.db.exec(`CREATE TRIGGER block_bank BEFORE INSERT ON fund_flow WHEN NEW.account_id = ${bank} BEGIN SELECT RAISE(ABORT, 'test write failure'); END`)
+    expect(() => ctx.paymentService.createPayment(input)).toThrow(/test write failure/)
+    expect(ctx.db.prepare('SELECT COUNT(*) FROM fund_flow').pluck().get()).toBe(0)
+    expect(ctx.db.prepare('SELECT COUNT(*) FROM payment_allocation').pluck().get()).toBe(0)
+    expect(ctx.paymentService.openDocuments('payment', ctx.supplierId)[0]?.remaining).toBe(100)
   })
 
   it('docService allows receipt with zero items but still rejects purchase', () => {

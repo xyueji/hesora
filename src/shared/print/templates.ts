@@ -39,6 +39,10 @@ export interface A4PrintData {
     actualQty: number
     difference: number
   }>
+  settlement?: {
+    funds: { account: string; direction: 'in' | 'out'; amount: number }[]
+    allocations: { no: string; amount: number }[]
+  }
   total: number
   remark: string
   printDate: string
@@ -127,6 +131,13 @@ export function renderA4Html(data: A4PrintData): string {
   }).join('\n')
   const columns = data.stocktakeItems ? ['账面数量', '实盘数量', '差异'] : ['数量', '单价', '金额']
   const remarkLine = data.remark ? `<div class="remark">备注：${esc(data.remark)}</div>` : ''
+  const fundTables = data.settlement && `<table>
+<thead><tr><th>结算账户</th><th>资金方向</th><th class="r">金额</th></tr></thead>
+<tbody>${data.settlement.funds.map((row) => `<tr><td>${esc(row.account)}</td><td>${row.direction === 'in' ? '流入' : '流出'}</td><td class="r">${fmt(row.amount)}</td></tr>`).join('')}</tbody>
+</table>${data.settlement.allocations.length ? `<table>
+<thead><tr><th>来源单号</th><th class="r">核销金额</th></tr></thead>
+<tbody>${data.settlement.allocations.map((row) => `<tr><td>${esc(row.no)}</td><td class="r">${fmt(row.amount)}</td></tr>`).join('')}</tbody>
+</table>` : ''}`
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -153,12 +164,12 @@ export function renderA4Html(data: A4PrintData): string {
 <div class="shop">${esc(data.shopName)}</div>
 <div class="meta">
   <span>往来单位：${esc(data.partnerName) || '—'}</span>
-  <span>仓库：${esc(data.warehouseName) || '—'}</span>
+  ${data.settlement ? '' : `<span>仓库：${esc(data.warehouseName) || '—'}</span>`}
   ${data.warehouseInName ? `<span>调入仓库：${esc(data.warehouseInName)}</span>` : ''}
   <span>单号：${esc(data.docNo)}</span>
   <span>日期：${esc(data.date)}</span>
 </div>
-<table>
+${fundTables ?? `<table>
 <thead>
 <tr>
   <th style="width:36px">序号</th>
@@ -171,12 +182,12 @@ export function renderA4Html(data: A4PrintData): string {
 <tbody>
 ${rows}
 </tbody>
-</table>
+</table>`}
 ${data.stocktakeItems ? '' : `<div class="total">合计：¥${fmt(data.total)}</div>`}
 ${remarkLine}
 <div class="sign">
-  <span>打货人：＿＿＿＿＿＿</span>
-  <span>收货人：＿＿＿＿＿＿</span>
+  <span>${data.settlement ? '经办人' : '打货人'}：＿＿＿＿＿＿</span>
+  <span>${data.settlement ? '复核人' : '收货人'}：＿＿＿＿＿＿</span>
 </div>
 <div style="margin-top:16px; color:#666;">打印时间：${esc(data.printDate)}</div>
 </body>

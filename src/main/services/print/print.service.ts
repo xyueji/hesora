@@ -5,6 +5,7 @@ import { BizError } from '../../../shared/result'
 import type { A4PrintData, ReceiptPrintData } from '../../../shared/print/templates'
 import { DOC_A4_PRINTABLE, DOC_TYPE_LABELS, type DocType } from '../../../shared/types/doc'
 import { createSettingService } from '../setting/setting.service'
+import { createPaymentService } from '../payment/payment.service'
 
 export type DB = Database
 
@@ -66,7 +67,7 @@ export function createPrintService(db: DB) {
 
   function partnerName(partnerId: number | null, type: string): string {
     if (partnerId === null) return ''
-    const table = type === 'purchase' || type === 'purchase_return' ? 'supplier' : 'customer'
+    const table = type === 'purchase' || type === 'purchase_return' || type === 'payment' ? 'supplier' : 'customer'
     const row = db.prepare(`SELECT name FROM ${table} WHERE id = ?`).get(partnerId) as
       | { name: string }
       | undefined
@@ -115,6 +116,9 @@ export function createPrintService(db: DB) {
     if (!DOC_A4_PRINTABLE.has(doc.type)) {
       throw new BizError('VALIDATION', `该单据类型不支持 A4 打印：${doc.type}`)
     }
+    const settlement = doc.type === 'receipt' || doc.type === 'payment'
+      ? createPaymentService(db).getDetail(doc.type, doc.id)
+      : undefined
     const stocktakeItems = doc.type === 'stocktake'
       ? db.prepare(`SELECT p.name, COALESCE(p.spec, '') AS spec, p.base_unit AS unit,
             c.after_qty - c.change_qty AS bookQty, c.after_qty AS actualQty, c.change_qty AS difference
@@ -130,6 +134,10 @@ export function createPrintService(db: DB) {
       docNo: doc.no,
       date: doc.date,
       items: itemsOf(docId),
+      settlement: settlement && {
+        funds: settlement.flows.map((row) => ({ account: row.account_name ?? `#${row.account_id}`, direction: row.direction, amount: row.amount })),
+        allocations: settlement.allocations
+      },
       stocktakeItems: stocktakeItems?.length ? stocktakeItems : undefined,
       total: doc.total_amount,
       remark: doc.remark ?? '',

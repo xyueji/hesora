@@ -111,6 +111,38 @@ export function createSerialService(db: DB) {
     SET out_qty = @out_qty, status = @status, out_date = @out_date, out_source = @out_source, out_source_id = @out_source_id
     WHERE id = @id
   `)
+  const findSerial = db.prepare('SELECT * FROM serial_number WHERE sn = ? AND product_id = ?')
+  const reopen = db.prepare(`
+    UPDATE serial_number
+    SET warehouse_id = @warehouse_id, batch_no = @batch_no, status = 'in_stock', in_qty = 1, out_qty = 0,
+        in_date = @in_date, in_source = @in_source, in_source_id = @in_source_id,
+        out_date = NULL, out_source = NULL, out_source_id = NULL
+    WHERE id = @id
+  `)
+  const originalReceipt = db.prepare(`
+    SELECT 1 FROM serial_flow WHERE sn = ? AND product_id = ? AND doc_id = ? AND direction = 'in'
+  `)
+
+  function restoreIn(items: RegisterSerialInput[], originalId: number, originalType: 'sale' | 'transfer'): void {
+    db.transaction(() => {
+      for (const item of items) {
+        const sn = trimSn(item.sn)
+        const row = findSerial.get(sn, item.product_id) as SerialNumberRow | undefined
+        if (!row || row.status !== 'out' || row.out_source_id !== originalId || row.out_source !== originalType) {
+          throw new BizError('VALIDATION', `序列号不属于对应出库单：${sn}`)
+        }
+        const time = nowLocal()
+        reopen.run({
+          id: row.id, warehouse_id: item.warehouse_id, batch_no: item.batch_no ?? '',
+          in_date: time, in_source: item.source ?? null, in_source_id: item.source_id ?? null
+        })
+        insertFlow.run({
+          sn, product_id: item.product_id, doc_id: item.source_id ?? null, doc_item_id: item.doc_item_id ?? null,
+          direction: 'in', qty: 1, created_at: time
+        })
+      }
+    }).immediate()
+  }
 
   function assertProductIsSerial(productId: number): void {
     const row = db
@@ -205,13 +237,21 @@ export function createSerialService(db: DB) {
           throw new BizError('VALIDATION', '序列号出库数量必须大于0')
         }
         const productId = Number(item.product_id)
-        const row = db
-          .prepare('SELECT * FROM serial_number WHERE sn = ? AND product_id = ?')
-          .get(sn, productId) as SerialNumberRow | undefined
+        const row = findSerial.get(sn, productId) as SerialNumberRow | undefined
         if (!row || row.status !== 'in_stock') {
           throw new BizError('VALIDATION', `序列号不存在或已出库：${sn}`)
         }
+        if (item.warehouse_id !== undefined && row.warehouse_id !== item.warehouse_id ||
+            item.batch_no !== undefined && row.batch_no !== item.batch_no) {
+          throw new BizError('VALIDATION', `序列号不在指定仓库或批次：${sn}`)
+        }
+        if (item.original_purchase_id !== undefined && !originalReceipt.get(sn, productId, item.original_purchase_id)) {
+          throw new BizError('VALIDATION', `序列号不属于原采购单：${sn}`)
+        }
         const outQty = Number(row.out_qty) + qty
+        if (outQty > Number(row.in_qty) + 1e-9) {
+          throw new BizError('VALIDATION', `序列号可出库数量不足：${sn}`)
+        }
         const exhausted = outQty >= Number(row.in_qty) - 1e-9
         updateOut.run({
           id: row.id,
@@ -421,7 +461,7 @@ export function createSerialService(db: DB) {
     return Number(row.c)
   }
 
-  return { registerIn, consumeOut, listStock, listFlow, validateSns, stockOf }
+  return { registerIn, consumeOut, restoreIn, listStock, listFlow, validateSns, stockOf }
 }
 
 export type SerialService = ReturnType<typeof createSerialService>

@@ -57,23 +57,29 @@ export function createPurchaseService(db: DB) {
         items: input.items.map((it) => ({
           product_id: it.product_id,
           warehouse_id: warehouseId,
-          batch_no: it.batch_no,
+          batch_no: it.batch_no?.trim(),
           unit: it.unit,
           rate: it.rate,
           qty: it.qty,
           price: it.price
         }))
       })
-      const changes = input.items.map((it) => {
+      const docItems = docService.getItems(doc.id)
+      const changes = input.items.map((it, index) => {
         const rate = it.rate === undefined || it.rate === null ? 1 : Number(it.rate)
         return {
           product_id: it.product_id,
           warehouse_id: warehouseId,
-          batch_no: it.batch_no ?? '',
+          batch_no: (it.batch_no ?? '').trim(),
           change_qty: Number(it.qty) * rate,
           unit_cost: Number(it.price ?? 0) / rate,
           source: 'purchase',
-          source_id: doc?.id ?? 0
+          source_id: doc?.id ?? 0,
+          doc_item_id: docItems[index]?.id,
+          date: doc?.date,
+          serial_numbers: it.serial_numbers,
+          production_date: it.production_date,
+          expire_date: it.expire_date
         }
       })
       inventoryService.applyChanges(changes)
@@ -123,23 +129,30 @@ export function createPurchaseService(db: DB) {
         items: input.items.map((it) => ({
           product_id: it.product_id,
           warehouse_id: warehouseId,
-          batch_no: it.batch_no,
+          batch_no: it.batch_no?.trim(),
           unit: it.unit,
           rate: it.rate,
           qty: it.qty,
           price: it.price
         }))
       })
-      const changes = input.items.map((it) => {
+      const docItems = docService.getItems(doc.id)
+      const changes = input.items.map((it, index) => {
         const rate = it.rate === undefined || it.rate === null ? 1 : Number(it.rate)
         return {
           product_id: it.product_id,
           warehouse_id: warehouseId,
-          batch_no: it.batch_no ?? '',
+          batch_no: (it.batch_no ?? '').trim(),
           change_qty: -(Number(it.qty) * rate),
           unit_cost: 0,
           source: 'purchase_return',
-          source_id: doc?.id ?? 0
+          source_id: doc?.id ?? 0,
+          doc_item_id: docItems[index]?.id,
+          date: doc?.date,
+          source_doc_id: input.source_doc_id,
+          serial_numbers: it.serial_numbers,
+          production_date: it.production_date,
+          expire_date: it.expire_date
         }
       })
       inventoryService.applyChanges(changes)
@@ -169,6 +182,9 @@ export function createPurchaseService(db: DB) {
   }
 
   function query(q: PurchaseQuery): DocPageResult {
+    if (q.type !== undefined && q.type !== 'purchase' && q.type !== 'purchase_return') {
+      throw new BizError('VALIDATION', '采购单据类型无效')
+    }
     const inner: DocQuery = {
       types: q.type ? [q.type] : ['purchase', 'purchase_return'],
       date_from: q.date_from,

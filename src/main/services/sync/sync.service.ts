@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { writeFile, readFile, copyFile, mkdir, rename, rm } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { writeFile, readFile, copyFile, mkdir, rename, rm, open } from 'node:fs/promises'
+import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { gzipSync, gunzipSync } from 'node:zlib'
 import Database from 'better-sqlite3'
@@ -30,6 +30,25 @@ export interface SyncNowResult {
   detail: string
 }
 
+export interface SyncTargetStatus {
+  target: 'local' | 'webdav'
+  state: 'empty' | 'available' | 'conflict' | 'error'
+  sequence?: number
+  timestamp?: string
+  detail: string
+}
+
+interface SnapshotSummary { products: number; documents: number; contacts: number; fundAccounts: number; lastDocumentDate: string | null }
+export interface SyncRestorePreview {
+  token: string
+  sequence: number
+  timestamp: string | null
+  source?: 'local' | 'webdav'
+  localChanged: boolean
+  local: SnapshotSummary
+  remote: SnapshotSummary
+}
+
 interface SnapshotManifest {
   version: 1
   timestamp: string
@@ -41,9 +60,38 @@ interface SnapshotManifest {
 const SNAPSHOT_NAME = 'hesora-inventory.zjsnap'
 const LEGACY_NAMES = ['hesora-inventory.db', 'zhjs-erp.db']
 const MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024
+const PREVIEW_VALID_MS = 10 * 60 * 1000
 
 function hash(data: Buffer): string {
   return createHash('sha256').update(data).digest('hex')
+}
+
+function snapshotSummary(db: Database.Database): SnapshotSummary {
+  const products = db.prepare('SELECT COUNT(*) FROM product').pluck().get() as number
+  const contacts = db.prepare('SELECT (SELECT COUNT(*) FROM customer) + (SELECT COUNT(*) FROM supplier)').pluck().get() as number
+  const fundAccounts = db.prepare('SELECT COUNT(*) FROM fund_account').pluck().get() as number
+  const hasDocuments = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'doc'").get()
+  if (!hasDocuments) return { products, contacts, fundAccounts, documents: 0, lastDocumentDate: null }
+  const data = db.prepare("SELECT COUNT(*) AS documents, MAX(date) AS lastDocumentDate FROM doc WHERE status = 'done'")
+    .get() as Pick<SnapshotSummary, 'documents' | 'lastDocumentDate'>
+  return { products, contacts, fundAccounts, ...data }
+}
+
+function businessFingerprint(db: Database.Database): string {
+  const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+    AND name <> 'platform_log' ORDER BY name`).pluck().all() as string[]
+  const digest = createHash('sha256')
+  for (const name of tables) {
+    const table = '"' + name.replaceAll('"', '""') + '"'
+    const where = name === 'app_setting' ? "WHERE key NOT LIKE 'sync.%' AND key NOT LIKE 'license.%'" : ''
+    const statement = db.prepare(`SELECT * FROM ${table} ${where}`)
+    const order = statement.columns().map((_, i) => i + 1).join(',')
+    digest.update(`${name}\n`)
+    for (const row of db.prepare(`SELECT * FROM ${table} ${where} ORDER BY ${order}`).raw().iterate()) {
+      digest.update(`${JSON.stringify(row)}\n`)
+    }
+  }
+  return digest.digest('hex')
 }
 
 export function decodeSnapshot(body: Buffer): { manifest: SnapshotManifest; database: Buffer } {
@@ -71,7 +119,8 @@ export function createSyncService(
   const backupService = opts.backupService ?? createBackupService(db, opts.getDbFilePath())
   let uploading = false
   let remoteSequence = 0
-  let lastDownload: { path: string; sequence: number } | undefined
+  let lastDownload: { path: string; manifest?: SnapshotManifest; checksum: string } | undefined
+  let activePreview: { token: string; path: string; expiresAt: number; localHash: string; remoteHash: string; localChanged: boolean } | undefined
 
   function readKey(key: string): string {
     const row = db.prepare('SELECT value FROM app_setting WHERE key = ?').get(`sync.${key}`) as
@@ -145,7 +194,10 @@ export function createSyncService(
         (types.includes('webdav') && !cfg.webdav.url)) {
       throw new BizError('VALIDATION', '请先配置同步目标')
     }
-    return types.map((type) => ({
+    return types.map((type) => {
+      let verifiedETag: string | undefined
+      return {
+      type,
       async read(name: string): Promise<Buffer | undefined> {
         if (type === 'local') {
           try {
@@ -156,34 +208,55 @@ export function createSyncService(
           }
         }
         const res = await webdavGet(davJoin(cfg.webdav.url, name), cfg.webdav.username, cfg.webdav.password)
+        if (name === SNAPSHOT_NAME) verifiedETag = res.etag
         if (res.status === 404) return undefined
         if (!res.ok) throw new BizError('SYNC_FAIL', `WebDAV 返回状态 ${res.status}`)
         return Buffer.from(await res.arrayBuffer())
       },
-      async write(data: Buffer): Promise<void> {
+      async write(data: Buffer, expected: string | undefined): Promise<void> {
         if (type === 'local') {
           const target = join(cfg.local.dir, SNAPSHOT_NAME)
           const pending = `${target}.${randomUUID()}.tmp`
           await mkdir(cfg.local.dir, { recursive: true })
+          const lockPath = target + '.lock'
+          const lock = await open(lockPath, 'wx').catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'EEXIST') throw new BizError('SYNC_FAIL', '同步目录正在写入，请稍后重试')
+            throw error
+          })
           try {
+            const existing = await this.read(SNAPSHOT_NAME)
+            if ((existing ? hash(existing) : undefined) !== expected) {
+              throw new BizError('SYNC_FAIL', '同步目录的快照已变化，请检查远端版本再重试')
+            }
             await writeFile(pending, data, { flag: 'wx' })
             await rename(pending, target)
           } finally {
+            await lock.close()
+            await rm(lockPath, { force: true })
             await rm(pending, { force: true })
           }
           return
         }
-        const res = await webdavPut(davJoin(cfg.webdav.url, SNAPSHOT_NAME), data, cfg.webdav.username, cfg.webdav.password)
+        if (expected !== undefined && (!verifiedETag || verifiedETag.startsWith('W/'))) {
+          throw new BizError('SYNC_FAIL', 'WebDAV 未提供可校验的快照版本，已停止覆盖')
+        }
+        const condition: Record<string, string> = expected === undefined ? { 'If-None-Match': '*' } : { 'If-Match': verifiedETag! }
+        const res = await webdavPut(davJoin(cfg.webdav.url, SNAPSHOT_NAME), data, cfg.webdav.username, cfg.webdav.password, condition)
+        if (res.status === 412) throw new BizError('SYNC_FAIL', 'WebDAV 快照已变化，请检查远端版本再重试')
         if (!res.ok) throw new BizError('SYNC_FAIL', `WebDAV 返回状态 ${res.status}`)
       }
+      }
+    })
+  }
+
+  async function inspectTargets(destinations = targets()) {
+    return Promise.all(destinations.map(async (target) => {
+      const data = await target.read(SNAPSHOT_NAME)
+      return data ? { ...decodeSnapshot(data), bodyHash: hash(data) } : undefined
     }))
   }
 
-  async function latest(destinations = targets()) {
-    const snapshots = await Promise.all(destinations.map(async (target) => {
-      const data = await target.read(SNAPSHOT_NAME)
-      return data ? decodeSnapshot(data) : undefined
-    }))
+  function latest(snapshots: Awaited<ReturnType<typeof inspectTargets>>) {
     const available = snapshots.filter((snapshot) => snapshot !== undefined)
       .sort((a, b) => b.manifest.sequence - a.manifest.sequence)
     const first = available[0]
@@ -196,8 +269,27 @@ export function createSyncService(
 
   async function checkRemote(): Promise<number> {
     if (!getConfig().type || uploading) return 0
-    await latest()
+    latest(await inspectTargets())
     return remoteSequence > sequence() ? remoteSequence : 0
+  }
+
+  async function checkTargets(): Promise<SyncTargetStatus[]> {
+    const baseline = readKey('snapshot_sha256')
+    const localVersion = sequence()
+    return Promise.all(targets().map(async (target): Promise<SyncTargetStatus> => {
+      try {
+        const data = await target.read(SNAPSHOT_NAME)
+        if (!data) return { target: target.type, state: 'empty', detail: '没有发现当前格式快照，尚未验证写入权限' }
+        const { manifest } = decodeSnapshot(data)
+        const conflict = manifest.sequence === localVersion && !!baseline && baseline !== manifest.sha256
+        const detail = conflict ? '同版本内容不同，请核对同步分支'
+          : manifest.sequence > localVersion ? '远端版本领先，请先预览'
+          : '快照可读取，校验通过'
+        return { target: target.type, state: conflict ? 'conflict' : 'available', sequence: manifest.sequence, timestamp: manifest.timestamp, detail }
+      } catch (e) {
+        return { target: target.type, state: 'error', detail: e instanceof BizError ? e.message : '无法读取目标，请检查网络、路径和权限' }
+      }
+    }))
   }
 
   async function syncNow(): Promise<SyncNowResult> {
@@ -206,16 +298,23 @@ export function createSyncService(
     uploading = true
     const temporary = join(tmpdir(), `hesora-sync-${randomUUID()}.db`)
     try {
-      await latest(destinations)
+      const observed = await inspectTargets(destinations)
+      const remote = latest(observed)
       if (remoteSequence > sequence()) throw new BizError('SYNC_FAIL', '云盘有更新的快照，请先恢复再上传')
+      const baselineHash = readKey('snapshot_sha256')
+      if (remote && remoteSequence === sequence() && baselineHash && remote.manifest.sha256 !== baselineHash) {
+        throw new BizError('SYNC_FAIL', '云盘与本地存在相同序号的不同快照，请检查同步分支')
+      }
       const backup = backupService.backupTo(opts.backupsDir, 'before-sync')
       await copyFile(backup, temporary)
       const copy = new Database(temporary, { fileMustExist: true })
+      let fingerprint: string
       try {
         // Secure delete prevents credentials lingering on freed SQLite pages.
         copy.pragma('secure_delete = ON')
         copy.prepare("DELETE FROM app_setting WHERE key LIKE 'sync.%' OR key LIKE 'license.%'").run()
         copy.exec('VACUUM')
+        fingerprint = businessFingerprint(copy)
       } finally {
         copy.close()
       }
@@ -229,9 +328,11 @@ export function createSyncService(
       db.transaction(() => {
         writeKey('sequence', String(nextSequence))
         writeKey('device_id', deviceId)
+        writeKey('snapshot_sha256', manifest.sha256)
       })()
-      for (const target of destinations) await target.write(payload)
+      for (const [index, target] of destinations.entries()) await target.write(payload, observed[index]?.bodyHash)
       writeKey('last_time', timestamp)
+      writeKey('business_fingerprint', fingerprint)
       writeKey('last_error', '')
       const local = backupService.listBackups(opts.backupsDir).filter(({ name }) => name.includes('-before-sync-'))
       await Promise.allSettled(local.slice(30).map(({ name }) => rm(join(opts.backupsDir, name), { force: true })))
@@ -246,10 +347,11 @@ export function createSyncService(
     }
   }
 
-  async function downloadFrom(): Promise<string> {
+  async function downloadFrom(source?: 'local' | 'webdav'): Promise<string> {
     if (uploading) throw new BizError('SYNC_FAIL', '同步进行中')
-    const destinations = targets()
-    const snapshot = await latest(destinations)
+    const destinations = targets().filter((target) => source === undefined || target.type === source)
+    if (!destinations.length) throw new BizError('VALIDATION', '所选同步目标尚未配置')
+    const snapshot = latest(await inspectTargets(destinations))
     let content = snapshot?.database
     if (!content) {
       for (const target of destinations) {
@@ -265,25 +367,77 @@ export function createSyncService(
     const path = join(tmpdir(), `hesora-restore-${randomUUID()}.db`)
     await writeFile(path, content, { flag: 'wx' })
     if (lastDownload) await rm(lastDownload.path, { force: true }).catch(() => undefined)
-    lastDownload = { path, sequence: snapshot?.manifest.sequence ?? 0 }
+    lastDownload = { path, manifest: snapshot?.manifest, checksum: hash(content) }
+    activePreview = undefined
     return path
   }
 
-  async function restoreDownloaded(path: string, operator?: string): Promise<void> {
-    if (uploading || !lastDownload || resolve(path) !== resolve(lastDownload.path)) {
-      throw new BizError('VALIDATION', '请重新选择从云盘恢复')
-    }
-    const download = lastDownload
+  async function discardPreview(token: string): Promise<void> {
+    if (activePreview?.token !== token) return
+    const { path } = activePreview
+    activePreview = undefined
     lastDownload = undefined
+    await rm(path, { force: true }).catch(() => undefined)
+  }
+
+  async function prepareRestore(source?: 'local' | 'webdav'): Promise<SyncRestorePreview> {
+    const path = await downloadFrom(source)
     try {
-      backupService.restoreFrom(download.path, opts.getDbFilePath(), opts.backupsDir, operator, download.sequence)
+      const download = lastDownload
+      if (!download || download.path !== path) throw new Error('snapshot superseded')
+      const copy = new Database(path, { readonly: true, fileMustExist: true })
+      let remote: SnapshotSummary
+      let remoteHash: string
+      try {
+        const version = Number(copy.pragma('user_version', { simple: true }))
+        const max = Number(db.pragma('user_version', { simple: true }))
+        if (version < 1 || version > max || copy.pragma('quick_check', { simple: true }) !== 'ok') {
+          throw new Error('incompatible snapshot')
+        }
+        remote = snapshotSummary(copy)
+        remoteHash = businessFingerprint(copy)
+      } finally {
+        copy.close()
+      }
+      const local = snapshotSummary(db)
+      const localHash = businessFingerprint(db)
+      const baseline = readKey('business_fingerprint')
+      const localChanged = baseline ? baseline !== localHash : (local.products + local.documents + local.contacts + local.fundAccounts > 0)
+      const token = randomUUID()
+      activePreview = { token, path, expiresAt: Date.now() + PREVIEW_VALID_MS, localHash, remoteHash, localChanged }
+      return { token, sequence: download.manifest?.sequence ?? 0, timestamp: download.manifest?.timestamp ?? null, source, localChanged, local, remote }
+    } catch {
+      if (lastDownload?.path === path) lastDownload = undefined
+      await rm(path, { force: true }).catch(() => undefined)
+      throw new BizError('SYNC_FAIL', '快照无法读取、损坏或账套版本不兼容')
+    }
+  }
+
+  async function restorePreview(token: string, acceptLocalChanges: boolean, operator?: string): Promise<void> {
+    const preview = activePreview
+    const download = lastDownload
+    if (uploading || !preview || !download || token !== preview.token || preview.path !== download.path) {
+      throw new BizError('VALIDATION', '请重新预览云盘快照')
+    }
+    if (preview.localChanged && !acceptLocalChanges) throw new BizError('VALIDATION', '请确认替换本地尚未同步的业务数据')
+    try {
+      const file = await readFile(download.path)
+      if (activePreview !== preview || uploading || Date.now() > preview.expiresAt || hash(file) !== download.checksum ||
+          businessFingerprint(db) !== preview.localHash) {
+        throw new BizError('SYNC_FAIL', '预览已过期或账套数据已变化，请重新预览')
+      }
+      backupService.restoreFrom(download.path, opts.getDbFilePath(), opts.backupsDir, operator, {
+        sequence: download.manifest?.sequence ?? 0,
+        checksum: download.manifest?.sha256 ?? '',
+        fingerprint: preview.remoteHash
+      })
     } finally {
-      await rm(download.path, { force: true }).catch(() => undefined)
+      await discardPreview(token)
     }
   }
 
   return {
-    backupService, getConfig, saveConfig, syncNow, checkRemote, downloadFrom, restoreDownloaded,
+    backupService, getConfig, saveConfig, syncNow, checkRemote, checkTargets, downloadFrom, prepareRestore, restorePreview, discardPreview,
     isUploading: () => uploading,
     listLocalBackups: () => backupService.listBackups(opts.backupsDir)
   }

@@ -62,15 +62,15 @@ describe('seedDemoData', () => {
       .get() as { qty: number } | undefined
     expect(sp1001?.qty).toBe(144)
 
-    // SP1005：期初 120 − 销售 60 − 零售 2 − 盘亏 2 = 54
-    const sp1005 = db
+    // SP1006：期初 105 − 销售 60 − 零售 2 − 盘亏 2 = 41
+    const sp1006 = db
       .prepare(
         `SELECT i.qty FROM inventory i
          JOIN product p ON p.id = i.product_id
-         WHERE p.code='SP1005' AND i.warehouse_id=(SELECT id FROM warehouse WHERE name='总店默认仓')`
+         WHERE p.code='SP1006' AND i.warehouse_id=(SELECT id FROM warehouse WHERE name='总店默认仓')`
       )
       .get() as { qty: number } | undefined
-    expect(sp1005?.qty).toBe(54)
+    expect(sp1006?.qty).toBe(41)
 
     db.close()
   })
@@ -82,5 +82,19 @@ describe('seedDemoData', () => {
     const products = (db.prepare('SELECT COUNT(*) AS c FROM product').get() as { c: number }).c
     expect(products).toBe(12)
     db.close()
+  })
+
+  it('retries a failed seed from a clean account instead of leaving partial fixture data', () => {
+    const db = openMemDb()
+    try {
+      db.exec("CREATE TRIGGER fail_demo BEFORE INSERT ON product BEGIN SELECT RAISE(ABORT, 'fixture failure'); END")
+      expect(() => seedDemoData(db)).toThrow(/fixture failure/)
+      expect(db.prepare('SELECT COUNT(*) FROM warehouse').pluck().get()).toBe(0)
+      expect(db.prepare('SELECT COUNT(*) FROM fund_account').pluck().get()).toBe(0)
+      db.exec('DROP TRIGGER fail_demo')
+      expect(seedDemoData(db)).toBe(true)
+    } finally {
+      db.close()
+    }
   })
 })

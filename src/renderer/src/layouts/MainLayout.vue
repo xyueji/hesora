@@ -11,6 +11,7 @@ import { closeAll, closeOthers, closeTab, openTab, restoreTabs, tabs, activeKey 
 
 const route = useRoute()
 const router = useRouter()
+const isDemo = new URLSearchParams(window.location.search).get('mode') === 'demo'
 
 // 菜单项 → 所需权限；无权限对当前用户隐藏。perm 缺省 = 所有人可见。
 interface MenuItem {
@@ -25,26 +26,20 @@ interface MenuGroup {
   items: MenuItem[]
 }
 
-const plainItems: MenuItem[] = [
-  { path: '/', label: '经营概况', perm: 'report.dashboard' },
-  { path: '/doc/workflow', label: '报价与订单审核', perm: 'doc.workflow' },
-  { path: '/product/list', label: '商品管理', perm: 'product.view' },
-  { path: '/product/price-levels', label: '价格等级', perm: 'product.price' },
-  { path: '/product/quality', label: '保质期查询', perm: 'product.shelf' },
-  { path: '/customer/list', label: '客户', perm: 'customer.view' },
-  { path: '/supplier/list', label: '供应商', perm: 'supplier.view' },
-  { path: '/warehouse/list', label: '仓库', perm: 'warehouse.view' },
-  { path: '/account/list', label: '资金账户', perm: 'fund.view' },
-  { path: '/opening', label: '期初建账', perm: 'opening.edit' },
-  { path: '/about', label: '关于禾序' },
-  { path: '/setting', label: '设置', perm: 'system.setting' },
-  { path: '/system/users', label: '用户管理', perm: 'system.user' },
-  { path: '/system/roles', label: '角色权限', perm: 'system.role' },
-  { path: '/sync', label: '同步备份', perm: 'data.sync' },
-  { path: '/guide?replay=1', label: '重新查看引导' }
-]
+const home: MenuItem = { path: '/', label: '经营概况', perm: 'report.dashboard' }
 
 const groups: MenuGroup[] = [
+  {
+    key: 'masters-group',
+    title: '商品与往来资料',
+    items: [
+      { path: '/product/list', label: '商品管理', perm: 'product.view' },
+      { path: '/product/price-levels', label: '价格等级', perm: 'product.price' },
+      { path: '/customer/list', label: '客户', perm: 'customer.view' },
+      { path: '/supplier/list', label: '供应商', perm: 'supplier.view' },
+      { path: '/warehouse/list', label: '仓库', perm: 'warehouse.view' }
+    ]
+  },
   {
     key: 'purchase-group',
     title: '采购',
@@ -63,6 +58,7 @@ const groups: MenuGroup[] = [
     items: [
       { path: '/sale/edit', label: '开销售单', perm: 'doc.sale' },
       { path: '/sale/list', label: '销售单列表', perm: 'doc.sale' },
+      { path: '/doc/workflow', label: '报价与订单审核', perm: 'doc.workflow' },
       { path: '/sale/return-edit', label: '开销售退货单', perm: 'doc.return' },
       { path: '/sale/return-list', label: '销售退货单列表', perm: 'doc.return' }
     ]
@@ -78,13 +74,15 @@ const groups: MenuGroup[] = [
   },
   {
     key: 'payment-group',
-    title: '资金',
+    title: '资金与对账',
     perm: 'doc.payment',
     items: [
       { path: '/payment/receipt', label: '收款单', perm: 'doc.payment' },
       { path: '/payment/payment', label: '付款单', perm: 'doc.payment' },
       { path: '/payment/list', label: '收付款列表', perm: 'doc.payment' },
-      { path: '/account/ledger', label: '资金余额与转账', perm: 'fund.edit' }
+      { path: '/stats/arrears', label: '应收应付', perm: 'report.arrears' },
+      { path: '/account/ledger', label: '资金余额与转账', perm: 'fund.edit' },
+      { path: '/account/list', label: '资金账户', perm: 'fund.view' }
     ]
   },
   {
@@ -97,6 +95,7 @@ const groups: MenuGroup[] = [
       { path: '/inventory/cost-change', label: '成本变动明细', perm: 'inventory.report' },
       { path: '/inventory/flow', label: '库存流水', perm: 'inventory.report' },
       { path: '/inventory/warning', label: '库存预警', perm: 'inventory.report' },
+      { path: '/product/quality', label: '保质期查询', perm: 'product.shelf' },
       { path: '/inventory/serial', label: '序列号台账', perm: 'inventory.serial' },
       { path: '/inventory/serial-flow', label: '序列号流水', perm: 'inventory.serial' },
       { path: '/inventory/price-adjust', label: '调整售价', perm: 'inventory.price' },
@@ -110,17 +109,29 @@ const groups: MenuGroup[] = [
   },
   {
     key: 'stats-group',
-    title: '报表',
+    title: '经营分析',
     perm: 'report.docSearch',
     items: [
-      { path: '/stats/arrears', label: '应收应付', perm: 'report.arrears' },
       { path: '/stats/business', label: '经营报表', perm: 'report.business' },
       { path: '/doc/search', label: '单据查询', perm: 'report.docSearch' }
+    ]
+  },
+  {
+    key: 'system-group',
+    title: '系统与数据',
+    items: [
+      { path: '/opening', label: '期初建账', perm: 'opening.edit' },
+      { path: '/setting', label: '设置', perm: 'system.setting' },
+      { path: '/system/users', label: '用户管理', perm: 'system.user' },
+      { path: '/system/roles', label: '角色权限', perm: 'system.role' },
+      { path: '/sync', label: '同步备份', perm: 'data.sync' },
+      { path: '/guide?replay=1', label: '重新查看引导' },
+      { path: '/about', label: '关于禾序' }
     ]
   }
 ]
 
-const visiblePlain = computed(() => plainItems.filter((i) => !i.perm || hasPermission(i.perm)))
+const activeGroup = computed(() => groups.find((g) => g.items.some((item) => item.path === route.path))?.key)
 const visibleGroups = computed(() =>
   groups
     .filter((g) => g.items.some((i) => !i.perm || hasPermission(i.perm)))
@@ -227,22 +238,17 @@ function onContextCommand(cmd: 'close' | 'others' | 'all'): void {
   <el-container class="main-layout">
     <el-aside width="216px" class="layout-aside">
       <div class="brand"><img :src="brandIcon" alt="禾序" /><div><strong>禾序进销存</strong><small>HESORA INVENTORY</small></div></div>
-      <el-menu router :default-active="route.path" class="layout-menu">
-        <el-menu-item v-for="item in visiblePlain.filter((i) => i.path === '/')" :key="item.path" :index="item.path">
-          {{ item.label }}
-        </el-menu-item>
+      <el-menu router :default-active="route.path" :default-openeds="activeGroup ? [activeGroup] : []" unique-opened class="layout-menu">
+        <el-menu-item v-if="home.perm && hasPermission(home.perm)" :index="home.path">{{ home.label }}</el-menu-item>
         <el-sub-menu v-for="g in visibleGroups" :key="g.key" :index="g.key">
           <template #title>{{ g.title }}</template>
           <el-menu-item v-for="item in g.items" :key="item.path" :index="item.path">{{ item.label }}</el-menu-item>
         </el-sub-menu>
-        <el-menu-item v-for="item in visiblePlain.filter((i) => i.path !== '/')" :key="item.path" :index="item.path">
-          {{ item.label }}
-        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
       <el-header class="layout-header">
-        <div class="workspace-label"><span class="status-dot"></span>本地工作台 <span class="workspace-caption">货有数，账有序。</span></div>
+        <div class="workspace-label"><span class="status-dot"></span>{{ isDemo ? '演示账套' : '本地工作台' }} <el-tag v-if="isDemo" type="warning" size="small">模拟数据</el-tag><span v-else class="workspace-caption">货有数，账有序。</span></div>
         <div class="user-area">
           <span class="user-name">{{ currentUser?.username }}</span>
           <span class="user-role">{{ roleDisplayName(currentUser) }}</span>

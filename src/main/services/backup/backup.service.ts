@@ -38,7 +38,23 @@ export function applyPendingRestore(currentDbPath: string): boolean {
   return true
 }
 
-export function createBackupService(db: Database.Database, dbFilePath: string) {
+function validateRestoreSchema(candidate: Database.Database, live: Database.Database): void {
+  const tables = live.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").pluck().all() as string[]
+  const columnSql = 'SELECT name, type, "notnull", dflt_value, pk, hidden FROM pragma_table_xinfo(?) ORDER BY cid'
+  const currentColumns = live.prepare(columnSql)
+  const candidateColumns = candidate.prepare(columnSql)
+  for (const table of tables) {
+    if (JSON.stringify(candidateColumns.all(table)) !== JSON.stringify(currentColumns.all(table))) {
+      throw new Error('incompatible snapshot schema')
+    }
+  }
+}
+
+export function createBackupService(
+  db: Database.Database,
+  dbFilePath: string,
+  migrateRestore?: (db: Database.Database) => void
+) {
   function backupTo(dirPath: string, suffix = 'backup'): string {
     mkdirSync(dirPath, { recursive: true })
     const base = basename(dbFilePath, '.db')
@@ -72,7 +88,8 @@ export function createBackupService(db: Database.Database, dbFilePath: string) {
     for (const { name } of daily().slice(30)) rmSync(join(dirPath, name), { force: true })
   }
 
-  function restoreFrom(backupPath: string, currentDbPath: string, safetyDir = dirname(currentDbPath), operator?: string, remoteSequence = 0): void {
+  function restoreFrom(backupPath: string, currentDbPath: string, safetyDir = dirname(currentDbPath), operator?: string,
+    remote?: { sequence: number; checksum: string; fingerprint: string }): void {
     if (!existsSync(backupPath)) throw new BizError('NOT_FOUND', '备份文件不存在')
     if (resolve(backupPath) === resolve(currentDbPath)) throw new BizError('VALIDATION', '请选择独立的备份文件')
     const pending = `${currentDbPath}.restore`
@@ -81,6 +98,7 @@ export function createBackupService(db: Database.Database, dbFilePath: string) {
     try {
       const source = new Database(backupPath, { readonly: true, fileMustExist: true })
       try {
+        source.pragma('trusted_schema = OFF')
         const version = Number(source.pragma('user_version', { simple: true }))
         if (version < 1 || version > originalVersion ||
             source.pragma('quick_check', { simple: true }) !== 'ok') {
@@ -92,19 +110,26 @@ export function createBackupService(db: Database.Database, dbFilePath: string) {
       }
       const copy = new Database(staged, { fileMustExist: true })
       try {
+        copy.pragma('trusted_schema = OFF')
+        copy.pragma('foreign_keys = ON')
+        migrateRestore?.(copy)
+        if (Number(copy.pragma('user_version', { simple: true })) !== originalVersion) {
+          throw new Error('snapshot migrations incomplete')
+        }
+        validateRestoreSchema(copy, db)
         const settings = db.prepare("SELECT key, value FROM app_setting WHERE key LIKE 'license.%' OR key LIKE 'sync.%'").all() as { key: string; value: string }[]
         copy.transaction(() => {
-          for (const table of ['product', 'inventory', 'warehouse']) {
-            copy.prepare(`SELECT id FROM ${table} LIMIT 0`).get()
-          }
+
           copy.prepare("DELETE FROM app_setting WHERE key LIKE 'license.%' OR key LIKE 'sync.%'").run()
           const write = copy.prepare('INSERT INTO app_setting (key, value) VALUES (?, ?)')
           for (const { key, value } of settings) write.run(key, value)
-          if (remoteSequence > 0) {
+          if (remote) {
             const localSequence = Number(settings.find(({ key }) => key === "sync.sequence")?.value) || 0
-            copy.prepare("INSERT OR REPLACE INTO app_setting VALUES (?, ?)").run("sync.sequence", String(Math.max(localSequence, remoteSequence)))
+            const replace = copy.prepare('INSERT OR REPLACE INTO app_setting (key, value) VALUES (?, ?)')
+            replace.run('sync.sequence', String(Math.max(localSequence, remote.sequence)))
+            replace.run('sync.snapshot_sha256', remote.checksum)
+            replace.run('sync.business_fingerprint', remote.fingerprint)
           }
-          copy.exec('CREATE TABLE IF NOT EXISTS platform_log (id INTEGER PRIMARY KEY, action TEXT NOT NULL, operator TEXT, detail TEXT NOT NULL, before_value TEXT, after_value TEXT, created_at TEXT NOT NULL)')
           createAuditService(copy).record('restore', operator, basename(backupPath))
         })()
       } finally {

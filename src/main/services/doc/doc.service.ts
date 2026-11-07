@@ -88,9 +88,16 @@ export function createDocService(db: DB) {
   }
 
   function getItems(docId: number): DocItemRow[] {
-    return db
-      .prepare('SELECT * FROM doc_item WHERE doc_id = ? ORDER BY id')
-      .all(docId) as DocItemRow[]
+    const rows = db.prepare(`
+      SELECT i.*, (
+        SELECT json_group_array(DISTINCT sn) FROM serial_flow WHERE doc_id = i.doc_id AND doc_item_id = i.id
+      ) AS serial_json
+      FROM doc_item i WHERE i.doc_id = ? ORDER BY i.id
+    `).all(docId) as (DocItemRow & { serial_json: string })[]
+    return rows.map(({ serial_json, ...row }) => {
+      const serialNumbers = JSON.parse(serial_json) as string[]
+      return serialNumbers.length ? { ...row, serial_numbers: serialNumbers } : row
+    })
   }
 
   function assertReturnQuantity(input: DocCreateInput, lines: Array<{

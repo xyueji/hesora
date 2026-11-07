@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow, dialog } from 'electron'
 import { join } from 'path'
 import { openDb, type DB } from './db'
 import { resolveDatabasePath } from './db/location'
-import { resolveProfilePath } from './db/profile'
+import { ensureProfileDir, resolveProfilePath } from './db/profile'
 import { seedDemoData } from './db/seed'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
 import { PERMISSION_MAP } from './permissions-map'
@@ -13,8 +13,8 @@ import { applyPendingRestore } from './services/backup/backup.service'
 import { createWorkflowService } from './services/workflow/workflow.service'
 import { createAuditService } from './services/audit/audit.service'
 import { BizError } from '../shared/result'
-import { isPermissionKey, type RoleInput } from '../shared/permissions'
-import type { WorkflowKind } from '../shared/types/workflow'
+import { isPermissionKey, type PermissionKey, type RoleInput } from '../shared/permissions'
+import { WORKFLOW_KINDS, type FulfillmentRequest, type WorkflowKind } from '../shared/types/workflow'
 import { createProductService } from './services/product/product.service'
 import { createPriceLevelService } from './services/product/price-level.service'
 import { createShelfLifeService } from './services/product/shelf-life.service'
@@ -49,9 +49,12 @@ import type { DocQuery, DocType } from '../shared/types/doc'
 import type { PaymentCreateInput, PaymentType } from '../shared/types/payment'
 import type { FundTransferInput } from '../shared/types/fund-ledger'
 
-// 品牌改名后迁移旧 profile 目录，保留已有账套、备份与设置。
-if (!app.commandLine.hasSwitch('user-data-dir')) {
-  app.setPath('userData', resolveProfilePath(app.getPath('appData')))
+const demoMode = app.commandLine.hasSwitch('demo')
+if (demoMode) {
+  const root = app.commandLine.hasSwitch('user-data-dir') ? app.getPath('userData') : app.getPath('appData')
+  app.setPath('userData', ensureProfileDir(join(root, 'hesora-inventory-demo')))
+} else if (!app.commandLine.hasSwitch('user-data-dir')) {
+  app.setPath('userData', ensureProfileDir(resolveProfilePath(app.getPath('appData'))))
 }
 if (process.platform === 'win32') app.setAppUserModelId('com.hesora.inventory')
 
@@ -69,14 +72,7 @@ function getDb(): DB {
     const file = resolveDatabasePath(app.getPath('userData'))
     applyPendingRestore(file)
     database = openDb(file, migrationsDir)
-    // 空库首启注入演示数据（幂等：有商品即跳过）。设置 demo.seeded=0 可跳过。
-    if (!app.commandLine.hasSwitch('no-demo-seed')) {
-      try {
-        seedDemoData(database)
-      } catch (error) {
-        console.error('[seed] demo data seeding failed:', error)
-      }
-    }
+    if (demoMode) seedDemoData(database)
   }
   return database
 }
@@ -246,9 +242,11 @@ function createWindow(): BrowserWindow {
   })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
-    void mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    const url = new URL(process.env['ELECTRON_RENDERER_URL'])
+    if (demoMode) url.searchParams.set('mode', 'demo')
+    void mainWindow.loadURL(url.toString())
   } else {
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'), demoMode ? { query: { mode: 'demo' } } : undefined)
   }
 
   return mainWindow
@@ -293,6 +291,14 @@ function initialize(): void {
   })
 
   const workflow = createWorkflowService(getDb())
+  function workflowAllowed(kind: WorkflowKind): boolean {
+    return WORKFLOW_KINDS.includes(kind) && can(kind === 'purchase_order' || kind === 'purchase' ? 'doc.purchase' : 'doc.sale')
+  }
+  function workflowActor(kind: WorkflowKind): number {
+    const user = getCurrentUser()
+    if (!user || !can('doc.workflow') || !workflowAllowed(kind)) throw new BizError('FORBIDDEN', '当前操作员无此类单据的工作流权限')
+    return user.id
+  }
   function reviewerId(): number {
     const user = getCurrentUser()
     if (user?.role !== 'admin') throw new BizError('FORBIDDEN', '只有管理员可以审核和转单')
@@ -300,17 +306,26 @@ function initialize(): void {
   }
   registerIpc({
     'workflow:list': (_evt, payload) => {
-      reviewerId()
       const { page, kind } = payload as { page?: number; kind?: WorkflowKind }
-      return workflow.list(page, kind)
+      return workflow.list(page, kind, WORKFLOW_KINDS.filter(workflowAllowed))
     },
-    'workflow:save': (_evt, payload) => workflow.save(payload as Parameters<typeof workflow.save>[0], reviewerId()),
-    'workflow:approve': (_evt, payload) => workflow.approve(Number(payload), reviewerId()),
+    'workflow:save': (_evt, payload) => {
+      const input = payload as Parameters<typeof workflow.save>[0]
+      if (input.id !== undefined) workflowActor(workflow.get(input.id).kind)
+      return workflow.save(input, workflowActor(input.kind))
+    },
+    'workflow:approve': (_evt, payload) => {
+      const id = Number(payload)
+      return workflow.approve(id, workflowActor(workflow.get(id).kind))
+    },
     'workflow:convert': (_evt, payload) => {
-      const { id, target } = payload as { id: number; target?: WorkflowKind }
-      return workflow.convert(id, reviewerId(), target)
+      const { id, target, quantities } = payload as { id: number; target?: WorkflowKind; quantities?: FulfillmentRequest[] }
+      return workflow.convert(id, workflowActor(workflow.get(id).kind), target, quantities)
     },
-    'workflow:cancel': (_evt, payload) => workflow.cancel(Number(payload), reviewerId())
+    'workflow:cancel': (_evt, payload) => {
+      const id = Number(payload)
+      return workflow.cancel(id, workflowActor(workflow.get(id).kind))
+    }
   })
   const svc = getProductService()
   function visibleProduct<T extends Product | null>(product: T): T {
@@ -503,18 +518,37 @@ function initialize(): void {
     'serial:stockOf': (_evt, payload) => serialSvc.stockOf(Number(payload))
   })
 
+  const docSvc = createDocService(getDb())
+  const documentPermissions: Record<DocType, PermissionKey> = {
+    purchase: 'doc.purchase', purchase_return: 'doc.purchase', sale: 'doc.sale', sale_return: 'doc.sale',
+    retail: 'doc.retail', transfer: 'inventory.adjust', stocktake: 'inventory.adjust',
+    assemble: 'inventory.assemble', disassemble: 'inventory.assemble', receipt: 'doc.payment',
+    payment: 'doc.payment', other_in: 'doc.payment', other_out: 'doc.payment'
+  }
+  function canViewDocument(type: DocType): boolean {
+    return Object.hasOwn(documentPermissions, type) && can(documentPermissions[type])
+  }
+  function assertDocumentVisible(id: number): void {
+    const doc = docSvc.getById(id)
+    if (!doc || !canViewDocument(doc.type)) throw new BizError('NO_PERMISSION', '当前操作员没有权限查看此单据')
+  }
+
   // 单据复制（再来一单）
   const docCopySvc = createDocCopyService(getDb())
   registerIpc({
     'doc:copy': (_evt, payload) => {
       const { docId, overrides } = payload as { docId: number; overrides?: never }
+      assertDocumentVisible(Number(docId))
       return docCopySvc.copy(Number(docId), overrides)
     }
   })
 
   const purchaseSvc = getPurchaseService()
   registerIpc({
-    'purchase:create': (_evt, payload) => purchaseSvc.create(payload as never),
+    'purchase:create': (_evt, payload) => {
+      if (!can('doc.approve')) throw new BizError('FORBIDDEN', '请先保存进货草稿，由有审核权限的操作员过账')
+      return purchaseSvc.create(payload as never)
+    },
     'purchase:createReturn': (_evt, payload) => purchaseSvc.createReturn(payload as never),
     'purchase:getDetail': (_evt, payload) => purchaseSvc.getDetail(Number(payload)),
     'purchase:query': (_evt, payload) => purchaseSvc.query(payload as never)
@@ -522,26 +556,21 @@ function initialize(): void {
 
   const saleSvc = getSaleService()
   registerIpc({
-    'sale:create': (_evt, payload) => saleSvc.create(payload as never),
+    'sale:create': (_evt, payload) => {
+      if (!can('doc.approve')) throw new BizError('FORBIDDEN', '请先保存销售草稿，由有审核权限的操作员过账')
+      return saleSvc.create(payload as never)
+    },
     'sale:createReturn': (_evt, payload) => saleSvc.createReturn(payload as never),
     'sale:getDetail': (_evt, payload) => saleSvc.getDetail(Number(payload)),
     'sale:query': (_evt, payload) => saleSvc.query(payload as never)
   })
 
   const retailSvc = getRetailService()
-  const docSvc = createDocService(getDb())
-  const cashierDocs: DocType[] = ['sale', 'sale_return', 'retail']
-  function assertDocumentVisible(id: number): void {
-    if (getCurrentUser()?.role === 'admin') return
-    const doc = docSvc.getById(id)
-    if (!doc || !cashierDocs.includes(doc.type)) throw new BizError('NO_PERMISSION', '当前操作员没有权限查看此单据')
-  }
   registerIpc({
     'doc:query': (_evt, payload) => {
       const query = payload as DocQuery
-      if (getCurrentUser()?.role === 'admin') return docSvc.query(query)
-      const requested = query.type ? [query.type] : query.types?.length ? query.types : cashierDocs
-      const types = requested.filter((type) => cashierDocs.includes(type))
+      const requested = query.type ? [query.type] : query.types?.length ? query.types : Object.keys(documentPermissions) as DocType[]
+      const types = requested.filter(canViewDocument)
       return types.length ? docSvc.query({ ...query, type: undefined, types }) : { items: [], total: 0 }
     },
     'doc:detail': (_evt, payload) => {
@@ -565,6 +594,10 @@ function initialize(): void {
     throw new BizError('VALIDATION', '资金单据类型无效')
   }
   registerIpc({
+    'payment:openDocuments': (_evt, payload) => {
+      const { type, partnerId, docId } = payload as { type: 'receipt' | 'payment'; partnerId: number; docId?: number }
+      return paymentSvc.openDocuments(type, Number(partnerId), docId === undefined ? undefined : Number(docId))
+    },
     'payment:create': (_evt, payload) => {
       const { type, p } = payload as { type: unknown; p: PaymentCreateInput }
       return paymentSvc.createOne(paymentType(type), p)
@@ -672,7 +705,7 @@ function initialize(): void {
     }
   })
 
-  const backupIpc = createBackupIpc(getDb())
+  const backupIpc = createBackupIpc(getDb(), migrationsDir)
   backupIpc.autoBackup()
   registerIpc({
     'backup:now': () => backupIpc.backupNow(),
@@ -682,8 +715,16 @@ function initialize(): void {
     'sync:getConfig': () => backupIpc.syncGetConfig(),
     'sync:saveConfig': (_evt, payload) => backupIpc.syncSaveConfig(payload),
     'sync:now': () => backupIpc.syncNow(),
-    'sync:download': () => backupIpc.syncDownload(),
-    'sync:restoreFromCloud': (_evt, payload) => backupIpc.restoreFromCloud(String(payload))
+    'sync:download': (_evt, source) => {
+      if (source !== undefined && source !== 'local' && source !== 'webdav') throw new BizError('VALIDATION', '同步目标无效')
+      return backupIpc.syncDownload(source)
+    },
+    'sync:checkTargets': () => backupIpc.syncCheckTargets(),
+    'sync:cancelRestore': (_evt, payload) => backupIpc.cancelSyncRestore(String(payload)),
+    'sync:restoreFromCloud': (_evt, payload) => {
+      const { token, acceptLocalChanges } = payload as { token: string; acceptLocalChanges: boolean }
+      return backupIpc.restoreFromCloud(String(token), acceptLocalChanges === true)
+    }
   })
 
   const userSvc = createUserService(getDb())

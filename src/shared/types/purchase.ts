@@ -1,4 +1,6 @@
-export interface PurchaseItemInput {
+import type { TrackingItemInput } from './inventory'
+
+export interface PurchaseItemInput extends TrackingItemInput {
   product_id: number
   batch_no?: string
   unit?: string

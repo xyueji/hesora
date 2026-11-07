@@ -9,6 +9,18 @@ export const WORKFLOW_CONVERSIONS: Partial<Record<WorkflowKind, readonly Workflo
   quote: ['sale_order', 'sale'], sale_order: ['sale'], purchase_order: ['purchase']
 }
 
+export interface WorkflowItem extends PurchaseItemInput {
+  source_line?: number
+}
+
+export interface FulfillmentRequest { line: number; qty: number }
+
+export interface OrderFulfillment {
+  state: 'pending' | 'reserved' | 'partial' | 'completed' | 'legacy'
+  lines: (WorkflowItem & { line: number; posted: number; reserved: number; remaining: number })[]
+  batches: { id: number; date: string; status: WorkflowRow['status']; postedNo: string | null }[]
+}
+
 export interface WorkflowInput {
   id?: number
   kind: WorkflowKind
@@ -16,15 +28,17 @@ export interface WorkflowInput {
   partner_id?: number
   date: string
   remark?: string
-  items: PurchaseItemInput[]
+  items: WorkflowItem[]
 }
 
 export interface WorkflowRow extends WorkflowInput {
   id: number
   status: 'draft' | 'approved' | 'cancelled'
   source_id: number | null
+  source_kind?: WorkflowKind | null
   posted_doc_id: number | null
   posted_doc_no: string | null
   converted_id: number | null
   approved_by: number | null
+  fulfillment?: OrderFulfillment
 }

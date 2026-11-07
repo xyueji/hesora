@@ -9,8 +9,8 @@ export interface OpeningCustomerLine { customer_id: number; receivable: number }
 export interface OpeningSupplierLine { supplier_id: number; payable: number }
 export interface OpeningPayload {
   inventory: OpeningInventoryLine[]
-  customers: OpeningCustomerLine[]
-  suppliers: OpeningSupplierLine[]
+  customers?: OpeningCustomerLine[]
+  suppliers?: OpeningSupplierLine[]
 }
 export interface OpeningStatus { done: boolean }
 

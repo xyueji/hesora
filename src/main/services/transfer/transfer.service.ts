@@ -49,7 +49,7 @@ export function createTransferService(db: DB) {
       }
       const p = selectProduct.get(Number(it.product_id)) as ProductRow | undefined
       if (!p) throw new BizError('NOT_FOUND', `商品不存在：${it.product_id}`)
-      if (p.tracking_type === 'batch' && !(it.batch_no ?? '').trim()) {
+      if (p.tracking_type === 'batch' && !((it.batch_no ?? '').trim()).trim()) {
         throw new BizError('VALIDATION', '批次管理商品必须填写批次号')
       }
     }
@@ -64,7 +64,7 @@ export function createTransferService(db: DB) {
         const row = selectInv.get(
           Number(it.product_id),
           fromId,
-          it.batch_no ?? ''
+          (it.batch_no ?? '').trim()
         ) as Pick<InventoryRow, 'qty' | 'moving_cost'> | undefined
         if (!row || row.qty < need) {
           throw new BizError('NOT_ENOUGH', '库存不足')
@@ -81,14 +81,15 @@ export function createTransferService(db: DB) {
         items: input.items.map((it: TransferItemInput) => ({
           product_id: it.product_id,
           warehouse_id: fromId,
-          batch_no: it.batch_no,
+          batch_no: it.batch_no?.trim(),
           unit: it.unit,
           rate: it.rate,
           qty: it.qty,
           price: 0
         }))
       })
-      const sourceId = doc?.id ?? 0
+      const sourceId = doc.id
+      const docItems = docService.getItems(sourceId)
       const outs: InventoryChange[] = []
       const ins: InventoryChange[] = []
       input.items.forEach((it, i) => {
@@ -97,19 +98,24 @@ export function createTransferService(db: DB) {
         outs.push({
           product_id: it.product_id,
           warehouse_id: fromId,
-          batch_no: it.batch_no ?? '',
+          batch_no: (it.batch_no ?? '').trim(),
           change_qty: -changeQty,
           source: 'transfer',
-          source_id: sourceId
+          source_id: sourceId,
+          doc_item_id: docItems[i]?.id,
+          serial_numbers: it.serial_numbers
         })
         ins.push({
           product_id: it.product_id,
           warehouse_id: toId,
-          batch_no: it.batch_no ?? '',
+          batch_no: (it.batch_no ?? '').trim(),
           change_qty: changeQty,
           unit_cost: costs[i],
+          from_warehouse_id: fromId,
           source: 'transfer',
-          source_id: sourceId
+          source_id: sourceId,
+          doc_item_id: docItems[i]?.id,
+          serial_numbers: it.serial_numbers
         })
       })
       // 单次 applyChanges（自带事务/savepoint）：OUT 失败整体回滚

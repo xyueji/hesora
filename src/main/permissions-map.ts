@@ -80,6 +80,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'print:a4pdf': 'doc.viewAll',
 
   'payment:createReceipt': 'doc.payment',
+  'payment:openDocuments': 'doc.payment',
   'payment:create': 'doc.payment',
   'payment:query': 'doc.payment',
   'payment:getDetail': 'doc.payment',
@@ -117,6 +118,8 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'sync:saveConfig': 'data.sync',
   'sync:now': 'data.sync',
   'sync:download': 'data.sync',
+  'sync:checkTargets': 'data.sync',
+  'sync:cancelRestore': 'data.sync',
   'sync:restoreFromCloud': 'data.sync',
 
   'audit:list': 'system.setting',

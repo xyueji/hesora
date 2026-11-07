@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onActivated, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { printApi } from '../../api/print'
 import { paymentApi } from '../../api/payment'
 import { fundApi } from '../../api/fund'
 import { DOC_TYPE_LABELS } from '../../../../shared/types/doc'
 import type { DocRow } from '../../../../shared/types/doc'
-import type { FundFlowRow, PaymentType } from '../../../../shared/types/payment'
+import type { PaymentDetail, PaymentType } from '../../../../shared/types/payment'
 import type { FundAccount } from '../../../../shared/types/fund'
 
 const activeTab = ref<PaymentType>('receipt')
+const route = useRoute()
 const cashOnly = computed(() => activeTab.value === 'other_in' || activeTab.value === 'other_out')
 const keyword = ref('')
 const dateRange = ref<[string, string] | null>(null)
@@ -21,7 +23,8 @@ const pageSize = ref(20)
 
 const detailVisible = ref(false)
 const detailDoc = ref<DocRow | null>(null)
-const detailFlow = ref<FundFlowRow | null>(null)
+const detailFlows = ref<PaymentDetail['flows']>([])
+const detailAllocations = ref<PaymentDetail['allocations']>([])
 const accounts = ref<FundAccount[]>([])
 const createVisible = ref(false)
 const creating = ref(false)
@@ -101,14 +104,17 @@ async function viewDetail(row: DocRow): Promise<void> {
   try {
     const d = await paymentApi.getDetail(activeTab.value, row.id)
     detailDoc.value = d.doc
-    detailFlow.value = d.flow
+    detailFlows.value = d.flows
+    detailAllocations.value = d.allocations
     detailVisible.value = true
   } catch (e) {
     ElMessage.error((e as Error).message)
   }
 }
 
-onMounted(() => {
+onActivated(() => {
+  const requested = route.query.type
+  if (requested === 'receipt' || requested === 'payment') activeTab.value = requested
   void load()
 })
 
@@ -212,7 +218,7 @@ async function printA4(): Promise<void> {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="detailVisible" title="单据详情" width="520px">
+    <el-dialog v-model="detailVisible" title="单据详情" width="min(740px, 94vw)">
       <el-descriptions v-if="detailDoc" :column="2" border>
         <el-descriptions-item label="单据编号">{{ detailDoc.no }}</el-descriptions-item>
         <el-descriptions-item label="类型">
@@ -222,14 +228,19 @@ async function printA4(): Promise<void> {
         <el-descriptions-item label="金额">{{ fmt(detailDoc.total_amount) }}</el-descriptions-item>
         <el-descriptions-item label="备注" :span="2">{{ detailDoc.remark ?? '—' }}</el-descriptions-item>
       </el-descriptions>
-      <el-descriptions v-if="detailFlow" :column="2" border class="flow">
-        <el-descriptions-item label="资金方向">
-          <el-tag :type="detailFlow.direction === 'in' ? 'success' : 'warning'">
-            {{ detailFlow.direction === 'in' ? '流入' : '流出' }}
-          </el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="流水金额">{{ fmt(detailFlow.amount) }}</el-descriptions-item>
-      </el-descriptions>
+      <h4>资金分录</h4>
+      <el-table :data="detailFlows" empty-text="暂无资金流水">
+        <el-table-column label="账户" min-width="150"><template #default="{ row }">{{ row.account_name || `#${row.account_id}` }}</template></el-table-column>
+        <el-table-column label="方向" width="90"><template #default="{ row }">{{ row.direction === 'in' ? '流入' : '流出' }}</template></el-table-column>
+        <el-table-column label="金额" align="right" width="120"><template #default="{ row }">{{ fmt(row.amount) }}</template></el-table-column>
+      </el-table>
+      <template v-if="detailAllocations.length">
+        <h4>核销明细</h4>
+        <el-table :data="detailAllocations">
+          <el-table-column prop="no" label="来源单号" min-width="160" />
+          <el-table-column label="核销金额" align="right" width="120"><template #default="{ row }">{{ fmt(row.amount) }}</template></el-table-column>
+        </el-table>
+      </template>
       <template #footer>
         <el-button v-if="!cashOnly" :loading="printingA4" @click="printA4">打印 (A4)</el-button>
         <el-button @click="detailVisible = false">关闭</el-button>
@@ -247,8 +258,5 @@ async function printA4(): Promise<void> {
 .pager {
   margin-top: 12px;
   justify-content: flex-end;
-}
-.flow {
-  margin-top: 12px;
 }
 </style>

@@ -33,6 +33,7 @@ interface ProductRow {
 
 interface BatchRow {
   id: number
+  qty: number
   product_id: number
   warehouse_id: number
   batch_no: string
@@ -263,12 +264,13 @@ export function createShelfLifeService(db: DB) {
       WITH base AS (
         SELECT b.id, b.product_id, b.warehouse_id, b.batch_no, b.production_date, b.expire_date, b.remark,
                p.code AS product_code, p.name AS product_name, p.shelf_life_warn_days AS warn_days,
-               w.name AS warehouse_name,
+               w.name AS warehouse_name, COALESCE(i.qty, 0) AS qty,
                ${statusExpr} AS status,
                ${remainExpr} AS remaining_days
         FROM product_batch b
         JOIN product p ON p.id = b.product_id
         JOIN warehouse w ON w.id = b.warehouse_id
+        LEFT JOIN inventory i ON i.product_id = b.product_id AND i.warehouse_id = b.warehouse_id AND i.batch_no = b.batch_no
         ${baseWhere}
       )`
 
@@ -288,6 +290,7 @@ export function createShelfLifeService(db: DB) {
       product_id: r.product_id,
       warehouse_id: r.warehouse_id,
       batch_no: r.batch_no,
+      qty: r.qty,
       production_date: r.production_date ?? undefined,
       expire_date: r.expire_date ?? undefined,
       remark: r.remark ?? undefined,

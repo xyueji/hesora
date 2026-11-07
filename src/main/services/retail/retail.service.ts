@@ -117,23 +117,29 @@ export function createRetailService(db: DB) {
         items: input.items.map((it) => ({
           product_id: it.product_id,
           warehouse_id: warehouseId,
-          batch_no: it.batch_no,
+          batch_no: it.batch_no?.trim(),
           unit: it.unit,
           rate: it.rate,
           qty: it.qty,
           price: it.price
         }))
       })
-      const changes = input.items.map((it: RetailItemInput) => {
+      const docItems = docService.getItems(doc.id)
+      const changes = input.items.map((it: RetailItemInput, index) => {
         const rate = it.rate === undefined || it.rate === null ? 1 : Number(it.rate)
         return {
           product_id: it.product_id,
           warehouse_id: warehouseId,
-          batch_no: it.batch_no ?? '',
+          batch_no: (it.batch_no ?? '').trim(),
           change_qty: -(Number(it.qty) * rate),
           unit_cost: 0,
           source: 'retail',
-          source_id: doc?.id ?? 0
+          source_id: doc?.id ?? 0,
+          doc_item_id: docItems[index]?.id,
+          date: doc?.date,
+          serial_numbers: it.serial_numbers,
+          production_date: it.production_date,
+          expire_date: it.expire_date
         }
       })
       inventoryService.applyChanges(changes)

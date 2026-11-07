@@ -38,6 +38,7 @@
         <el-form-item>
           <el-button type="primary" @click="saveConfig">保存配置</el-button>
           <el-button type="success" :loading="syncing" @click="sync">立即同步</el-button>
+          <el-button v-if="type" :loading="checkingTargets" @click="checkTargets">检查各目标</el-button>
         </el-form-item>
         <el-form-item v-if="type" label="自动同步">
           <el-input-number v-model="intervalHours" :min="0" :max="168" />
@@ -50,10 +51,19 @@
 
       <p class="hint">请只在一台电脑写入账套，其他电脑从云盘恢复。同步以完整快照为单位。</p>
       <el-alert v-if="remoteSequence" type="warning" :closable="false" title="云盘上有更新的快照，请先恢复再上传。" />
+      <el-table v-if="targetStatus.length" :data="targetStatus" class="mt">
+        <el-table-column label="目标" width="120"><template #default="{ row }">{{ row.target === 'local' ? '目录副本' : 'WebDAV' }}</template></el-table-column>
+        <el-table-column prop="sequence" label="快照版本" width="110" />
+        <el-table-column label="快照时间" min-width="160"><template #default="{ row }">{{ row.timestamp ? new Date(row.timestamp).toLocaleString() : '—' }}</template></el-table-column>
+        <el-table-column prop="detail" label="检查结果" min-width="220" />
+        <el-table-column label="操作" width="100"><template #default="{ row }">
+          <el-button v-if="row.state === 'available' || row.state === 'conflict'" link type="primary" :disabled="downloading" @click="previewCloud(row.target)">预览此副本</el-button>
+        </template></el-table-column>
+      </el-table>
       <el-alert v-if="lastError" type="error" :closable="false" :title="lastError" />
       <el-divider />
-      <el-button :loading="downloading" @click="restoreFromCloud">从云盘恢复</el-button>
-      <span class="hint">恢复将覆盖当前账套数据，并自动重启软件。</span>
+      <el-button :loading="downloading" @click="previewCloud()">预览云盘快照</el-button>
+      <span class="hint">先核对本地与云盘记录。恢复前自动保留当前账套副本。</span>
     </el-card>
 
     <el-card header="手动备份" class="mt">
@@ -78,6 +88,27 @@
       <p class="hint">自动备份保存在软件数据目录的 backups 子目录；手动备份由您选择保存位置。</p>
     </el-card>
   </div>
+  <el-dialog v-model="previewVisible" title="核对云盘快照" width="min(680px, 92vw)" :close-on-click-modal="false" @closed="discardCloudPreview">
+    <template v-if="preview">
+      <p class="hint">{{ preview.source === 'local' ? '目录副本 · ' : preview.source === 'webdav' ? 'WebDAV · ' : '' }}{{ preview.sequence ? `快照版本 ${preview.sequence}` : '旧格式快照' }} · {{ preview.timestamp ? new Date(preview.timestamp).toLocaleString() : '生成时间未知' }}</p>
+      <el-descriptions :column="2" border>
+        <el-descriptions-item label="本地商品">{{ preview.local.products }}</el-descriptions-item>
+        <el-descriptions-item label="云盘商品">{{ preview.remote.products }}</el-descriptions-item>
+        <el-descriptions-item label="本地往来单位">{{ preview.local.contacts }}</el-descriptions-item>
+        <el-descriptions-item label="云盘往来单位">{{ preview.remote.contacts }}</el-descriptions-item>
+        <el-descriptions-item label="本地过账单据">{{ preview.local.documents }}</el-descriptions-item>
+        <el-descriptions-item label="云盘过账单据">{{ preview.remote.documents }}</el-descriptions-item>
+        <el-descriptions-item label="本地最近业务日期">{{ preview.local.lastDocumentDate || '—' }}</el-descriptions-item>
+        <el-descriptions-item label="云盘最近业务日期">{{ preview.remote.lastDocumentDate || '—' }}</el-descriptions-item>
+      </el-descriptions>
+      <el-alert v-if="preview.localChanged" class="mt" type="warning" :closable="false" show-icon title="本地存在尚未同步或未建立同步基准的数据" />
+      <el-checkbox v-if="preview.localChanged" v-model="acceptLocalChanges">我确认保留安全副本后，用此快照替换当前账套</el-checkbox>
+    </template>
+    <template #footer>
+      <el-button :disabled="restoringCloud" @click="previewVisible = false">取消</el-button>
+      <el-button type="danger" :loading="restoringCloud" :disabled="!preview || (preview.localChanged && !acceptLocalChanges)" @click="confirmCloudRestore">恢复并重启</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
@@ -86,6 +117,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { BackupInfo } from '../../../../main/services/backup/backup.service'
 import { backupApi } from '../../api/backup'
 import { syncApi } from '../../api/sync'
+import type { SyncRestorePreview, SyncTargetStatus } from '../../../../main/services/sync/sync.service'
 
 const type = ref<'' | 'local' | 'webdav' | 'both'>('')
 const intervalHours = ref(0)
@@ -99,6 +131,12 @@ const lastTime = ref('')
 const backups = ref<BackupInfo[]>([])
 const syncing = ref(false)
 const downloading = ref(false)
+const restoringCloud = ref(false)
+const previewVisible = ref(false)
+const acceptLocalChanges = ref(false)
+const preview = ref<SyncRestorePreview>()
+const targetStatus = ref<SyncTargetStatus[]>([])
+const checkingTargets = ref(false)
 
 async function loadConfig(): Promise<void> {
   const cfg = await syncApi.getConfig()
@@ -162,20 +200,46 @@ async function sync(): Promise<void> {
   }
 }
 
-async function restoreFromCloud(): Promise<void> {
+async function checkTargets(): Promise<void> {
+  checkingTargets.value = true
+  try {
+    if (await save()) targetStatus.value = await syncApi.checkTargets()
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    checkingTargets.value = false
+  }
+}
+
+async function previewCloud(source?: 'local' | 'webdav'): Promise<void> {
   downloading.value = true
   try {
-    await ElMessageBox.confirm('将从云盘下载数据并覆盖当前账套，确定继续吗？', '恢复确认', { type: 'warning' })
-    const tempPath = await syncApi.download()
-    const r = await syncApi.restoreFromCloud(tempPath)
-    if (r.needRestart) {
-      await ElMessageBox.alert('恢复完成，即将重启软件。', '提示')
-      window.location.reload()
-    }
+    preview.value = await syncApi.download(source)
+    acceptLocalChanges.value = false
+    previewVisible.value = true
   } catch (e) {
-    if (e !== 'cancel' && e !== 'close') ElMessage.error((e as Error).message)
+    ElMessage.error((e as Error).message)
   } finally {
     downloading.value = false
+  }
+}
+
+async function discardCloudPreview(): Promise<void> {
+  const token = preview.value?.token
+  preview.value = undefined
+  if (token) await syncApi.cancelRestore(token).catch(() => undefined)
+}
+
+async function confirmCloudRestore(): Promise<void> {
+  if (!preview.value || restoringCloud.value) return
+  restoringCloud.value = true
+  try {
+    await syncApi.restoreFromCloud(preview.value.token, acceptLocalChanges.value)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+    previewVisible.value = false
+  } finally {
+    restoringCloud.value = false
   }
 }
 

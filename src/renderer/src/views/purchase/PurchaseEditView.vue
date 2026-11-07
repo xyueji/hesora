@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import TrackingFields from '../../components/TrackingFields.vue'
+import type { TrackingItemInput } from '../../../../shared/types/inventory'
 import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -6,11 +8,13 @@ import { purchaseApi } from '../../api/purchase'
 import { supplierApi } from '../../api/supplier'
 import { productApi } from '../../api/product'
 import { warehouseApi } from '../../api/warehouse'
+import { workflowApi } from '../../api/workflow'
+import { hasPermission } from '../../stores/auth'
 import type { Supplier } from '../../../../shared/types/supplier'
 import type { Product, ProductUnit } from '../../../../shared/types/product'
 import type { Warehouse } from '../../../../shared/types/warehouse'
 
-interface Line {
+interface Line extends TrackingItemInput {
   product_id: number | null
   product: Product | null
   unit: string
@@ -46,6 +50,8 @@ function emptyLine(): Line {
 }
 
 const saving = ref(false)
+const canPost = computed(() => hasPermission('doc.approve'))
+const canSave = computed(() => hasPermission('doc.purchase') && (canPost.value || hasPermission('doc.workflow')))
 
 const totalAmount = computed(() =>
   lines.value.reduce((sum, l) => sum + lineAmount(l), 0)
@@ -87,6 +93,9 @@ const productOptions = ref<Product[]>([])
 function onProductSelect(line: Line): void {
   const p = productOptions.value.find((x) => x.id === line.product_id)
   line.product = p ?? null
+  line.serial_numbers = undefined
+  line.production_date = undefined
+  line.expire_date = undefined
   const units: ProductUnit[] = p?.units ?? []
   const base: ProductUnit = { unit: p?.base_unit ?? '', rate: 1, is_base: true }
   line.unitOptions = [base, ...units]
@@ -120,6 +129,7 @@ function removeLine(index: number): void {
 }
 
 async function save(): Promise<void> {
+  if (!canSave.value) return
   if (!form.warehouse_id) {
     ElMessage.warning('请选择仓库')
     return
@@ -128,6 +138,9 @@ async function save(): Promise<void> {
     .filter((l) => l.product_id !== null && (l.qty ?? 0) > 0)
     .map((l) => ({
       product_id: l.product_id as number,
+      serial_numbers: l.serial_numbers,
+      production_date: l.production_date || undefined,
+      expire_date: l.expire_date || undefined,
       batch_no: l.product?.tracking_type === 'batch' ? l.batch_no || '' : undefined,
       unit: l.unit || undefined,
       rate: l.rate || 1,
@@ -140,6 +153,19 @@ async function save(): Promise<void> {
   }
   saving.value = true
   try {
+    if (!canPost.value) {
+      await workflowApi.save({
+        kind: 'purchase',
+        partner_id: form.supplier_id ?? undefined,
+        warehouse_id: form.warehouse_id,
+        date: form.date || today(),
+        remark: form.remark || undefined,
+        items
+      })
+      ElMessage.success('进货草稿已保存，审核后过账')
+      await router.push('/doc/workflow')
+      return
+    }
     const doc = await purchaseApi.create({
       supplier_id: form.supplier_id ?? undefined,
       warehouse_id: form.warehouse_id,
@@ -167,9 +193,12 @@ void loadWarehouses()
         <h3 class="title">进货单</h3>
         <div class="actions">
           <el-button @click="router.push('/purchase/list')">取消</el-button>
-          <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+          <el-button type="primary" :loading="saving" :disabled="!canSave" @click="save">{{ canPost ? '保存' : '保存草稿' }}</el-button>
         </div>
       </div>
+
+      <el-alert v-if="!canSave" type="info" show-icon :closable="false"
+        title="保存进货单需要草稿或审核权限，请联系管理员分配权限。" />
 
       <el-form label-width="90px" class="form" inline>
         <el-form-item label="供应商">
@@ -247,6 +276,17 @@ void loadWarehouses()
           <template #default="{ row }">
             <el-input v-if="row.product?.tracking_type === 'batch'" v-model="row.batch_no" placeholder="批次号" />
             <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="序列号 / 效期" min-width="180">
+          <template #default="{ row }">
+            <TrackingFields
+              :tracking="row.product?.tracking_type"
+              v-model:serial-numbers="row.serial_numbers"
+              receive-batch
+              v-model:production-date="row.production_date"
+              v-model:expire-date="row.expire_date"
+            />
           </template>
         </el-table-column>
         <el-table-column label="金额" width="110" align="right">

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import TrackingFields from '../../components/TrackingFields.vue'
+import type { TrackingItemInput } from '../../../../shared/types/inventory'
 import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -13,7 +15,7 @@ import type { Customer } from '../../../../shared/types/customer'
 import type { Product, ProductUnit } from '../../../../shared/types/product'
 import type { Warehouse } from '../../../../shared/types/warehouse'
 
-interface Line {
+interface Line extends TrackingItemInput {
   product_id: number | null
   product: Product | null
   unit: string
@@ -23,6 +25,7 @@ interface Line {
   qty: number | null
   price: number | null
   originalQty?: number
+  originalSerials?: string[]
 }
 
 
@@ -100,7 +103,8 @@ async function selectSource(id: number | null | undefined): Promise<void> {
         batch_no: item.batch_no,
         qty: null,
         price: item.price,
-        originalQty: item.qty
+        originalQty: item.qty,
+        originalSerials: item.serial_numbers
       }
     }))
     if (partner) customerOptions.value = [partner, ...customerOptions.value.filter((p) => p.id !== partner.id)]
@@ -150,6 +154,9 @@ const productOptions = ref<Product[]>([])
 function onProductSelect(line: Line): void {
   const p = productOptions.value.find((x) => x.id === line.product_id)
   line.product = p ?? null
+  line.serial_numbers = undefined
+  line.production_date = undefined
+  line.expire_date = undefined
   const units: ProductUnit[] = p?.units ?? []
   const base: ProductUnit = { unit: p?.base_unit ?? '', rate: 1, is_base: true }
   line.unitOptions = [base, ...units]
@@ -194,6 +201,9 @@ async function save(): Promise<void> {
     .filter((l) => l.product_id !== null && (l.qty ?? 0) > 0)
     .map((l) => ({
       product_id: l.product_id as number,
+      serial_numbers: l.serial_numbers,
+      production_date: l.production_date || undefined,
+      expire_date: l.expire_date || undefined,
       batch_no: source.value || l.product?.tracking_type === 'batch' ? l.batch_no || undefined : undefined,
       unit: l.unit || undefined,
       rate: l.rate || 1,
@@ -342,6 +352,15 @@ void loadAccounts()
             <span v-if="source">{{ row.batch_no || '—' }}</span>
             <el-input v-else-if="row.product?.tracking_type === 'batch'" v-model="row.batch_no" placeholder="批次号" />
             <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="序列号 / 效期" min-width="180">
+          <template #default="{ row }">
+            <TrackingFields
+              :tracking="row.product?.tracking_type"
+              v-model:serial-numbers="row.serial_numbers"
+              :available-serials="row.originalSerials"
+            />
           </template>
         </el-table-column>
         <el-table-column label="金额" width="110" align="right">

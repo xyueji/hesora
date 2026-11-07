@@ -1,5 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { BizError } from '../../../shared/result'
+import { createSerialService } from './serial.service'
+import { createShelfLifeService } from '../product/shelf-life.service'
 import type { CostLogRow, InventoryChange, InventoryRow, StockPageResult, StockQuery } from '../../../shared/types/inventory'
 
 export type DB = Database
@@ -14,6 +16,11 @@ interface InvRow {
 }
 
 export function createInventoryService(db: DB) {
+  const serial = createSerialService(db)
+  const shelf = createShelfLifeService(db)
+  const selectBatch = db.prepare(`
+    SELECT production_date, expire_date FROM product_batch WHERE product_id = ? AND warehouse_id = ? AND batch_no = ?
+  `)
   const selectInv = db.prepare(
     'SELECT * FROM inventory WHERE product_id = ? AND warehouse_id = ? AND batch_no = ?'
   )
@@ -31,11 +38,54 @@ export function createInventoryService(db: DB) {
     VALUES (@product_id, @warehouse_id, @batch_no, @change_qty, @unit_cost, @after_qty, @after_cost, @source, @source_id)
   `)
 
-  function assertRefs(productId: number, warehouseId: number): void {
-    const p = db.prepare('SELECT id FROM product WHERE id = ?').get(productId)
+  function trackingOf(productId: number, warehouseId: number): string {
+    const p = db.prepare('SELECT tracking_type FROM product WHERE id = ?').get(productId) as { tracking_type: string } | undefined
     if (!p) throw new BizError('NOT_FOUND', `商品不存在：${productId}`)
     const w = db.prepare('SELECT id FROM warehouse WHERE id = ?').get(warehouseId)
     if (!w) throw new BizError('NOT_FOUND', `仓库不存在：${warehouseId}`)
+    return p.tracking_type
+  }
+
+  function applyTracking(c: InventoryChange, tracking: string, batchNo: string): void {
+    if (tracking === 'serial') {
+      const values = c.serial_numbers ?? []
+      if (!Array.isArray(values) || values.length !== Math.abs(c.change_qty) ||
+          values.some((value) => typeof value !== 'string' || !value.trim()) ||
+          new Set(values.map((value) => value.trim())).size !== values.length) {
+        throw new BizError('VALIDATION', '序列号须一件一码，数量须与基本单位数量一致')
+      }
+      const items = values.map((sn) => ({
+        sn, product_id: c.product_id, warehouse_id: c.warehouse_id, batch_no: batchNo,
+        source: c.source, source_id: c.source_id, doc_item_id: c.doc_item_id
+      }))
+      if (c.change_qty < 0) {
+        const original_purchase_id = c.source === 'purchase_return' ? c.source_doc_id : undefined
+        serial.consumeOut(items.map((item) => ({ ...item, original_purchase_id })))
+      } else if (c.source === 'transfer' && c.source_id !== undefined) {
+        serial.restoreIn(items, c.source_id, 'transfer')
+      } else if (c.source === 'sale_return') {
+        if (c.source_doc_id === undefined) throw new BizError('VALIDATION', '序列号退货须关联原销售单')
+        serial.restoreIn(items, c.source_doc_id, 'sale')
+      } else {
+        serial.registerIn(items)
+      }
+    } else if (c.serial_numbers?.length) {
+      throw new BizError('VALIDATION', '该商品未启用序列号')
+    }
+    if (tracking !== 'batch') return
+    if (!batchNo.trim()) throw new BizError('VALIDATION', '批次管理商品必须填写批次号')
+    const previous = selectBatch.get(c.product_id, c.from_warehouse_id ?? c.warehouse_id, batchNo) as {
+      production_date: string | null; expire_date: string | null
+    } | undefined
+    if (c.change_qty > 0) {
+      shelf.ensureBatch(c.product_id, c.warehouse_id, batchNo, {
+        production_date: c.production_date ?? previous?.production_date,
+        expire_date: c.expire_date ?? previous?.expire_date
+      })
+    } else if ((c.source === 'sale' || c.source === 'retail') && c.date &&
+               previous?.expire_date && previous.expire_date < c.date) {
+      throw new BizError('VALIDATION', `批次 ${batchNo} 已过期，不能销售`)
+    }
   }
 
   function insertCostLog(
@@ -60,11 +110,12 @@ export function createInventoryService(db: DB) {
   }
 
   function applyOne(c: InventoryChange): void {
-    assertRefs(c.product_id, c.warehouse_id)
+    const tracking = trackingOf(c.product_id, c.warehouse_id)
     const batchNo = c.batch_no ?? ''
     if (!Number.isFinite(c.change_qty) || c.change_qty === 0) {
       throw new BizError('VALIDATION', '变动数量不能为 0')
     }
+    applyTracking(c, tracking, batchNo)
     const row = selectInv.get(c.product_id, c.warehouse_id, batchNo) as InvRow | undefined
 
     if (c.change_qty > 0) {
