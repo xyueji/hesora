@@ -141,6 +141,14 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'category:disable': 'system.setting',
   'category:enable': 'system.setting',
 
+  'formula:list': 'product.view',
+  'formula:get': 'product.view',
+  'formula:create': 'product.edit',
+  'formula:update': 'product.edit',
+  'formula:remove': 'product.edit',
+  'formula:disable': 'product.edit',
+  'formula:enable': 'product.edit',
+
   'user:query': 'system.user',
   'user:get': 'system.user',
   'user:create': 'system.user',

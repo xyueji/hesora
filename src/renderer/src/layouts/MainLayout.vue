@@ -35,6 +35,7 @@ const groups: MenuGroup[] = [
     items: [
       { path: '/product/list', label: '商品管理', perm: 'product.view' },
       { path: '/product/price-levels', label: '价格等级', perm: 'product.price' },
+      { path: '/product/formulas', label: '配方档案', perm: 'product.view' },
       { path: '/customer/list', label: '客户', perm: 'customer.view' },
       { path: '/customer/price', label: '客户专属价', perm: 'customer.view' },
       { path: '/supplier/list', label: '供应商', perm: 'supplier.view' },

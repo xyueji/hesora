@@ -4,8 +4,9 @@ import type { DocItemRow, DocPageResult, DocQuery, DocRow } from '../../../share
 import { createDocService, type DocService } from '../doc/doc.service'
 import { createInventoryService } from '../inventory/inventory.service'
 import { resolvePrice } from '../product/customer-price.service'
+import type { InventoryChange } from '../../../shared/types/inventory'
 
-import type { SaleCreateInput, SaleQuery, SaleReturnInput } from '../../../shared/types/sale'
+import type { SaleCreateInput, SaleQuery, SaleReturnInput, SaleItemInput } from '../../../shared/types/sale'
 export type { SaleItemInput, SaleCreateInput, SaleQuery } from '../../../shared/types/sale'
 
 export type DB = Database
@@ -24,6 +25,103 @@ export interface SaleDetail {
 export function createSaleService(db: DB) {
   const docService: DocService = createDocService(db)
   const inventoryService = createInventoryService(db)
+  const selectProduct = db.prepare('SELECT id, name, kind, tracking_type FROM product WHERE id = ?')
+  const selectBom = db.prepare('SELECT product_id, qty FROM bom_item WHERE combo_id = ? ORDER BY id')
+  const selectChildInv = db.prepare(
+    'SELECT qty, moving_cost FROM inventory WHERE product_id = ? AND warehouse_id = ? AND batch_no = ?'
+  )
+
+  interface ComboExplode {
+    /** combo 行在 input.items 中的下标（doc_item 仍按原行写入） */
+    index: number
+    comboId: number
+    comboName: string
+    baseQty: number
+    children: Array<{ product_id: number; name: string; qty: number; tracking_type: string; batch_no: string }>
+  }
+
+  /**
+   * 组合商品销售自动拆解（gap 11）：kind='combo' 且 tracking_type='none' 的销售行，
+   * 保留 combo 行（照常计价记账 doc_item），但库存扣减改为按 BOM 拆解为子件 OUT
+   * （每子件 qty = 行基本单位数量 × bom.qty，成本走子件 moving_cost——与
+   * assemble.service 组装出库同一语义：出库前读 moving_cost 作为成本依据）。
+   * combo 本身无库存概念，不出库。库存不足抛 NOT_ENOUGH 指明子件名。
+   *
+   * 批次子件：combo 行未带 batch_no 时抛 VALIDATION 提示需批次；序列号子件暂不支持
+   * 拆解销售，抛 VALIDATION。无 BOM 的 combo 抛 VALIDATION。
+   */
+  function explodeCombos(items: SaleItemInput[]): ComboExplode[] {
+    const explodes: ComboExplode[] = []
+    for (let index = 0; index < items.length; index++) {
+      const it = items[index]!
+      const rate = it.rate === undefined || it.rate === null ? 1 : Number(it.rate)
+      const baseQty = Number(it.qty) * rate
+      const p = selectProduct.get(it.product_id) as
+        | { id: number; name: string; kind: string; tracking_type: string }
+        | undefined
+      if (!p) throw new BizError('NOT_FOUND', `商品不存在：${it.product_id}`)
+      if (p.kind !== 'combo' || p.tracking_type !== 'none') continue
+      const bom = selectBom.all(p.id) as Array<{ product_id: number; qty: number }>
+      if (bom.length === 0) {
+        throw new BizError('VALIDATION', `组合商品未配置 BOM，无法销售拆解：${p.name}`)
+      }
+      const children = bom.map((b) => {
+        const child = selectProduct.get(b.product_id) as
+          | { id: number; name: string; tracking_type: string }
+          | undefined
+        if (!child) throw new BizError('NOT_FOUND', `商品不存在：${b.product_id}`)
+        if (child.tracking_type === 'serial') {
+          throw new BizError('VALIDATION', `组合商品含序列号子件，暂不支持拆解销售：${p.name} → ${child.name}`)
+        }
+        if (child.tracking_type === 'batch' && !(it.batch_no ?? '').trim()) {
+          throw new BizError('VALIDATION', `组合商品含批次管理子件，请在销售行填写批次号：${p.name} → ${child.name}`)
+        }
+        return {
+          product_id: b.product_id,
+          name: child.name,
+          qty: baseQty * b.qty,
+          tracking_type: child.tracking_type,
+          batch_no: child.tracking_type === 'batch' ? (it.batch_no ?? '').trim() : ''
+        }
+      })
+      explodes.push({ index, comboId: p.id, comboName: p.name, baseQty, children })
+    }
+    return explodes
+  }
+
+  /** 组合行不产生自身库存变动；其子件 OUT 成本在出库前按 moving_cost 预读（对齐 assemble）。 */
+  function buildComboChanges(
+    explode: ComboExplode,
+    warehouseId: number,
+    docId: number,
+    docItemIds: Array<number | undefined>,
+    date?: string
+  ): InventoryChange[] {
+    const notEnough: string[] = []
+    for (const c of explode.children) {
+      const row = selectChildInv.get(c.product_id, warehouseId, c.batch_no) as
+        | { qty: number; moving_cost: number }
+        | undefined
+      if (!row || row.qty < c.qty) {
+        notEnough.push(`${c.name} 需 ${c.qty}`)
+      }
+    }
+    if (notEnough.length > 0) {
+      throw new BizError('NOT_ENOUGH', `库存不足：${notEnough.join('；')}`)
+    }
+    return explode.children.map(
+      (c): InventoryChange => ({
+        product_id: c.product_id,
+        warehouse_id: warehouseId,
+        batch_no: c.batch_no,
+        change_qty: -c.qty,
+        source: 'sale',
+        source_id: docId,
+        doc_item_id: docItemIds[explode.index],
+        date
+      })
+    )
+  }
 
   /** 明细单价：显式传入（含 0）时原样使用；未传/null 时按取价链路兜底（专属价>等级价>零售价） */
   function resolveItemPrice(
@@ -65,6 +163,8 @@ export function createSaleService(db: DB) {
     }
     let doc: DocRow | undefined
     db.transaction(() => {
+      // 组合商品销售拆解校验（BOM/子件 tracking 约束）放在写单前，失败整体回滚
+      const explodes = explodeCombos(input.items)
       doc = docService.create({
         type: 'sale',
         operator: input.operator,
@@ -83,23 +183,30 @@ export function createSaleService(db: DB) {
         }))
       })
       const docItems = docService.getItems(doc.id)
-      const changes = input.items.map((it, index) => {
-        const rate = it.rate === undefined || it.rate === null ? 1 : Number(it.rate)
-        return {
-          product_id: it.product_id,
-          warehouse_id: warehouseId,
-          batch_no: (it.batch_no ?? '').trim(),
-          change_qty: -(Number(it.qty) * rate),
-          unit_cost: 0,
-          source: 'sale',
-          source_id: doc?.id ?? 0,
-          doc_item_id: docItems[index]?.id,
-          date: doc?.date,
-          serial_numbers: it.serial_numbers,
-          production_date: it.production_date,
-          expire_date: it.expire_date
-        }
-      })
+      const docItemIds = docItems.map((d) => d.id)
+      const changes: InventoryChange[] = input.items
+        .map((it, index) => {
+          const rate = it.rate === undefined || it.rate === null ? 1 : Number(it.rate)
+          return {
+            product_id: it.product_id,
+            warehouse_id: warehouseId,
+            batch_no: (it.batch_no ?? '').trim(),
+            change_qty: -(Number(it.qty) * rate),
+            unit_cost: 0,
+            source: 'sale',
+            source_id: doc?.id ?? 0,
+            doc_item_id: docItems[index]?.id,
+            date: doc?.date,
+            serial_numbers: it.serial_numbers,
+            production_date: it.production_date,
+            expire_date: it.expire_date
+          }
+        })
+        // 组合商品行不出库（无库存概念），改由拆解出的子件 OUT 承接
+        .filter((_, index) => !explodes.some((e) => e.index === index))
+      for (const e of explodes) {
+        changes.push(...buildComboChanges(e, warehouseId, doc?.id ?? 0, docItemIds, doc?.date))
+      }
       inventoryService.applyChanges(changes)
     })()
     return doc as DocRow

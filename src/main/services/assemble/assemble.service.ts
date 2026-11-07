@@ -40,6 +40,12 @@ export function createAssembleService(db: DB) {
   const selectCombo = db.prepare('SELECT id, kind FROM product WHERE id = ?')
   const selectWh = db.prepare('SELECT id FROM warehouse WHERE id = ?')
   const selectBom = db.prepare('SELECT product_id, qty FROM bom_item WHERE combo_id = ? ORDER BY id')
+  const selectFormula = db.prepare(
+    `SELECT f.id, f.output_product_id, f.output_qty, f.disabled FROM formula f WHERE f.id = ?`
+  )
+  const selectFormulaItems = db.prepare(
+    'SELECT product_id, qty FROM formula_item WHERE formula_id = ? ORDER BY id'
+  )
   const selectInv = db.prepare(
     'SELECT id, qty, moving_cost FROM inventory WHERE product_id = ? AND warehouse_id = ? AND batch_no = ?'
   )
@@ -62,15 +68,45 @@ export function createAssembleService(db: DB) {
     return { whId, combo, qty }
   }
 
+  /**
+   * 组装用量来源：指定 formula_id 时按配方计算（配方产出商品须与所选组合商品一致，
+   * 配方须启用且存在子件）；每单位组合的子件用量 = formula_item.qty / output_qty。
+   * 未指定配方时维持原 BOM 逻辑（bom.qty 即每单位用量），向后兼容。
+   */
+  function resolveUsage(comboId: number, formulaId?: number): BomRow[] {
+    if (formulaId === undefined || formulaId === null) {
+      const bom = selectBom.all(comboId) as BomRow[]
+      if (bom.length === 0) {
+        throw new BizError('VALIDATION', '组合商品未配置 BOM，无法组装')
+      }
+      return bom
+    }
+    const fid = Number(formulaId)
+    if (!Number.isInteger(fid)) throw new BizError('VALIDATION', '配方不能为空')
+    const formula = selectFormula.get(fid) as
+      | { id: number; output_product_id: number; output_qty: number; disabled: number }
+      | undefined
+    if (!formula) throw new BizError('NOT_FOUND', `配方不存在：${fid}`)
+    if (formula.disabled) throw new BizError('VALIDATION', `配方已停用，不能用于组装`)
+    if (formula.output_product_id !== comboId) {
+      throw new BizError('VALIDATION', '配方的产出商品与所选组合商品不一致')
+    }
+    const items = selectFormulaItems.all(fid) as BomRow[]
+    if (items.length === 0) {
+      throw new BizError('VALIDATION', '配方未配置子件，无法组装')
+    }
+    if (!Number.isFinite(formula.output_qty) || formula.output_qty <= 0) {
+      throw new BizError('VALIDATION', '配方产出数量无效')
+    }
+    return items.map((b) => ({ product_id: b.product_id, qty: b.qty / formula.output_qty }))
+  }
+
   function create(input: AssembleCreateInput): DocRow {
     const { whId, combo, qty } = validateCommon(input)
 
     let doc: DocRow | undefined
     db.transaction(() => {
-      const bom = selectBom.all(combo.id) as BomRow[]
-      if (bom.length === 0) {
-        throw new BizError('VALIDATION', '组合商品未配置 BOM，无法组装')
-      }
+      const bom = resolveUsage(combo.id, input.formula_id)
       // 出库前先读每个子件的 moving_cost（作为单据价格与组合成本依据）
       interface Consume {
         product_id: number

@@ -26,6 +26,7 @@ import { createFundService } from './services/fund/fund.service'
 import { createFundLedger } from './services/fund/ledger.service'
 import { createSettingService } from './services/setting/setting.service'
 import { createCategoryService } from './services/setting/category.service'
+import { createFormulaService } from './services/product/formula.service'
 import { createOpeningService } from './services/opening/opening.service'
 import { createInventoryService } from './services/inventory/inventory.service'
 import { createStockReportService } from './services/inventory/stock-report.service'
@@ -501,6 +502,7 @@ function initialize(): void {
 
   // 收支科目主档
   const categorySvc = getCategoryService()
+
   registerIpc({
     'category:list': (_evt, payload) => {
       const q = (payload ?? {}) as { include_disabled?: boolean; kind?: 'income' | 'expense' }
@@ -514,6 +516,21 @@ function initialize(): void {
     'category:remove': (_evt, payload) => categorySvc.remove(Number(payload)),
     'category:disable': (_evt, payload) => categorySvc.disable(Number(payload)),
     'category:enable': (_evt, payload) => categorySvc.enable(Number(payload))
+  })
+
+  // 配方档案（独立配方，组装单可选用）
+  const formulaSvc = createFormulaService(getDb())
+  registerIpc({
+    'formula:list': (_evt, payload) => formulaSvc.list((payload ?? {}) as never),
+    'formula:get': (_evt, payload) => formulaSvc.getById(Number(payload)),
+    'formula:create': (_evt, payload) => formulaSvc.create(payload as never),
+    'formula:update': (_evt, payload) => {
+      const { id, ...input } = payload as { id: number } & Record<string, unknown>
+      formulaSvc.update(Number(id), input as never)
+    },
+    'formula:remove': (_evt, payload) => formulaSvc.remove(Number(payload)),
+    'formula:disable': (_evt, payload) => formulaSvc.disable(Number(payload)),
+    'formula:enable': (_evt, payload) => formulaSvc.enable(Number(payload))
   })
 
   const openingSvc = getOpeningService()

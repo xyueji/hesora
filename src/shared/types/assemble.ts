@@ -11,6 +11,8 @@ export interface AssembleCreateInput {
   remark?: string
   combo_id: number
   qty: number
+  /** 可选配方：指定时按配方 output_qty×单据数量计算子件用量（优先于 BOM） */
+  formula_id?: number
 }
 
 export interface DisassembleCreateInput {
