@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { arrearsApi } from '../../api/stats'
 import type { ArrearsRow, ArrearsSummary } from '../../api/stats'
+
+const router = useRouter()
 
 const loading = ref(false)
 const receivables = ref<ArrearsRow[]>([])
@@ -29,6 +32,13 @@ async function load(): Promise<void> {
 
 function fmt(n: number): string {
   return n.toFixed(2)
+}
+
+// P1-4：未分配款项补核销入口——从应收/应付行直接跳到收/付款单，
+// 携带 partner 预填（PaymentEditView 的 route.query.partner watcher 会
+// 自动加载该往来单位全部待核销单据，含历史旧单）。
+function goSettle(row: ArrearsRow, kind: 'receipt' | 'payment'): void {
+  void router.push({ path: kind === 'receipt' ? '/payment/receipt' : '/payment/payment', query: { partner: row.partner_id } })
 }
 
 onMounted(() => {
@@ -72,6 +82,11 @@ onMounted(() => {
             <span class="balance" :class="{ zero: row.balance === 0 }">{{ fmt(row.balance) }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="110" align="center">
+          <template #default="{ row }">
+            <el-button link type="primary" :disabled="row.balance <= 0" @click="goSettle(row, 'receipt')">去收款</el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </el-card>
 
@@ -93,6 +108,11 @@ onMounted(() => {
         <el-table-column label="应付余额" align="right" width="130">
           <template #default="{ row }">
             <span class="balance" :class="{ zero: row.balance === 0 }">{{ fmt(row.balance) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" align="center">
+          <template #default="{ row }">
+            <el-button link type="primary" :disabled="row.balance <= 0" @click="goSettle(row, 'payment')">去付款</el-button>
           </template>
         </el-table-column>
       </el-table>
