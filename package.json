@@ -18,7 +18,8 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
     "dist": "node tools/prepare-windows-native.cjs && electron-vite build && electron-builder --win --x64",
-    "dist:release": "node tools/check-website-release.cjs && node tools/prepare-windows-native.cjs && electron-vite build && electron-builder --win --x64 --config.forceCodeSigning=true",
+    "dist:release": "node tools/check-website-release.cjs && node tools/prepare-windows-native.cjs && electron-vite build && electron-builder --win --x64",
+    "dist:release:signed": "node tools/check-website-release.cjs && node tools/prepare-windows-native.cjs && electron-vite build && electron-builder --win --x64 --config.forceCodeSigning=true",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
