@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { arrearsApi } from '../../api/stats'
+import { csvApi } from '../../api/csv'
 import type { AgingResult, AgingRow } from '../../api/stats'
 
 // P2-2 账龄报表：客户/供应商未结余额按单据日期分档（0-30/31-60/61-90/90+），
@@ -32,6 +33,20 @@ async function load(): Promise<void> {
   }
 }
 
+const exporting = ref(false)
+async function exportCsv(): Promise<void> {
+  exporting.value = true
+  try {
+    const file = await csvApi.export('aging', { agingSide: activeTab.value, asOf: asOf.value })
+    ElMessage.success(`已导出：${file}`)
+  } catch (e) {
+    const msg = (e as Error).message
+    if (!msg.includes('取消')) ElMessage.error(msg)
+  } finally {
+    exporting.value = false
+  }
+}
+
 onMounted(() => {
   void load()
 })
@@ -43,6 +58,7 @@ onMounted(() => {
       <span class="label">截至日期</span>
       <el-date-picker v-model="asOf" type="date" value-format="YYYY-MM-DD" :clearable="false" style="width: 150px" />
       <el-button type="primary" :loading="loading" @click="load">查询</el-button>
+      <el-button :loading="exporting" @click="exportCsv">导出 CSV</el-button>
     </div>
 
     <el-card shadow="never">

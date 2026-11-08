@@ -28,13 +28,17 @@ export interface ProductPreview {
   errors: Array<{ row: number; message: string }>
 }
 
-export type CsvExportKind = 'products' | 'customers' | 'suppliers' | 'stock' | 'purchase' | 'sale' | 'product-template' | 'opening-stock-template' | 'report'
+export type CsvExportKind = 'products' | 'customers' | 'suppliers' | 'stock' | 'purchase' | 'sale' | 'product-template' | 'opening-stock-template' | 'report' | 'aging'
 
 export interface CsvExportParams {
   warehouse_id?: number
   date_from?: string
   date_to?: string
   report?: ReportQuery
+  /** 账龄导出：customers | suppliers */
+  agingSide?: 'customers' | 'suppliers'
+  /** 账龄导出：截至日期（YYYY-MM-DD），缺省今天 */
+  asOf?: string
 }
 
 /** 读取用户选择的文件内容（渲染层 input[type=file]，不碰 fs）。 */

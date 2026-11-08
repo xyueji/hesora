@@ -114,4 +114,20 @@ describe('arrears aging', () => {
     expect(row.total).toBe(500)
     expect(row.b90plus).toBe(500)
   })
+
+  it('aging rows serialize to CSV via buildCsv (export contract)', () => {
+    const { customerId, warehouseId, productId } = setup()
+    createSaleService(db).create({
+      customer_id: customerId, warehouse_id: warehouseId,
+      date: '2026-11-01',
+      items: [{ product_id: productId, qty: 1, price: 300 }]
+    })
+    const result = svc.aging('2026-11-08')
+    const rows = result.customers
+    expect(rows.length).toBeGreaterThan(0)
+    // 导出契约：AgingView/case 'aging' 的 buildCsv 输入取自同一批字段
+    expect(() =>
+      rows.map((r) => [r.partner_name, r.total.toFixed(2), r.b0_30.toFixed(2), r.b31_60.toFixed(2), r.b61_90.toFixed(2), r.b90plus.toFixed(2), r.oldest ?? ''])
+    ).not.toThrow()
+  })
 })

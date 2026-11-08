@@ -8,21 +8,28 @@ import { createExportService } from './services/export/export.service'
 import { createImportService, type ImportResult } from './services/import/import.service'
 import type { DocType } from '../shared/types/doc'
 import type { ReportQuery } from '../shared/types/report'
+import { buildCsv } from '../shared/csv'
 import { createReportService } from './services/stats/report.service'
+import { createArrearsService } from './services/stats/arrears.service'
 
-export type ExportKind = 'products' | 'customers' | 'suppliers' | 'stock' | 'purchase' | 'sale' | 'product-template' | 'opening-stock-template' | 'report'
+export type ExportKind = 'products' | 'customers' | 'suppliers' | 'stock' | 'purchase' | 'sale' | 'product-template' | 'opening-stock-template' | 'report' | 'aging'
 
 export interface ExportParams {
   warehouse_id?: number
   date_from?: string
   date_to?: string
   report?: ReportQuery
+  /** 账龄导出：customers | suppliers */
+  agingSide?: 'customers' | 'suppliers'
+  /** 账龄导出：截至日期（YYYY-MM-DD），缺省今天 */
+  asOf?: string
 }
 
 export function createCsvIpc(db: Database) {
   const exportService = createExportService(db)
   const importService = createImportService(db)
   const reportService = createReportService(db)
+  const arrearsService = createArrearsService(db)
 
   function defaultName(kind: string): string {
     const d = new Date()
@@ -53,6 +60,16 @@ export function createCsvIpc(db: Database) {
         if (!params.report) throw new BizError('VALIDATION', '请选择要导出的报表')
         csv = reportService.exportCsv(params.report)
         break
+      case 'aging': {
+        const side = params.agingSide === 'suppliers' ? 'suppliers' : 'customers'
+        const result = arrearsService.aging(params.asOf)
+        const rows = side === 'customers' ? result.customers : result.suppliers
+        csv = buildCsv(
+          ['往来单位', '未结总额', '0-30天', '31-60天', '61-90天', '90天以上', '最早未结日期'],
+          rows.map((r) => [r.partner_name, r.total.toFixed(2), r.b0_30.toFixed(2), r.b31_60.toFixed(2), r.b61_90.toFixed(2), r.b90plus.toFixed(2), r.oldest ?? ''])
+        )
+        break
+      }
       case 'purchase':
       case 'sale':
         csv = exportService.docs(kind as DocType, params.date_from, params.date_to)
