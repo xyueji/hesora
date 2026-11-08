@@ -40,7 +40,7 @@ describe('export.service', () => {
     seedBasics()
     const csv = exportSvc.products()
     expect(csv.charCodeAt(0)).toBe(0xfeff)
-    expect(csv).toContain('编码,名称,基本单位,零售价,批发价,进价,追踪方式,商品类型,停用')
+    expect(csv).toContain('编码,名称,规格,类别,基本单位,零售价,批发价,进价,最低库存,追踪方式,条码,商品类型,停用')
     expect(csv).toContain('"可乐,330ml"')
     expect(csv).toContain(',batch,')
     expect(csv).toContain('标准商品')

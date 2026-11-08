@@ -2,7 +2,7 @@
 import type { Database } from 'better-sqlite3'
 import { parseCsv } from '../../../shared/csv'
 import { BizError } from '../../../shared/result'
-import type { TrackingType } from '../../../shared/types/product'
+import type { TrackingType, Product } from '../../../shared/types/product'
 import type { OpeningStockPreview } from '../../../shared/types/opening'
 import { createProductService } from '../product/product.service'
 import { createInventoryService } from '../inventory/inventory.service'
@@ -48,24 +48,39 @@ export function createImportService(db: DB) {
       const rowNo = i + 1 // 数据行从第 2 行开始
       const cols = rows[i] ?? []
       try {
+        // 列顺序与 PRODUCT_IMPORT_COLUMNS 一致：
+        // 编码,名称,规格,类别,基本单位,零售价,批发价,进价,最低库存,追踪方式,条码
         const code = (cols[0] ?? '').trim()
         const name = (cols[1] ?? '').trim()
         if (code === '') throw new Error('编码不能为空')
         if (name === '') throw new Error('名称不能为空')
-        const baseUnit = (cols[2] ?? '').trim()
+        const spec = (cols[2] ?? '').trim()
+        const category = (cols[3] ?? '').trim()
+        const baseUnit = (cols[4] ?? '').trim()
         if (baseUnit === '') throw new Error('基本单位不能为空')
-        const retail = toNum(cols[3], '零售价') ?? 0
-        const trade = toNum(cols[4], '批发价') ?? 0
-        const purchase = toNum(cols[5], '进价') ?? 0
-        const trackingRaw = (cols[6] ?? '').trim()
+        const retail = toNum(cols[5], '零售价') ?? 0
+        const trade = toNum(cols[6], '批发价') ?? 0
+        const purchase = toNum(cols[7], '进价') ?? 0
+        const minStock = toNum(cols[8], '最低库存') ?? null
+        const trackingRaw = (cols[9] ?? '').trim()
         if (trackingRaw && !Object.hasOwn(TRACKING, trackingRaw)) {
           throw new BizError('VALIDATION', '追踪方式须为无、批次或序列号')
         }
         const tracking = TRACKING[trackingRaw] ?? 'none'
+        // 条码列：分号分隔多条；解析失败（重复等）由 create/update 报行级错误
+        const barcodeList = (cols[10] ?? '')
+          .split(/[;；]/)
+          .map((b) => b.trim())
+          .filter((b) => b !== '')
 
         const existing = db
           .prepare('SELECT id FROM product WHERE code = ?')
           .get(code) as { id: number } | undefined
+        // 规格/类别/最低库存仅在有值时覆盖（CSV 空列不抹掉已有数据）
+        const extras: Partial<Product> = {}
+        if (spec !== '') extras.spec = spec
+        if (category !== '') extras.category = category
+        if (minStock !== null) extras.min_stock = minStock
         if (existing) {
           productService.update(existing.id, {
             name,
@@ -73,7 +88,9 @@ export function createImportService(db: DB) {
             retail_price: retail,
             trade_price: trade,
             purchase_price: purchase,
-            tracking_type: tracking
+            tracking_type: tracking,
+            ...extras,
+            barcodes: barcodeList
           })
           result.updated++
         } else {
@@ -87,7 +104,8 @@ export function createImportService(db: DB) {
             tracking_type: tracking,
             kind: 'standard',
             units: [],
-            barcodes: []
+            barcodes: barcodeList,
+            ...extras
           })
           result.created++
         }

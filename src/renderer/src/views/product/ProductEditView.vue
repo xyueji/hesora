@@ -227,6 +227,12 @@ onMounted(load)
           <el-form-item label="最低库存">
             <el-input-number v-model="form.min_stock" :min="0" :value-on-clear="null" />
           </el-form-item>
+          <el-form-item v-if="!isCombo && form.tracking_type === 'batch'" label="保质期(天)">
+            <el-input-number v-model="form.shelf_life_days" :min="1" :value-on-clear="null" placeholder="按批次启用" />
+          </el-form-item>
+          <el-form-item v-if="!isCombo && form.tracking_type === 'batch'" label="临期预警(天)">
+            <el-input-number v-model="form.shelf_life_warn_days" :min="1" :value-on-clear="null" placeholder="默认30天" />
+          </el-form-item>
         </div>
 
         <template v-if="!isCombo">

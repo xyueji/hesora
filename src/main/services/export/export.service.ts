@@ -10,14 +10,17 @@ export type DB = Database
 interface ProductExportRow {
   code: string
   name: string
+  spec: string | null
+  category: string | null
   base_unit: string
   retail_price: number
   trade_price: number
   purchase_price: number
+  min_stock: number | null
   tracking_type: string
   kind: string
   disabled: number
-  units: string | null
+  barcodes: string | null
 }
 
 interface CustomerExportRow {
@@ -50,12 +53,12 @@ export function createExportService(db: DB) {
   function products(): string {
     const rows = db
       .prepare(`
-        SELECT p.code, p.name, p.base_unit, p.retail_price, p.trade_price, p.purchase_price,
-               p.tracking_type, p.kind, p.disabled,
+        SELECT p.code, p.name, p.spec, p.category, p.base_unit, p.retail_price, p.trade_price, p.purchase_price,
+               p.min_stock, p.tracking_type, p.kind, p.disabled,
                (
-                 SELECT GROUP_CONCAT(u.unit || 'x' || RTRIM(RTRIM(CAST(u.rate AS TEXT), '0'), '.'), ';')
-                 FROM product_unit u WHERE u.product_id = p.id AND u.is_base = 0
-               ) AS units
+                 SELECT GROUP_CONCAT(b.barcode, ';')
+                 FROM product_barcode b WHERE b.product_id = p.id
+               ) AS barcodes
         FROM product p ORDER BY p.id ASC
       `)
       .all() as ProductExportRow[]
@@ -64,11 +67,15 @@ export function createExportService(db: DB) {
       rows.map((r) => [
         r.code,
         r.name,
+        r.spec ?? '',
+        r.category ?? '',
         r.base_unit,
         num(r.retail_price),
         num(r.trade_price),
         num(r.purchase_price),
+        r.min_stock === null || r.min_stock === undefined ? '' : num(r.min_stock),
         r.tracking_type,
+        r.barcodes ?? '',
         r.kind === 'combo' ? '组合商品' : '标准商品',
         r.disabled === 1 ? '是' : '否'
       ])
