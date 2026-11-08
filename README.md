@@ -59,17 +59,20 @@ HESORA_UPDATE_URL=https://updates.example.com/hesora/latest.json
 
 ## 开发者指南
 
-工具链：**Node 22**（Windows 下建议固定 PATH 指向 Node 22，pnpm 10+）。
+工具链：**Node 22**（pnpm 10+）。`pretest`/`predev` 会运行 `tools/check-node.cjs` 自动校验版本，Node 23+ 或低于 22 会直接报错退出；本机安装了多个 Node 时，把 Node 22 的目录放在 PATH 最前（或用 `HESORA_SKIP_ENV_CHECK=1` 临时跳过检查）。
 
 ```bash
 pnpm i          # 安装依赖（postinstall 会为 Electron 重编译 better-sqlite3）
 pnpm dev        # 开发模式
 pnpm test       # Vitest 单测（内存库）
 pnpm dist       # 打包 Windows NSIS 安装包 → dist/禾序进销存-<版本>-setup.exe
+pnpm dist:release         # 发布打包（含发布环境校验，不强制代码签名）
+pnpm dist:release:signed   # 购买代码签名证书后使用（forceCodeSigning，无证书会打包失败）
 ```
 
 注意：
 
+- better-sqlite3 原生模块与运行时 ABI 绑定：Node 22 需要 ABI 127、Electron 33 需要 ABI 130。跑过 `pnpm dist` 后如需再跑单测，按提示执行 `pnpm rebuild better-sqlite3`（或 `node tools/prepare-windows-native.cjs` 的反向操作）；报 `NODE_MODULE_VERSION` 不匹配即为此原因。
 - Windows 打包会准备并验证 Electron 版本的 SQLite 原生模块。打包后在 Node 22 中运行 `pnpm rebuild better-sqlite3`，恢复 Node 单测所需的模块。
 - 打包后可在工作区根目录执行 `node zhjs-erp-e2e/hesora-smoke.js`。冒烟脚本使用临时账套，检查启动、登录、商品保存和品牌界面；通过 `HESORA_SCREENSHOTS` 指定截图输出目录。
 - winCodeSign 缓存偶尔解压失败，可到 `%LOCALAPPDATA%/electron-builder-cache/winCodeSign` 手动 7za 解压后重试。
