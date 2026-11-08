@@ -51,7 +51,7 @@ export function createWorkflowService(db: Database) {
     let legacy = false
     for (const child of children) {
       const body = JSON.parse(child.body) as WorkflowInput
-      batches.push({ id: child.id, date: body.date, status: child.status, postedNo: child.postedNo })
+      batches.push({ id: child.id, date: body.date, status: child.status, postedNo: child.postedNo, reversed: child.reversed === 1 })
       // 已过账但被红冲的 child：其履行贡献已随红冲回退，posted 不再计入；
       // 但批次仍展示（保留状态），保持可追溯。
       if (child.status === 'cancelled') continue

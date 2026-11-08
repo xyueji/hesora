@@ -33,6 +33,9 @@ const warehouses = ref<Warehouse[]>([])
 const isPurchase = computed(() => form.value.kind === 'purchase' || form.value.kind === 'purchase_order')
 const totalAmount = computed(() => form.value.items.reduce((sum, line) => sum + line.qty * line.price, 0))
 const statusLabels = { draft: '草稿', approved: '已审核', cancelled: '已取消' }
+function isReversedBatch(row: unknown): boolean {
+  return !!(row as { reversed?: boolean }).reversed
+}
 const fulfillmentLabels = { pending: '待履行', reserved: '有草稿待审核', partial: '部分履行', completed: '已履行', legacy: '历史整单转单' }
 const allowedLabels = computed(() => Object.entries(WORKFLOW_LABELS).filter(([kind]) =>
   hasPermission(kind === 'purchase' || kind === 'purchase_order' ? 'doc.purchase' : 'doc.sale')))
@@ -295,7 +298,10 @@ onMounted(load)
           <el-table :data="editorFulfillment.batches">
             <el-table-column prop="id" label="草稿编号" width="100" />
             <el-table-column prop="date" label="业务日期" />
-            <el-table-column label="状态"><template #default="{ row }">{{ statusLabels[(row as WorkflowRow).status] }}</template></el-table-column>
+            <el-table-column label="状态"><template #default="{ row }">
+              <el-tag v-if="isReversedBatch(row)" type="info" size="small">已红冲</el-tag>
+              <span v-else>{{ statusLabels[(row as WorkflowRow).status] }}</span>
+            </template></el-table-column>
             <el-table-column prop="postedNo" label="正式单号" />
           </el-table>
         </template>

@@ -63,6 +63,13 @@ describe('reversal rolls back order fulfillment progress', () => {
     expect(ff.lines[0]!.remaining).toBe(10)
     expect(ff.state).toBe('pending')
 
+    // 被红冲的批次保留展示且带 reversed 标记（可追溯）
+    type Batch = { id: number; reversed?: boolean }
+    const batches = (wf.get(order.id) as unknown as { fulfillment: { batches: Batch[] } }).fulfillment.batches
+    expect(batches).toHaveLength(1)
+    expect(batches[0]!.id).toBe(child.id)
+    expect(batches[0]!.reversed).toBe(true)
+
     // 订单可以重新转单（已红冲的 child 不再阻塞）
     const reChild = wf.convert(order.id, 1)
     expect(reChild.id).toBeGreaterThan(child.id)

@@ -18,7 +18,7 @@ export interface FulfillmentRequest { line: number; qty: number }
 export interface OrderFulfillment {
   state: 'pending' | 'reserved' | 'partial' | 'completed' | 'legacy'
   lines: (WorkflowItem & { line: number; posted: number; reserved: number; remaining: number })[]
-  batches: { id: number; date: string; status: WorkflowRow['status']; postedNo: string | null }[]
+  batches: { id: number; date: string; status: WorkflowRow['status']; postedNo: string | null; reversed?: boolean }[]
 }
 
 export interface WorkflowInput {
