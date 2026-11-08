@@ -11,7 +11,7 @@ import { createUserService } from './services/user/user.service'
 import { createDesktopLicenseService } from './license'
 import { applyPendingRestore } from './services/backup/backup.service'
 import { createWorkflowService } from './services/workflow/workflow.service'
-import { createAuditService } from './services/audit/audit.service'
+import { createAuditService, type AuditQuery } from './services/audit/audit.service'
 import { BizError } from '../shared/result'
 import { isPermissionKey, type PermissionKey, type RoleInput } from '../shared/permissions'
 import { WORKFLOW_KINDS, type FulfillmentRequest, type WorkflowKind } from '../shared/types/workflow'
@@ -824,6 +824,7 @@ function initialize(): void {
   const csvIpc = createCsvIpc(getDb())
   registerIpc({
     'audit:list': () => auditSvc.list(),
+    'audit:query': (_evt, payload) => auditSvc.query(payload as AuditQuery),
     'csv:export': async (_evt, payload) => {
       const { kind, params } = payload as { kind: string; params?: Record<string, unknown> }
       const operator = getCurrentUser()?.username

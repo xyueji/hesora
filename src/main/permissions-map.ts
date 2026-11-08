@@ -131,6 +131,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'sync:restoreFromCloud': 'data.sync',
 
   'audit:list': 'system.setting',
+  'audit:query': 'system.setting',
   'setting:get': 'system.setting',
   'setting:set': 'system.setting',
   'setting:getAll': 'system.setting',

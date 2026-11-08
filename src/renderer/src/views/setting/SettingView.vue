@@ -9,21 +9,45 @@ const loading = ref(false)
 const saving = ref(false)
 const auditRows = ref<AuditEntry[]>([])
 const auditLoading = ref(false)
+const auditTotal = ref(0)
+const auditPage = ref(1)
+const auditPageSize = 20
+const auditKeyword = ref('')
+const auditAction = ref('')
+const auditRange = ref<[string, string] | null>(null)
 const auditLabels: Record<string, string> = {
   restore: '恢复备份', 'product.price': '修改价格', 'price.update': '修改价格', 'data.export': '导出数据',
-  'doc.delete': '删除单据', 'doc.reverse': '反审核', 'doc.void': '作废单据',
-  'user.create': '创建操作员', 'user.update': '修改操作员', 'user.remove': '移除操作员'
+  'doc.delete': '删除单据', 'doc.reverse': '红冲/反审核', 'doc.void': '作废单据',
+  'user.create': '创建操作员', 'user.update': '修改操作员', 'user.remove': '移除操作员',
+  'role.create': '创建角色', 'role.update': '修改角色', 'role.remove': '移除角色',
+  'customerPrice:remove': '删除客户价', 'setting:remove': '删除设置', 'category:remove': '删除分类',
+  'formula:remove': '删除配方'
 }
+const auditActionOptions = Object.keys(auditLabels)
 
 async function loadAudit() {
   auditLoading.value = true
   try {
-    auditRows.value = await call<AuditEntry[]>('audit:list')
+    const res = await call<{ total: number; list: AuditEntry[] }>('audit:query', {
+      page: auditPage.value,
+      pageSize: auditPageSize,
+      keyword: auditKeyword.value || undefined,
+      action: auditAction.value || undefined,
+      from: auditRange.value?.[0],
+      to: auditRange.value?.[1]
+    })
+    auditRows.value = res.list
+    auditTotal.value = res.total
   } catch (e) {
     ElMessage.error((e as Error).message)
   } finally {
     auditLoading.value = false
   }
+}
+
+function searchAudit() {
+  auditPage.value = 1
+  loadAudit()
 }
 const form = reactive({
   'shop.name': '',
@@ -114,9 +138,32 @@ async function save() {
     <el-card style="margin-top: 16px">
       <template #header>
         <span class="card-title">操作记录</span>
-        <el-button text :loading="auditLoading" @click="loadAudit">查询最近 100 条</el-button>
+        <el-button text :loading="auditLoading" @click="searchAudit">查询</el-button>
       </template>
-      <el-table :data="auditRows" size="small" empty-text="暂无操作记录">
+      <div class="audit-filter">
+        <el-input
+          v-model="auditKeyword"
+          placeholder="按对象/操作员搜索"
+          clearable
+          style="width: 200px"
+          @keyup.enter="searchAudit"
+          @clear="searchAudit"
+        />
+        <el-select v-model="auditAction" placeholder="全部操作" clearable style="width: 160px" @change="searchAudit">
+          <el-option v-for="a in auditActionOptions" :key="a" :label="auditLabels[a]" :value="a" />
+        </el-select>
+        <el-date-picker
+          v-model="auditRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          style="width: 260px"
+          @change="searchAudit"
+        />
+      </div>
+      <el-table :data="auditRows" size="small" empty-text="暂无操作记录" v-loading="auditLoading">
         <el-table-column label="时间" min-width="155">
           <template #default="{ row }">{{ new Date(row.created_at).toLocaleString() }}</template>
         </el-table-column>
@@ -128,6 +175,14 @@ async function save() {
         <el-table-column prop="before_value" label="变更前" show-overflow-tooltip min-width="100" />
         <el-table-column prop="after_value" label="变更后" show-overflow-tooltip min-width="100" />
       </el-table>
+      <el-pagination
+        class="mt"
+        layout="total, prev, pager, next"
+        :total="auditTotal"
+        :page-size="auditPageSize"
+        :current-page="auditPage"
+        @current-change="(p: number) => { auditPage = p; loadAudit() }"
+      />
     </el-card>
   </div>
 </template>
@@ -138,5 +193,11 @@ async function save() {
 }
 .card-title {
   font-weight: 600;
+}
+.audit-filter {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 </style>
