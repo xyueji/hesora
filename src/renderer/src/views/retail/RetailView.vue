@@ -7,6 +7,7 @@ import { productApi } from '../../api/product'
 import { warehouseApi } from '../../api/warehouse'
 import { fundApi } from '../../api/fund'
 import { printApi } from '../../api/print'
+import { resolveScannedProduct } from '../../composables/useDocumentScanner'
 import type { Product } from '../../../../shared/types/product'
 import type { FundAccount } from '../../../../shared/types/fund'
 import type { RetailCreateInput, RetailHeldCart } from '../../../../shared/types/retail'
@@ -100,17 +101,7 @@ async function loadAccounts(): Promise<void> {
 }
 
 async function resolveProduct(keyword: string): Promise<Product | null> {
-  const scanned = await productApi.getByBarcode(keyword)
-  if (scanned) return scanned
-  const r = await productApi.query({ page: 1, pageSize: 1, keyword })
-  if (r.total > 1) throw new Error('匹配到多个商品，请输入完整编码或条码')
-  const product = r.list[0]
-  if (!product) return null
-  // 商品名支持关键字，条码仅精确匹配。
-  const query = keyword.toLocaleLowerCase()
-  return product.code.toLocaleLowerCase() === query || product.name.toLocaleLowerCase().includes(query)
-    ? product
-    : null
+  return resolveScannedProduct(keyword)
 }
 
 async function onBarcodeEnter(): Promise<void> {
