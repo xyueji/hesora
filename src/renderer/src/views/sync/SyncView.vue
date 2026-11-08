@@ -71,8 +71,11 @@
       <el-button @click="restore('')">从备份文件恢复</el-button>
       <el-button @click="loadList">刷新备份列表（自动备份目录）</el-button>
 
-      <el-table :data="backups" size="small" class="mt">
-        <el-table-column prop="name" label="文件名" min-width="260" />
+      <el-table :data="filteredBackups" size="small" class="mt">
+        <el-table-column prop="name" label="文件名" min-width="240" />
+        <el-table-column label="类型" width="110">
+          <template #default="{ row }">{{ backupKind((row as BackupInfo).name) }}</template>
+        </el-table-column>
         <el-table-column label="大小">
           <template #default="{ row }">{{ formatSize((row as BackupInfo).size) }}</template>
         </el-table-column>
@@ -85,7 +88,15 @@
           </template>
         </el-table-column>
       </el-table>
-      <p class="hint">自动备份保存在软件数据目录的 backups 子目录；手动备份由您选择保存位置。</p>
+      <div class="mt" style="margin-bottom: 8px">
+        <el-radio-group v-model="kindFilter" size="small">
+          <el-radio-button value="">全部</el-radio-button>
+          <el-radio-button value="sync">同步快照历史</el-radio-button>
+          <el-radio-button value="daily">每日自动备份</el-radio-button>
+          <el-radio-button value="other">其他</el-radio-button>
+        </el-radio-group>
+      </div>
+      <p class="hint">自动备份保存在软件数据目录的 backups 子目录；每次同步前与每日首次启动都会自动留档（各保留 30 份），可作为快照历史恢复。手动备份由您选择保存位置。</p>
     </el-card>
   </div>
   <el-dialog v-model="previewVisible" title="核对云盘快照" width="min(680px, 92vw)" :close-on-click-modal="false" @closed="discardCloudPreview">
@@ -112,7 +123,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { BackupInfo } from '../../../../main/services/backup/backup.service'
 import { backupApi } from '../../api/backup'
@@ -129,6 +140,25 @@ const webdavUsername = ref('')
 const webdavPassword = ref('')
 const lastTime = ref('')
 const backups = ref<BackupInfo[]>([])
+const kindFilter = ref<'' | 'sync' | 'daily' | 'other'>('')
+
+// 备份文件命名：hesora-inventory-<suffix>-<时间戳>-<uuid>.db
+// suffix 为 before-sync（同步前留档）/ daily（每日备份）/ before-restore（恢复前安全副本）/ backup（手动）
+function backupKind(name: string): string {
+  if (name.includes('-before-sync-')) return '同步快照历史'
+  if (name.includes('-daily-')) return '每日自动备份'
+  if (name.includes('-before-restore-')) return '恢复前副本'
+  return '手动备份'
+}
+
+const filteredBackups = computed(() => {
+  if (!kindFilter.value) return backups.value
+  return backups.value.filter((b) => {
+    if (kindFilter.value === 'sync') return b.name.includes('-before-sync-')
+    if (kindFilter.value === 'daily') return b.name.includes('-daily-')
+    return !b.name.includes('-before-sync-') && !b.name.includes('-daily-')
+  })
+})
 const syncing = ref(false)
 const downloading = ref(false)
 const restoringCloud = ref(false)
