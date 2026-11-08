@@ -15,6 +15,10 @@ export interface DashboardSummary {
   /** 库存金额 = Σ inventory.qty * moving_cost（全量） */
   stock_amount: number
   low_stock_count: number
+  /** 未来 30 天内到期的批次数（不含已过期） */
+  expiring_batch_count: number
+  /** 已过期批次数 */
+  expired_batch_count: number
   /** 应收合计，沿用往来余额报表口径。 */
   total_receivable: number
   /** 应付合计（期初 + 进货 − 付款） */

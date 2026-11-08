@@ -79,6 +79,17 @@ onMounted(load)
           <span>销售单 <b>{{ summary.sales_count }}</b> 张</span>
           <span>库存预警 <b>{{ summary.low_stock_count }}</b> 种</span>
         </div>
+        <div
+          v-if="summary.expiring_batch_count > 0 || summary.expired_batch_count > 0"
+          class="shelf-alert"
+          @click="$router.push('/product/batches')"
+        >
+          <el-alert type="warning" :closable="false">
+            <template #title>
+              批次效期提醒：临期 {{ summary.expiring_batch_count }} 批、已过期 {{ summary.expired_batch_count }} 批，点击查看批次效期 →
+            </template>
+          </el-alert>
+        </div>
       </el-card>
     </template>
   </div>
@@ -87,6 +98,10 @@ onMounted(load)
 <style scoped>
 .dashboard {
   padding: 24px;
+}
+.shelf-alert {
+  margin-top: 8px;
+  cursor: pointer;
 }
 .card-row {
   display: flex;

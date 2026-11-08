@@ -174,4 +174,36 @@ describe('dashboard.service', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]?.amount).toBe(0)
   })
+
+  it('summary reports expiring_batch_count and expired_batch_count', () => {
+    const { warehouseId, productId } = setupBase()
+    db.prepare('UPDATE product SET tracking_type = ? WHERE id = ?').run('batch', productId)
+    const today = ((): string => {
+      const d = new Date()
+      const off = (n: number): string => {
+        const x = new Date(d)
+        x.setDate(x.getDate() + n)
+        return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+      }
+      return off(0)
+    })()
+    const off = (n: number): string => {
+      const x = new Date()
+      x.setDate(x.getDate() + n)
+      return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+    }
+    db.prepare(
+      'INSERT INTO product_batch (product_id, warehouse_id, batch_no, expire_date) VALUES (?,?,?,?)'
+    ).run(productId, warehouseId, 'B-NEAR', off(10))
+    db.prepare(
+      'INSERT INTO product_batch (product_id, warehouse_id, batch_no, expire_date) VALUES (?,?,?,?)'
+    ).run(productId, warehouseId, 'B-GONE', off(-2))
+    db.prepare(
+      'INSERT INTO product_batch (product_id, warehouse_id, batch_no, expire_date) VALUES (?,?,?,?)'
+    ).run(productId, warehouseId, 'B-OK', off(200))
+
+    const s = svc.summary(today)
+    expect(s.expiring_batch_count).toBe(1)
+    expect(s.expired_batch_count).toBe(1)
+  })
 })

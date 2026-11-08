@@ -41,6 +41,22 @@ export function createDashboardService(db: Database) {
       WHERE p.disabled = 0 AND p.min_stock > COALESCE((SELECT SUM(i.qty) FROM inventory i WHERE i.product_id = p.id), 0)`)
       .get() as { count: number }
 
+    // 临期/过期批次计数（批次效期，016 迁移引入的 product_batch 表）
+    const today = new Date()
+    const fmt = (d: Date): string =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const limit = new Date(today)
+    limit.setDate(limit.getDate() + 30)
+    const expiringAgg = db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN expire_date >= @today THEN 1 ELSE 0 END) AS expiring,
+           SUM(CASE WHEN expire_date < @today THEN 1 ELSE 0 END) AS expired
+         FROM product_batch
+         WHERE expire_date IS NOT NULL AND expire_date <= @limit`
+      )
+      .get({ today: fmt(today), limit: fmt(limit) }) as { expiring: number | null; expired: number | null }
+
     return {
       sales_amount: salesAgg.amt,
       sales_count: salesAgg.cnt,
@@ -50,6 +66,8 @@ export function createDashboardService(db: Database) {
       payment_amount: paymentAmount,
       stock_amount: stockAgg.amt,
       low_stock_count: lowStock.count,
+      expiring_batch_count: expiringAgg.expiring ?? 0,
+      expired_batch_count: expiringAgg.expired ?? 0,
       ...arrears.summary()
     }
   }
