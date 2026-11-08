@@ -99,6 +99,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'stats:receivables': 'report.arrears',
   'stats:payables': 'report.arrears',
   'stats:summary': 'report.arrears',
+  'stats:aging': 'report.arrears',
   'stats:report': 'report.business',
   'stats:operatorPerformance': 'report.business',
   'dashboard:summary': 'report.dashboard',

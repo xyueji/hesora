@@ -83,6 +83,7 @@ const groups: MenuGroup[] = [
       { path: '/payment/payment', label: '付款单', perm: 'doc.payment' },
       { path: '/payment/list', label: '收付款列表', perm: 'doc.payment' },
       { path: '/stats/arrears', label: '应收应付', perm: 'report.arrears' },
+      { path: '/stats/aging', label: '账龄报表', perm: 'report.arrears' },
       { path: '/account/ledger', label: '资金余额与转账', perm: 'fund.edit' },
       { path: '/account/list', label: '资金账户', perm: 'fund.view' }
     ]

@@ -742,6 +742,7 @@ function initialize(): void {
     'stats:receivables': () => arrearsSvc.receivables(),
     'stats:payables': () => arrearsSvc.payables(),
     'stats:summary': () => arrearsSvc.summary(),
+    'stats:aging': (_evt, payload) => arrearsSvc.aging((payload as { asOf?: string } | undefined)?.asOf),
     'stats:report': (_evt, payload) => reportSvc.query(payload as never),
     'stats:operatorPerformance': (_evt, payload) =>
       reportSvc.operatorPerformance(payload as never)

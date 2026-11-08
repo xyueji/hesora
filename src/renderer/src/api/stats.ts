@@ -1,13 +1,14 @@
 import { call } from './call'
-import type { ArrearsRow, ArrearsSummary } from '../../../shared/types/stats'
+import type { AgingResult, ArrearsRow, ArrearsSummary } from '../../../shared/types/stats'
 import type { ReportPage, ReportQuery } from '../../../shared/types/report'
 
-export { type ArrearsRow, type ArrearsSummary } from '../../../shared/types/stats'
+export { type ArrearsRow, type ArrearsSummary, type AgingResult, type AgingRow } from '../../../shared/types/stats'
 
 export const arrearsApi = {
   receivables: () => call<ArrearsRow[]>('stats:receivables'),
   payables: () => call<ArrearsRow[]>('stats:payables'),
-  summary: () => call<ArrearsSummary>('stats:summary')
+  summary: () => call<ArrearsSummary>('stats:summary'),
+  aging: (asOf?: string) => call<AgingResult>('stats:aging', asOf ? { asOf } : undefined)
 }
 
 export const reportApi = {
