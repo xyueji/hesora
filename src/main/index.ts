@@ -836,6 +836,10 @@ function initialize(): void {
       const { fileContent } = payload as { fileContent: string }
       return csvIpc.importProducts(String(fileContent))
     },
+    'csv:previewProducts': (_evt, payload) => {
+      const { fileContent } = payload as { fileContent: string }
+      return csvIpc.previewProducts(String(fileContent))
+    },
     'csv:importOpeningStock': (_evt, payload) => {
       const { fileContent, warehouse_id } = payload as { fileContent: string; warehouse_id: number }
       return csvIpc.importOpeningStock(String(fileContent), Number(warehouse_id))

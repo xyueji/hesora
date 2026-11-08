@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { productApi } from '../../api/product'
 import { csvApi, readCsvFile } from '../../api/csv'
 import { hasPermission } from '../../stores/auth'
-import type { ImportResult } from '../../api/csv'
+import type { ImportResult, ProductPreview } from '../../api/csv'
 import type { Product } from '../../../../shared/types/product'
 
 const router = useRouter()
@@ -57,6 +57,10 @@ function fmt(n: number): string {
 const importing = ref(false)
 const exporting = ref(false)
 const importInput = ref<HTMLInputElement | null>(null)
+const previewVisible = ref(false)
+const previewLoading = ref(false)
+const preview = ref<ProductPreview | null>(null)
+const pendingCsv = ref('')
 
 async function doExport(kind: 'products' | 'product-template' = 'products'): Promise<void> {
   exporting.value = true
@@ -83,7 +87,22 @@ async function onImportFile(e: Event): Promise<void> {
   importing.value = true
   try {
     const content = await readCsvFile(file)
-    const r: ImportResult = await csvApi.importProducts(content)
+    // dry-run 预览：先校验并列出将新建/更新的行，用户确认后再真正导入
+    pendingCsv.value = content
+    preview.value = await csvApi.previewProducts(content)
+    previewVisible.value = true
+  } catch (err) {
+    ElMessage.error((err as Error).message)
+  } finally {
+    importing.value = false
+  }
+}
+
+async function confirmImport(): Promise<void> {
+  previewLoading.value = true
+  try {
+    const r: ImportResult = await csvApi.importProducts(pendingCsv.value)
+    previewVisible.value = false
     if (r.errors.length === 0) {
       ElMessage.success(`导入完成：新增 ${r.created} 条，更新 ${r.updated} 条`)
     } else {
@@ -96,7 +115,7 @@ async function onImportFile(e: Event): Promise<void> {
   } catch (err) {
     ElMessage.error((err as Error).message)
   } finally {
-    importing.value = false
+    previewLoading.value = false
   }
 }
 
@@ -171,6 +190,53 @@ onActivated(load)
         @current-change="load"
       />
     </el-card>
+
+    <el-dialog v-model="previewVisible" title="导入预览" width="720px" :close-on-click-modal="false">
+      <div v-loading="previewLoading">
+        <el-alert
+          v-if="preview && preview.errors.length > 0"
+          type="warning"
+          :closable="false"
+          class="preview-alert"
+        >
+          <p v-for="er in preview.errors" :key="er.row">第{{ er.row }}行：{{ er.message }}</p>
+        </el-alert>
+        <p v-if="preview" class="preview-summary">
+          共 {{ preview.lines.length }} 行有效：将<b>新建 {{ preview.willCreate }}</b> 条、<b>更新 {{ preview.willUpdate }}</b> 条{{ preview.errors.length ? `，失败 ${preview.errors.length} 条（将跳过）` : '' }}。
+          更新仅覆盖 CSV 中有值的列，空列保留原值。
+        </p>
+        <el-table :data="preview?.lines ?? []" size="small" max-height="360">
+          <el-table-column prop="row" label="行" width="55" />
+          <el-table-column prop="code" label="编码" width="110" />
+          <el-table-column prop="name" label="名称" min-width="140" />
+          <el-table-column prop="base_unit" label="单位" width="70" />
+          <el-table-column label="零售价" width="85" align="right">
+            <template #default="{ row }">{{ row.retail_price.toFixed(2) }}</template>
+          </el-table-column>
+          <el-table-column label="进价" width="85" align="right">
+            <template #default="{ row }">{{ row.purchase_price.toFixed(2) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="80">
+            <template #default="{ row }">
+              <el-tag :type="row.existing_id ? 'warning' : 'success'" size="small">
+                {{ row.existing_id ? '更新' : '新建' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="previewVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="previewLoading"
+          :disabled="!preview || (preview.willCreate + preview.willUpdate === 0)"
+          @click="confirmImport"
+        >
+          确认导入
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -202,5 +268,12 @@ onActivated(load)
 .pager {
   margin-top: 12px;
   justify-content: flex-end;
+}
+.preview-summary {
+  margin: 0 0 8px;
+  color: var(--el-text-color-regular);
+}
+.preview-alert p {
+  margin: 2px 0;
 }
 </style>

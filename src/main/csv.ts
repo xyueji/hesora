@@ -80,7 +80,7 @@ export function createCsvIpc(db: Database) {
     return importService.importOpeningStock(String(fileContent), Number(warehouseId))
   }
 
-  return { exportCsv, importProducts, importOpeningStock, previewOpeningStock: importService.previewOpeningStock }
+  return { exportCsv, importProducts, previewProducts: importService.previewProducts, importOpeningStock, previewOpeningStock: importService.previewOpeningStock }
 }
 
 export type CsvIpc = ReturnType<typeof createCsvIpc>

@@ -39,6 +39,22 @@ describe('import.service', () => {
     expect(createInventoryService(db).getByProduct(productId)).toHaveLength(0)
   })
 
+  it('previewProducts reports would-create vs would-update and errors without writing', () => {
+    seedProduct()
+    const csv = '编码,名称,规格,类别,基本单位,零售价,批发价,进价,最低库存,追踪方式,条码\n'
+      + 'P001,新名称,,,罐,2,2,2,,无\n' // 已存在 → will update
+      + 'P100,新商品,,,个,5,4,3,,批次\n' // 不存在 → will create
+      + 'P200,,,件,1,2,3,,无\n' // 名称空 → 行级错误
+    const r = importSvc.previewProducts(csv)
+    expect(r.willCreate).toBe(1)
+    expect(r.willUpdate).toBe(1)
+    expect(r.errors).toEqual([{ row: 4, message: '名称不能为空' }])
+    // 预览绝不落库
+    const rows = productSvc().query({ page: 1, pageSize: 100 }).list
+    expect(rows).toHaveLength(1)
+    expect(productSvc().getById(1)?.name).toBe('旧名称')
+  })
+
   it('reports invalid optional values without silently replacing them', () => {
     const result = importSvc.importProducts('编码,名称,规格,类别,基本单位,零售价,批发价,进价,最低库存,追踪方式,条码\nP1,商品,,,件,oops,2,3,,无\nP2,商品,,,件,1,2,3,,未知\nP3,商品,,,件,1,2,3,,无')
     expect(result.created).toBe(1)

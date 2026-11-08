@@ -20,6 +20,25 @@ export interface ImportResult {
   errors: ImportError[]
 }
 
+export interface ProductPreviewLine {
+  row: number
+  code: string
+  name: string
+  base_unit: string
+  retail_price: number
+  trade_price: number
+  purchase_price: number
+  /** 存在 → 更新；否则 → 新建 */
+  existing_id: number | null
+}
+
+export interface ProductPreview {
+  lines: ProductPreviewLine[]
+  willCreate: number
+  willUpdate: number
+  errors: ImportError[]
+}
+
 function toNum(v: string | undefined, label: string): number | undefined {
   if (v === undefined || v.trim() === '') return undefined
   const n = Number(v)
@@ -40,6 +59,44 @@ const TRACKING: Record<string, TrackingType> = {
 export function createImportService(db: DB) {
   const productService = createProductService(db)
   const inventoryService = createInventoryService(db)
+
+  /** 商品导入预览（dry-run）：逐行校验并判断新建/更新，不写库。 */
+  function previewProducts(csvText: string): ProductPreview {
+    const rows = parseCsv(csvText)
+    const result: ProductPreview = { lines: [], willCreate: 0, willUpdate: 0, errors: [] }
+    const findId = db.prepare('SELECT id FROM product WHERE code = ?')
+    for (let i = 1; i < rows.length; i++) {
+      const rowNo = i + 1
+      const cols = rows[i] ?? []
+      try {
+        const code = (cols[0] ?? '').trim()
+        const name = (cols[1] ?? '').trim()
+        if (code === '') throw new Error('编码不能为空')
+        if (name === '') throw new Error('名称不能为空')
+        const baseUnit = (cols[4] ?? '').trim()
+        if (baseUnit === '') throw new Error('基本单位不能为空')
+        const retail = toNum(cols[5], '零售价') ?? 0
+        const trade = toNum(cols[6], '批发价') ?? 0
+        const purchase = toNum(cols[7], '进价') ?? 0
+        toNum(cols[8], '最低库存')
+        const trackingRaw = (cols[9] ?? '').trim()
+        if (trackingRaw && !Object.hasOwn(TRACKING, trackingRaw)) {
+          throw new BizError('VALIDATION', '追踪方式须为无、批次或序列号')
+        }
+        const existing = findId.get(code) as { id: number } | undefined
+        result.lines.push({
+          row: rowNo, code, name, base_unit: baseUnit,
+          retail_price: retail, trade_price: trade, purchase_price: purchase,
+          existing_id: existing?.id ?? null
+        })
+        if (existing) result.willUpdate++
+        else result.willCreate++
+      } catch (e) {
+        result.errors.push({ row: rowNo, message: String((e as Error)?.message ?? e) })
+      }
+    }
+    return result
+  }
 
   function importProducts(csvText: string): ImportResult {
     const rows = parseCsv(csvText)
@@ -164,7 +221,7 @@ export function createImportService(db: DB) {
     return result
   }
 
-  return { importProducts, importOpeningStock, previewOpeningStock }
+  return { importProducts, previewProducts, importOpeningStock, previewOpeningStock }
 }
 
 export type ImportService = ReturnType<typeof createImportService>

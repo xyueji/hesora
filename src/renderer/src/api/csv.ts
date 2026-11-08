@@ -9,6 +9,25 @@ export interface ImportResult {
   errors: Array<{ row: number; message: string }>
 }
 
+/** 商品导入预览行：existing_id 非空表示将更新已有商品 */
+export interface ProductPreviewLine {
+  row: number
+  code: string
+  name: string
+  base_unit: string
+  retail_price: number
+  trade_price: number
+  purchase_price: number
+  existing_id: number | null
+}
+
+export interface ProductPreview {
+  lines: ProductPreviewLine[]
+  willCreate: number
+  willUpdate: number
+  errors: Array<{ row: number; message: string }>
+}
+
 export type CsvExportKind = 'products' | 'customers' | 'suppliers' | 'stock' | 'purchase' | 'sale' | 'product-template' | 'opening-stock-template' | 'report'
 
 export interface CsvExportParams {
@@ -34,6 +53,8 @@ export const csvApi = {
     call<string>('csv:export', { kind, params: params ?? {} }),
   importProducts: (fileContent: string) =>
     call<ImportResult>('csv:importProducts', { fileContent }),
+  previewProducts: (fileContent: string) =>
+    call<ProductPreview>('csv:previewProducts', { fileContent }),
   importOpeningStock: (fileContent: string, warehouseId: number) =>
     call<ImportResult>('csv:importOpeningStock', { fileContent, warehouse_id: warehouseId }),
   previewOpeningStock: (fileContent: string) =>

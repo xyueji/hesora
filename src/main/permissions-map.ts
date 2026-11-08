@@ -115,6 +115,7 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
 
   'csv:export': 'data.export',
   'csv:importProducts': 'data.import',
+  'csv:previewProducts': 'data.import',
   'csv:importOpeningStock': 'data.import',
   'csv:previewOpeningStock': 'data.import',
 
