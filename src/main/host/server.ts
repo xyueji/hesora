@@ -39,6 +39,8 @@ export interface HostServerDeps {
     /** roleHas 解出的权限键集合（供客户端 UI 裁剪；HTTP 层 RBAC 仍走 canFor） */
     permissions: string[]
   } | null
+  /** /pair/start 到达时回调接线层（把待确认码同步进 host:pairPending 列表）。缺省不回调。 */
+  onPairRequest?: (entry: { code: string; deviceName: string; expiresAt: number }) => void
   log?: (level: 'info' | 'error' | 'warn', msg: string) => void
 }
 
@@ -49,6 +51,8 @@ export interface HostServerHandle {
   onConnection(cb: (ws: unknown, req: IncomingMessage) => void): void
   /** T8 双审 A2：/pair/start 后登记/更新配对轮询结果（index.ts pairGrant/pairDeny 接线调用）。 */
   setPairResult(code: string, result: PairResultEntry): void
+  /** T9：/pair/start HTTP 请求到达时回调（供 host:pairPending 展示）。 */
+  setPairRequestCb(cb: (entry: { code: string; deviceName: string; expiresAt: number }) => void): void
   /** T8 双审 A3：按 deviceId 踢活跃 WS 连接（吊销设备用，close 4003）。
    *  依赖 index.ts 在 hub 创建后经 installKick 注入 hub.disconnectDevice。 */
   disconnectDevice(deviceId: string, closeCode?: number): number
@@ -94,6 +98,7 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
   const pairResults = new Map<string, PairResultEntry>()
   // 吊销踢连接：onConnection 闭包把 hub.disconnectDevice 绑到 deviceId 上（见 disconnectDevice 实现引用）。
   let hubKick: ((deviceId: string, closeCode?: number) => number) | null = null
+  let pairRequestCb: ((entry: { code: string; deviceName: string; expiresAt: number }) => void) | null = null
   // /pair/start 限流：内存桶 key=IP，固定窗口近似（1min 重置）。3 台设备规模下
   // 精确性无关紧要，防暴力猜码即可（spec §5.2 实现裁定）。
   const rateBuckets = new Map<string, { windowStart: number; count: number }>()
@@ -164,6 +169,7 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
     const started = deps.pairing.startPairing(deviceName.trim())
     log('info', `pairing request from ${ip}: device "${deviceName}" code ${started.code}（T8 弹窗确认占位）`)
     pairResults.set(started.code, { status: 'pending', deviceName: deviceName.trim() })
+    pairRequestCb?.({ code: started.code, deviceName: deviceName.trim(), expiresAt: started.expiresAt })
     return {
       ok: true, code: 'OK', msg: '', data: { pending: true, pairingCode: started.code, expiresAt: started.expiresAt }
     }
@@ -349,6 +355,9 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
     },
     setPairResult(code, result) {
       pairResults.set(code, result)
+    },
+    setPairRequestCb(cb) {
+      pairRequestCb = cb
     },
     disconnectDevice(deviceId, closeCode) {
       // hub 接线（index.ts）：installKick 注入 hub.disconnectDevice；

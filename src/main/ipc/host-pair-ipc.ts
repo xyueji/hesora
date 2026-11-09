@@ -95,10 +95,8 @@ export function createHostPairIpc(deps: HostPairIpcDeps): HostPairIpc {
       return ok({ code: started.code, expiresAt: started.expiresAt, ip, qrPayload })
     },
 
-    /** host:pairPending → 待确认列表（过期码顺带清理） */
+    /** host:pairPending → 待确认列表（过期码顺带清理；含 HTTP /pair/start 桥接的条目） */
     pairPending(): Result<PendingPairing[]> {
-      const pairing = deps.getPairing()
-      if (!pairing) return ok([])
       const t = now()
       const out: PendingPairing[] = []
       for (const [code, entry] of startedCodes) {
@@ -107,6 +105,13 @@ export function createHostPairIpc(deps: HostPairIpcDeps): HostPairIpc {
           continue
         }
         out.push(entry)
+      }
+      for (const [code, entry] of httpPairRequests) {
+        if (t >= entry.expiresAt) {
+          httpPairRequests.delete(code)
+          continue
+        }
+        if (!out.some((p) => p.code === code)) out.push(entry)
       }
       return ok(out)
     },
@@ -186,6 +191,16 @@ export function createHostPairIpc(deps: HostPairIpcDeps): HostPairIpc {
       secretStoreDeps = d
     }
   }
+}
+
+/**
+ * T9：HTTP /pair/start → host:pairPending 桥。
+ * server.ts 的 onPairRequest 回调经 noteHttpPairRequest 落进本模块级 Map；
+ * createHostPairIpc 的 pairPending/pairGrant/pairDeny 优先消费它（UI 确认卡片可见 HTTP 发起的配对）。
+ */
+const httpPairRequests = new Map<string, PendingPairing>()
+export function noteHttpPairRequest(entry: { code: string; deviceName: string; expiresAt: number }): void {
+  httpPairRequests.set(entry.code, { code: entry.code, deviceName: entry.deviceName, expiresAt: entry.expiresAt })
 }
 
 /** Tray 门控纯函数：仅 lanAllowed（license feature + 用户开关）创建托盘。 */

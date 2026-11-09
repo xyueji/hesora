@@ -438,3 +438,17 @@ describe('host server /auth/session (spec §5.5)', () => {
     expect(res3.json().code).toBe('E_AUTH_FAILED')
   })
 })
+
+describe('host server /pair/start → onPairRequest bridge (T9)', () => {
+  it('notifies onPairRequest callback when /pair/start arrives', async () => {
+    const { app } = await setupFixture()
+    const seen: Array<{ code: string; deviceName: string; expiresAt: number }> = []
+    app.setPairRequestCb((e) => seen.push(e))
+    const res = await app.inject({ method: 'POST', url: '/pair/start', payload: { deviceName: 'E2E 设备' }, remoteAddress: '10.0.0.7' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().data.pairingCode).toMatch(/^\d{6}$/)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.deviceName).toBe('E2E 设备')
+    expect(seen[0]?.code).toBe(res.json().data.pairingCode)
+  })
+})

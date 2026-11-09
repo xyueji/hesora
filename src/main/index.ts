@@ -259,6 +259,8 @@ function initialize(): void {
     onConnection(cb: (ws: unknown, req: import('node:http').IncomingMessage) => void): void
     /** T8 双审 A2/A3：/pair/result 登记与按设备踢连接（server.ts 5.x 新增）。 */
     setPairResult?(code: string, result: { status: 'pending' | 'granted' | 'denied'; deviceId?: string; secretHex?: string; deviceName?: string }): void
+    /** T9：HTTP /pair/start 到达回调（同步进 host:pairPending 列表）。 */
+    setPairRequestCb?(cb: (entry: { code: string; deviceName: string; expiresAt: number }) => void): void
     disconnectDevice?(deviceId: string, closeCode?: number): number
   }
   let hostServer: HostServerHandleLike | null = null
@@ -316,6 +318,12 @@ function initialize(): void {
           return { user: { id: user.id, username: user.username, role: user.role, roleName: user.roleName, permissions }, permissions }
         },
         log: (level, msg) => console.log(`[host:${level}] ${msg}`)
+      })
+      // T9：HTTP /pair/start 到达 → 同步进 host:pairPending 列表（UI 确认卡片可见）。
+      // hostPairIpc 尚未创建（在其下方），用延迟桥接：把 HTTP 端的待确认码暂存，
+      // hostPairIpc 创建后接管（见 createHostPairIpc deps.onHttpPairRequest）。
+      hostServer.setPairRequestCb?.((entry) => {
+        void import('./ipc/host-pair-ipc').then((m) => m.noteHttpPairRequest(entry))
       })
       await hostServer.listen().catch((e: unknown) => {
         console.error('[host] listen failed:', e)
