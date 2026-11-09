@@ -33,6 +33,12 @@ export interface HostServerDeps {
   port?: number
   /** 设备明文 secret 查询（HMAC 校验用）。配对确认时由接线层记录（见 deviceSecrets）。 */
   getDeviceSecret?: (deviceId: string) => string | null
+  /** /auth/session（spec §5.5）：员工密码校验 + 会话/权限解出。接线层注入（userSvc 复用）。 */
+  sessionLogin?: (username: string, password: string) => {
+    user: { id: number; username: string; role: string; roleName?: string; permissions?: string[] }
+    /** roleHas 解出的权限键集合（供客户端 UI 裁剪；HTTP 层 RBAC 仍走 canFor） */
+    permissions: string[]
+  } | null
   log?: (level: 'info' | 'error' | 'warn', msg: string) => void
 }
 
@@ -274,6 +280,60 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
     const result = await deps.gateway.handleRpc({ requestId, channel, payload: bodyObj.payload }, session)
     // ⑥ Result JSON：业务失败一律 HTTP 200 + ok=false（spec §4.1），不改写
     return result
+  })
+
+  // ---- /auth/session（spec §5.4/§5.5）：设备 HMAC 一步 + 员工登录 → session token ----
+  // 鉴权与 /rpc 相同的 HMAC 头（X-Device-Id/X-Ts/X-Nonce/X-Sig）；成功 createSession
+  // 返回 {token, user, permissions}；业务失败（密码错/未知员工）→ HTTP 200 + ok=false。
+  app.post('/auth/session', async (req, reply) => {
+    const h = req.headers as Record<string, string | string[] | undefined>
+    const hdr = (name: string): string => {
+      const v = h[name]
+      return Array.isArray(v) ? String(v[0]) : String(v ?? '')
+    }
+    const rawBody = (req as { rawBody?: string }).rawBody
+    const bodyStr = typeof rawBody === 'string' ? rawBody : (typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? null))
+    const bodySha = sha256Hex(bodyStr)
+    const deviceId = hdr('x-device-id')
+    const ts = Number(hdr('x-ts'))
+    const nonce = hdr('x-nonce')
+    const sig = hdr('x-sig')
+    if (!deviceId || !Number.isFinite(ts) || !nonce || !sig) {
+      void reply.code(401)
+      return { ok: false, code: 'E_AUTH_FAILED', msg: '缺少请求头（X-Device-Id/X-Ts/X-Nonce/X-Sig）', data: null }
+    }
+    const secret = deps.getDeviceSecret?.(deviceId) ?? null
+    if (!secret) {
+      void reply.code(401)
+      return { ok: false, code: 'E_AUTH_FAILED', msg: '设备未配对或已吊销', data: null }
+    }
+    const verified = deps.hostAuth.verifyRequest(secret, deviceId, ts, nonce, bodySha, sig)
+    if (!verified.ok) {
+      void reply.code(401)
+      return { ok: false, code: verified.code, msg: verified.msg, data: null }
+    }
+    const bodyObj = (req.body ?? {}) as { employee?: unknown; password?: unknown }
+    const username = typeof bodyObj.employee === 'string' ? bodyObj.employee.trim() : ''
+    const password = typeof bodyObj.password === 'string' ? bodyObj.password : ''
+    if (!username || !password || !deps.sessionLogin) {
+      return { ok: false, code: 'VALIDATION', msg: !deps.sessionLogin ? '登录服务未就绪' : '员工名或密码不能为空', data: null }
+    }
+    const logged = deps.sessionLogin(username, password)
+    if (!logged) {
+      return { ok: false, code: 'E_LOGIN_FAILED', msg: '员工名或密码不正确', data: null }
+    }
+    // 校验密码通过 → 创建会话（hostAuth 内部校验 host_devices 未 revoked）
+    let token: string
+    try {
+      token = deps.hostAuth.createSession(deviceId, logged.user.id).token
+    } catch (e) {
+      void reply.code(401)
+      return { ok: false, code: 'E_AUTH_FAILED', msg: e instanceof Error && /revoked/.test(e.message) ? '设备已吊销' : '设备未配对', data: null }
+    }
+    return {
+      ok: true, code: 'OK', msg: '',
+      data: { token, user: logged.user, permissions: logged.permissions }
+    }
   })
 
   const port = deps.port ?? 18650

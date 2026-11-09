@@ -33,7 +33,7 @@ interface Fixture {
 let fx: Fixture
 const cleanups: string[] = []
 
-async function setupFixture(handlerOverrides: Record<string, IpcHandler> = {}): Promise<Fixture> {
+async function setupFixture(handlerOverrides: Record<string, IpcHandler> = {}, opts: { sessionLogin?: (username: string, password: string) => { user: { id: number; username: string; role: string }; permissions: string[] } | null } = {}): Promise<Fixture> {
   const db = openMemDb()
   let now = 1_800_000_000_000
   const clock = () => now
@@ -55,6 +55,7 @@ async function setupFixture(handlerOverrides: Record<string, IpcHandler> = {}): 
     gateway: gw,
     canFor: canFor as never,
     getDeviceSecret: (id) => (id === 'dev-1' ? SECRET_HEX : null),
+    sessionLogin: opts.sessionLogin,
     log: () => {}
   })
   // 造已配对设备 + 会话
@@ -300,7 +301,7 @@ describe('host server misc', () => {
     const j = JSON.parse(res2.body)
     expect(j.ok).toBe(true)
     expect(j.data).toEqual({ got: { q: 'h1' } })
-    await app.close()
+    await fx.app.close()
   })
 })
 
@@ -345,5 +346,95 @@ describe('host server /pair/result (T8 双审 A2)', () => {
     expect(fx.app.disconnectDevice('dev-1')).toBe(0)
     fx.app.installKick((id) => (id === 'dev-1' ? 2 : 0))
     expect(fx.app.disconnectDevice('dev-1')).toBe(2)
+  })
+})
+
+describe('host server /auth/session (spec §5.5)', () => {
+  function sessionHeaders(fx2: Fixture, body: string, over: Partial<{ deviceId: string; ts: number; nonce: string; sig: string }> = {}): Record<string, string> {
+    const ts = over.ts ?? Math.floor(fx2.getNow() / 1000)
+    const nonce = over.nonce ?? randomBytes(16).toString('hex')
+    const bodySha = sha256hex(body)
+    const sig = over.sig ?? fx2.hostAuth.signPayload(SECRET_HEX, over.deviceId ?? 'dev-1', ts, nonce, bodySha)
+    return {
+      'x-device-id': over.deviceId ?? 'dev-1',
+      'x-ts': String(ts),
+      'x-nonce': nonce,
+      'x-sig': sig,
+      'content-type': 'application/json'
+    }
+  }
+
+  it('valid HMAC + valid credentials → token + user + permissions', async () => {
+    // 给 admin 一个可校验的真实密码（scrypt 格式 salt:hash），并注入 sessionLogin（index.ts 接线等价）
+    const { scryptSync, randomBytes: rb } = await import('node:crypto')
+    const salt = rb(16).toString('hex')
+    const hash = scryptSync('Lan-pass-123', salt, 64).toString('hex')
+    fx.db.prepare('UPDATE "user" SET password_hash=? WHERE username=?').run(`${salt}:${hash}`, 'admin')
+    const fixture = fx
+    const svc = await import('../../src/main/services/user/user.service').then((m) => m.createUserService(fixture.db as never))
+    // 独立 server：带 sessionLogin（等价 index.ts 接线），密码经 userSvc.verify 校验
+    const fx2 = await setupFixture({ 'product:query': (_e, p) => ({ got: p }) }, {
+      sessionLogin: (username, password) => {
+        const user = svc.verify(username, password)
+        if (!user) return null
+        return { user: { id: user.id, username: user.username, role: user.role }, permissions: [] }
+      }
+    }) as Awaited<ReturnType<typeof setupFixture>>
+    const body = JSON.stringify({ deviceId: 'dev-1', employee: 'admin', password: 'Lan-pass-123' })
+    const res = await fx2.app.inject({ method: 'POST', url: '/auth/session', payload: body, headers: sessionHeaders(fx2, body) })
+    expect(res.statusCode).toBe(200)
+    const json = res.json()
+    expect(json.ok).toBe(true)
+    expect(typeof json.data.token).toBe('string')
+    expect(json.data.token.length).toBeGreaterThan(32)
+    expect(json.data.user.username).toBe('admin')
+    // 拿到 token 后可直调 /rpc（HMAC 会话头照常）
+    const bodyRpc = JSON.stringify({ requestId: 'sess-rpc', channel: 'product:query', payload: {} })
+    const resRpc = await fx2.app.inject({
+      method: 'POST', url: '/rpc/product:query', payload: bodyRpc,
+      headers: { ...sessionHeaders(fx2, bodyRpc), 'x-session-token': json.data.token }
+    })
+    expect(resRpc.json().ok, `rpc resp: ${resRpc.body}`).toBe(true)
+    await fx2.app.close()
+  })
+
+  it('wrong password → 200 Result fail (E_LOGIN_FAILED); bad HMAC → 401', async () => {
+    const fixture = fx
+    const svc = await import('../../src/main/services/user/user.service').then((m) => m.createUserService(fixture.db as never))
+    const fx2 = await setupFixture({}, {
+      sessionLogin: (username, password) => {
+        const user = svc.verify(username, password)
+        if (!user) return null
+        return { user: { id: user.id, username: user.username, role: user.role }, permissions: [] }
+      }
+    }) as Awaited<ReturnType<typeof setupFixture>>
+    const body = JSON.stringify({ deviceId: 'dev-1', employee: 'admin', password: 'wrong-pass' })
+    const res = await fx2.app.inject({ method: 'POST', url: '/auth/session', payload: body, headers: sessionHeaders(fx2, body) })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().ok).toBe(false)
+    expect(res.json().code).toBe('E_LOGIN_FAILED')
+
+    const body2 = JSON.stringify({ deviceId: 'dev-1', employee: 'admin', password: 'x' })
+    const res2 = await fx2.app.inject({
+      method: 'POST', url: '/auth/session', payload: body2,
+      headers: sessionHeaders(fx2, body2, { sig: '0'.repeat(64) })
+    })
+    expect(res2.statusCode).toBe(401)
+    expect(res2.json().code).toBe('E_AUTH_FAILED')
+    await fx2.app.close()
+  })
+
+  it('nonce replay → E_REPLAY; unpaired device → 401', async () => {
+    const body = JSON.stringify({ deviceId: 'dev-1', employee: 'admin', password: 'x' })
+    const h = sessionHeaders(fx, body, { nonce: 'ab'.repeat(16) })
+    await fx.app.inject({ method: 'POST', url: '/auth/session', payload: body, headers: h })
+    const res = await fx.app.inject({ method: 'POST', url: '/auth/session', payload: body, headers: h })
+    expect(res.json().code).toBe('E_REPLAY')
+
+    // 未配对设备
+    const body3 = JSON.stringify({ deviceId: 'dev-x', employee: 'admin', password: 'x' })
+    const res3 = await fx.app.inject({ method: 'POST', url: '/auth/session', payload: body3, headers: sessionHeaders(fx, body3, { deviceId: 'dev-x' }) })
+    expect(res3.statusCode).toBe(401)
+    expect(res3.json().code).toBe('E_AUTH_FAILED')
   })
 })

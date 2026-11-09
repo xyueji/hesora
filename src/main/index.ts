@@ -5,6 +5,7 @@ import { resolveDatabasePath } from './db/location'
 import { ensureProfileDir, resolveProfilePath } from './db/profile'
 import { seedDemoData, resetDemoData } from './db/seed'
 import { isTrialExpiredWrite, hasFeature } from '../shared/license'
+import { ALL_PERMISSIONS, ROLE_PRESETS } from '../shared/permissions'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
 import { createHostPairIpc, shouldCreateTray } from './ipc/host-pair-ipc'
 import { buildAllHandlers, canViewDocument, type HandlerDeps } from './ipc/handlers'
@@ -303,6 +304,17 @@ function initialize(): void {
         tls: { keyPem: cert.keyPem, certPem: cert.certPem },
         port: 18650,
         getDeviceSecret: deviceSecretLookup,
+        sessionLogin: (username, password) => {
+          const userSvc = createUserService(getDb())
+          const user = userSvc.verify(username, password)
+          if (!user) return null
+          // 权限键集：admin 全量；自定义角色按 access_role.permissions；内置 cashier 走预设。
+          const permissions =
+            user.role === 'admin'
+              ? [...ALL_PERMISSIONS]
+              : user.permissions ?? [...ROLE_PRESETS.cashier]
+          return { user: { id: user.id, username: user.username, role: user.role, roleName: user.roleName, permissions }, permissions }
+        },
         log: (level, msg) => console.log(`[host:${level}] ${msg}`)
       })
       await hostServer.listen().catch((e: unknown) => {
