@@ -69,26 +69,33 @@ export function createInvbakService(db: Database.Database, deps: InvbakServiceDe
     }
     if (schemaVersion < 1) schemaVersion = currentSchemaVersion(migrationsDir)
 
-    const bytes = createInvbak(snapshot, {
-      passphrase: args.passphrase,
-      meta: {
-        backupId,
-        storeName: args.storeName,
-        createdAtUtc: new Date().toISOString(),
-        dbSchemaVersion: schemaVersion,
-        appVersion: deps.appVersion,
-        sourceInstanceId: deps.sourceInstanceId,
-        snapshotSha256: Buffer.from(sha256(snapshot)).toString('hex'),
-        sizeBytes: snapshot.length,
-      },
-    })
-    writeFileSync(target, bytes)
-    // 读回一次：既验证容器可解，又拿到规范化的 meta（含 backupId）入库。
-    const verified = readInvbak(bytes, { passphrase: args.passphrase })
-    db.prepare(
-      'INSERT INTO backup_v2 (backup_id, path, meta_json, state, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(backupId, resolve(target), JSON.stringify(verified.meta), 'done', new Date().toISOString())
-    return { backupId, path: target, meta: verified.meta }
+    // M2：从这一步起 target 可能已写盘，任何失败都要清掉孤儿 .ivbak。
+    try {
+      const bytes = createInvbak(snapshot, {
+        passphrase: args.passphrase,
+        meta: {
+          backupId,
+          storeName: args.storeName,
+          createdAtUtc: new Date().toISOString(),
+          dbSchemaVersion: schemaVersion,
+          appVersion: deps.appVersion,
+          sourceInstanceId: deps.sourceInstanceId,
+          // 容器内会重算为含 schema 绑定的指纹；此处值仅为占位，会被覆盖。
+          snapshotSha256: Buffer.from(sha256(snapshot)).toString('hex'),
+          sizeBytes: snapshot.length,
+        },
+      })
+      writeFileSync(target, bytes)
+      // 读回一次：既验证容器可解，又拿到规范化的 meta（含 backupId）入库。
+      const verified = readInvbak(bytes, { passphrase: args.passphrase })
+      db.prepare(
+        'INSERT INTO backup_v2 (backup_id, path, meta_json, state, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(backupId, resolve(target), JSON.stringify(verified.meta), 'done', new Date().toISOString())
+      return { backupId, path: target, meta: verified.meta }
+    } catch (e) {
+      rmSync(target, { force: true })
+      throw e
+    }
   }
 
   function restoreEncryptedBackup(args: { path: string; passphrase: string }): Result<{ backupId: string; meta: InvbakMeta }> {

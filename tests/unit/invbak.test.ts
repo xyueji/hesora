@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import { createHash } from 'node:crypto'
 import { createInvbak, readInvbak } from '../../src/main/backup/invbak'
 import { BizError } from '../../src/shared/result'
 
@@ -24,14 +23,8 @@ const META_BASE = {
   sizeBytes: SNAPSHOT.length,
 }
 // 实际创建时用真实 sha256 —— 用单次派生建立主样本。
-const SAMPLE = createInvbak(SNAPSHOT, {
-  passphrase: PASS,
-  meta: { ...META_BASE, snapshotSha256: sha256Hex(SNAPSHOT) },
-})
-
-function sha256Hex(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex')
-}
+// snapshotSha256 由 createInvbak 内部按 sha256(snapshot||u32le(schemaVer)) 重算。
+const SAMPLE = createInvbak(SNAPSHOT, { passphrase: PASS, meta: { ...META_BASE } })
 
 function roundtrip(): { meta: ReturnType<typeof readInvbak>['meta']; bytes: Uint8Array } {
   const r = readInvbak(SAMPLE, { passphrase: PASS })
@@ -54,7 +47,7 @@ describe('invbak roundtrip', () => {
   it('honors explicit backupId and generates uuid when absent', () => {
     const b = createInvbak(SNAPSHOT, {
       passphrase: PASS,
-      meta: { ...META_BASE, snapshotSha256: sha256Hex(SNAPSHOT), backupId: 'fixed-id' },
+      meta: { ...META_BASE, backupId: 'fixed-id' },
     })
     expect(readInvbak(b, { passphrase: PASS }).meta.backupId).toBe('fixed-id')
   })
@@ -100,6 +93,41 @@ describe('invbak tamper & format errors', () => {
       readInvbak(out, { passphrase: PASS })
     } catch (e) {
       expect((e as BizError).code).toBe('E_INVBAK_HASH_MISMATCH')
+    }
+  })
+
+  it('rejects tampered meta dbSchemaVersion (schema bound into fingerprint)', () => {
+    const copy = Buffer.from(SAMPLE)
+    const view = new DataView(copy.buffer, copy.byteOffset, copy.byteLength)
+    const ctLen = Number(view.getBigUint64(47, true))
+    const metaStart = 55 + ctLen + 16
+    const metaStr = copy.subarray(metaStart).toString('utf8')
+      .replace(/"dbSchemaVersion":83/, '"dbSchemaVersion":999') // 想伪造更高版本绕过 E_BACKUP_NEWER
+    const newMeta = Buffer.from(metaStr, 'utf8')
+    const out = Buffer.concat([copy.subarray(0, metaStart), newMeta])
+    try {
+      readInvbak(out, { passphrase: PASS })
+      expect.unreachable()
+    } catch (e) {
+      expect((e as BizError).code).toBe('E_INVBAK_HASH_MISMATCH')
+    }
+  })
+
+  it('rejects meta missing required fields (minimal meta validation)', () => {
+    const copy = Buffer.from(SAMPLE)
+    const view = new DataView(copy.buffer, copy.byteOffset, copy.byteLength)
+    const ctLen = Number(view.getBigUint64(47, true))
+    const metaStart = 55 + ctLen + 16
+    const metaStr = copy.subarray(metaStart).toString('utf8')
+      .replace(/"storeName":"[^"]*",/, '') // 删除一个必填字段
+    const newMeta = Buffer.from(metaStr, 'utf8')
+    const out = Buffer.concat([copy.subarray(0, metaStart), newMeta])
+    try {
+      readInvbak(out, { passphrase: PASS })
+      expect.unreachable()
+    } catch (e) {
+      expect((e as BizError).code).toBe('E_INVBAK_INVALID')
+      expect((e as BizError).message).toContain('字段缺失')
     }
   })
 

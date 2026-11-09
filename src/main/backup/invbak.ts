@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto'
+import { createCipheriv, createDecipheriv, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { gzipSync, gunzipSync } from 'node:zlib'
 import { argon2id } from '@noble/hashes/argon2.js'
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -9,6 +9,9 @@ import { BizError } from '../../shared/result'
 //   kdfIters u32 LE =3 | kdfParallel u32 LE =1 | salt 16B | iv 12B |
 //   ciphertextLen u64 LE | ciphertext (gzip(snapshot) AES-256-GCM) |
 //   tag 16B | meta_json (rest, UTF-8 plaintext, NOT covered by GCM)
+// meta.snapshotSha256 语义：sha256(snapshot || u32le(dbSchemaVersion)) ——
+// 把未认证 meta 中的 dbSchemaVersion 绑进快照指纹，防止篡改 meta 绕过
+// restore 的 E_BACKUP_NEWER 门禁。v1.3 未发布，格式 ver 保持 1。
 export const INVBAK_MAGIC = 'IVBK'
 export const INVBAK_VERSION = 1
 const KDF_ID = 0x01
@@ -34,6 +37,13 @@ export interface InvbakMeta {
 
 function toHex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('hex')
+}
+
+// 快照指纹：sha256(snapshot || u32le(dbSchemaVersion))。
+function snapshotFingerprint(snapshotBytes: Uint8Array, dbSchemaVersion: number): Uint8Array {
+  const suffix = Buffer.alloc(4)
+  suffix.writeUInt32LE(dbSchemaVersion, 0)
+  return sha256(Buffer.concat([Buffer.from(snapshotBytes), suffix]))
 }
 
 function deriveKey(passphrase: string, salt: Uint8Array): Uint8Array {
@@ -69,6 +79,8 @@ export function createInvbak(snapshotBytes: Uint8Array, opts: {
     ...opts.meta,
     backupId: opts.meta.backupId ?? randomUUID(),
   }
+  // 指纹按容器内最终 meta 的 dbSchemaVersion 计算（含 schema 绑定，见文件头注释）。
+  meta.snapshotSha256 = toHex(snapshotFingerprint(snapshotBytes, meta.dbSchemaVersion))
   const metaJson = Buffer.from(JSON.stringify(meta), 'utf8')
 
   const out = Buffer.alloc(HEADER_LEN + ciphertext.length + TAG_LEN + metaJson.length)
@@ -79,11 +91,11 @@ export function createInvbak(snapshotBytes: Uint8Array, opts: {
   view.setUint32(7, KDF_MEM_KIB, true)
   view.setUint32(11, KDF_ITERS, true)
   view.setUint32(15, KDF_PARALLEL, true)
-  Buffer.from(salt).copy(out, 19)
-  Buffer.from(iv).copy(out, 35)
+  salt.copy(out, 19)
+  iv.copy(out, 35)
   writeU64le(view, 47, ciphertext.length)
-  Buffer.from(ciphertext).copy(out, HEADER_LEN)
-  Buffer.from(tag).copy(out, HEADER_LEN + ciphertext.length)
+  ciphertext.copy(out, HEADER_LEN)
+  tag.copy(out, HEADER_LEN + ciphertext.length)
   metaJson.copy(out, HEADER_LEN + ciphertext.length + TAG_LEN)
   return out
 }
@@ -138,6 +150,18 @@ export function readInvbak(bytes: Uint8Array, opts: { passphrase: string }): {
   } catch {
     throw new BizError('E_INVBAK_INVALID', 'meta_json 解析失败')
   }
+  // meta 最小字段校验（M4）：meta 不受 GCM 保护，缺失/类型错直接拒。
+  const okMeta = typeof meta.backupId === 'string' && meta.backupId.length > 0 &&
+    typeof meta.storeName === 'string' &&
+    typeof meta.createdAtUtc === 'string' && meta.createdAtUtc.length > 0 &&
+    typeof meta.dbSchemaVersion === 'number' && Number.isInteger(meta.dbSchemaVersion) && meta.dbSchemaVersion >= 0 &&
+    typeof meta.appVersion === 'string' &&
+    typeof meta.sourceInstanceId === 'string' &&
+    typeof meta.snapshotSha256 === 'string' && /^[0-9a-f]{64}$/.test(meta.snapshotSha256) &&
+    typeof meta.sizeBytes === 'number' && Number.isInteger(meta.sizeBytes) && meta.sizeBytes >= 0
+  if (!okMeta) {
+    throw new BizError('E_INVBAK_INVALID', 'meta_json 字段缺失或类型不符')
+  }
 
   let snapshot: Buffer
   try {
@@ -145,9 +169,16 @@ export function readInvbak(bytes: Uint8Array, opts: { passphrase: string }): {
   } catch {
     throw new BizError('E_INVBAK_INVALID', '快照数据解压失败')
   }
-  const actualSha = toHex(sha256(snapshot))
-  if (meta.snapshotSha256 !== actualSha) {
+  const actualSha = toHex(snapshotFingerprint(snapshot, meta.dbSchemaVersion))
+  if (!constantTimeHexEqual(meta.snapshotSha256, actualSha)) {
     throw new BizError('E_INVBAK_HASH_MISMATCH', '快照 sha256 校验不一致')
   }
   return { meta, snapshotBytes: new Uint8Array(snapshot) }
+}
+
+function constantTimeHexEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a, 'utf8')
+  const bb = Buffer.from(b, 'utf8')
+  if (ba.length !== bb.length) return false // hex 长度不符直接拒，不进 timing 比较
+  return timingSafeEqual(ba, bb)
 }
