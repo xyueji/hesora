@@ -75,6 +75,25 @@ describe('host auth service', () => {
     expect(svc.verifyRequest('aa'.repeat(32), 'dev-1', ts + 300, nonce, bodySha2, sig2).ok).toBe(true)
   })
 
+  it('nonce is scoped per device: another device may reuse the same nonce', () => {
+    const db = openMemDb()
+    const svc = createHostAuthService(db, { clock: () => 1_800_000_000_000 })
+    const ts = Math.floor(1_800_000_000_000 / 1000)
+    const bodySha = sha256hex('x')
+    db.prepare(
+      'INSERT INTO host_devices (device_id, device_name, secret_hash, paired_at) VALUES (?,?,?,?)'
+    ).run('dev-1', 'd', sha256hex('aa'.repeat(32)), new Date(1_800_000_000_000).toISOString())
+    db.prepare(
+      'INSERT INTO host_devices (device_id, device_name, secret_hash, paired_at) VALUES (?,?,?,?)'
+    ).run('dev-2', 'd', sha256hex('bb'.repeat(32)), new Date(1_800_000_000_000).toISOString())
+    const nonce = randomBytes(16).toString('hex')
+    const sig1 = svc.signPayload('aa'.repeat(32), 'dev-1', ts, nonce, bodySha)
+    expect(svc.verifyRequest('aa'.repeat(32), 'dev-1', ts, nonce, bodySha, sig1).ok).toBe(true)
+    // 设备 B 用同一 nonce：不构成重放，验签通过
+    const sig2 = svc.signPayload('bb'.repeat(32), 'dev-2', ts, nonce, bodySha)
+    expect(svc.verifyRequest('bb'.repeat(32), 'dev-2', ts, nonce, bodySha, sig2).ok).toBe(true)
+  })
+
   it('createSession→validateSession passes and slides expiry', () => {
     const { db, svc, setNow, userId } = setup()
     const { token } = svc.createSession('dev-1', userId)

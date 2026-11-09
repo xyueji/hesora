@@ -30,7 +30,8 @@ function safeEqualHex(a: string, b: string): boolean {
   return timingSafeEqual(ba, bb)
 }
 
-/** 纯函数：HMAC-SHA256(secret, "session"+deviceId+ts+nonce+bodySha256).hex —— 供 signPayload/verifyRequest 共用 */
+/** 纯函数：HMAC-SHA256(secret, "session"+deviceId+ts+nonce+bodySha256).hex —— 供 signPayload/verifyRequest 共用
+ *  约定：nonce 为 32B hex 定长字符串、ts 为十进制 Unix 秒，由传输层拼 header 时保证。 */
 export function signPayloadHex(secretHex: string, deviceId: string, ts: number, nonce: string, bodySha256hex: string): string {
   const payload = `session${deviceId}${ts}${nonce}${bodySha256hex}`
   return createHmac('sha256', Buffer.from(secretHex, 'hex')).update(payload).digest('hex')
@@ -38,7 +39,7 @@ export function signPayloadHex(secretHex: string, deviceId: string, ts: number, 
 
 export function createHostAuthService(db: Database, opts?: { clock?: () => number }): HostAuthService {
   const clock = opts?.clock ?? Date.now
-  // nonce 防重放：nonce → 绝对过期时刻（ts±120s 窗口取更晚者）；过期惰性淘汰
+  // nonce 防重放：key = `${deviceId}:${nonce}`（按设备隔离，防跨设备 nonce 耗尽 DoS）；过期惰性淘汰
   const nonces = new Map<string, number>()
 
   function pruneNonces(nowMs: number): void {
@@ -70,11 +71,11 @@ export function createHostAuthService(db: Database, opts?: { clock?: () => numbe
       if (!safeEqualHex(sig, expected)) {
         return fail('E_AUTH_FAILED', '请求签名校验失败')
       }
-      if (nonces.has(nonce)) {
+      if (nonces.has(`${deviceId}:${nonce}`)) {
         return fail('E_REPLAY', '检测到重放请求')
       }
       // 登记到窗口上界（ts 可能在过去/未来 ±120s）
-      nonces.set(nonce, nowMs + SKEW_MS)
+      nonces.set(`${deviceId}:${nonce}`, nowMs + SKEW_MS)
       return ok({ deviceId })
     },
 
