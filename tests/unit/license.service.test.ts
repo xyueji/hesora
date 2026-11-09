@@ -170,3 +170,33 @@ it('counts each app launch with a rolled-back clock once', () => {
     expect(svc.getStatus().daysLeft).toBe(launch < 3 ? TRIAL_DAYS : 0)
   }
 })
+
+describe('license.service v1.3 edition/features preservation', () => {
+  it('verifyFormat keeps edition/features/maxDevices on pro code', () => {
+    const svc = makeService()
+    const code = generateLicenseCode(
+      { customer: 'Pro客户', issuedAt: '2026-01-01T00:00:00Z', edition: 'professional', features: ['lan_collaboration', 'rbac'], maxDevices: 3 },
+      privPem
+    )
+    const payload = svc.verifyFormat(code)
+    expect(payload).not.toBeNull()
+    expect(payload?.edition).toBe('professional')
+    expect(payload?.features).toEqual(['lan_collaboration', 'rbac'])
+    expect(payload?.maxDevices).toBe(3)
+  })
+
+  it('activate returns payload with edition/features intact', () => {
+    const svc = makeService()
+    const code = generateLicenseCode(
+      { customer: 'Pro客户', issuedAt: '2026-01-01T00:00:00Z', edition: 'professional', features: ['lan_collaboration'], maxDevices: 2 },
+      privPem
+    )
+    const activated = svc.activate(code)
+    expect(activated.edition).toBe('professional')
+    expect(activated.features).toContain('lan_collaboration')
+    expect(activated.maxDevices).toBe(2)
+    // 激活后 verifyFormat(存储码) 也保留
+    const reread = svc.verifyFormat(code)
+    expect(reread?.edition).toBe('professional')
+  })
+})

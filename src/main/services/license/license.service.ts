@@ -32,7 +32,11 @@ function parseCode(code: string, publicKeyPem: string): LicensePayload | null {
         !Number.isFinite(Date.parse(obj.issuedAt)) ||
         (obj.expiresAt != null && (typeof obj.expiresAt !== 'string' || !Number.isFinite(Date.parse(obj.expiresAt)))) ||
         (obj.machine != null && (typeof obj.machine !== 'string' || !obj.machine.trim()))) return null
-    return { customer: obj.customer, issuedAt: obj.issuedAt, expiresAt: obj.expiresAt ?? null, machine: obj.machine ?? null }
+    return {
+      customer: obj.customer, issuedAt: obj.issuedAt, expiresAt: obj.expiresAt ?? null, machine: obj.machine ?? null,
+      // v1.3: 保留版本/特征位（parseCode 曾丢弃，导致 hasFeature 恒 false、LAN 主机永不启动）
+      edition: obj.edition, features: obj.features, maxDevices: obj.maxDevices
+    }
   } catch {
     return null
   }
