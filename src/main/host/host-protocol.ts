@@ -13,8 +13,10 @@ export interface RpcRequest {
   payload: unknown
 }
 
-/** 本机专用前缀：这些通道与 Electron 生命周期/本机外设绑定，根本不该进 LAN 网关（防御性拦截）。 */
-export const LOCAL_CHANNEL_PREFIXES = ['license:', 'trial:', 'update:', 'host:', 'window:', 'print:', 'csv:'] as const
+/** 本机专用前缀：这些通道与 Electron 生命周期/本机外设/登录态绑定，根本不该进 LAN 网关（防御性拦截）。
+ * auth: 包含其中——LAN 登录态由 pairing/session 层管理，auth:login/logout 会覆写主机全局
+ * currentUser、auth:setup 可重设 admin，绝不允许 LAN 直调。 */
+export const LOCAL_CHANNEL_PREFIXES = ['license:', 'trial:', 'update:', 'host:', 'window:', 'print:', 'csv:', 'auth:'] as const
 
 /** 主机专用前缀：LAN 调用返回 E_HOST_ONLY（备份/云同步涉及本机文件系统与云盘凭据）。 */
 export const HOST_ONLY_PREFIXES = ['backup:', 'sync:'] as const

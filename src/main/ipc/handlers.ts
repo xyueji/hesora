@@ -204,10 +204,10 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
   // 敏感操作审计：危险/敏感通道在执行后写 platform_log（AGENTS.md §5 红线要求）。
   const auditSvc = deps.auditSvc()
   const operator = (session?: unknown) => userFor(session)?.username
-  const audit = (action: string, detail: string, before?: unknown, after?: unknown): void => {
+  const audit = (action: string, detail: string, before?: unknown, after?: unknown, session?: unknown): void => {
     auditSvc.record(
       action,
-      operator(),
+      operator(session),
       detail,
       before === undefined ? undefined : JSON.stringify(before),
       after === undefined ? undefined : JSON.stringify(after)
@@ -419,11 +419,11 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       }
       return customerPriceSvc.setPrice(Number(customerId), Number(productId), price, userFor(session)?.username)
     } },
-    { channel: 'customerPrice:remove', handler: (_evt, payload) => {
+    { channel: 'customerPrice:remove', handler: (_evt, payload, session) => {
       const { customerId, productId } = payload as { customerId: number; productId: number }
       const before = customerPriceSvc.listByCustomer(Number(customerId)).find((p) => p.product_id === Number(productId))
       customerPriceSvc.removePrice(Number(customerId), Number(productId))
-      audit('customerPrice:remove', `客户 ${customerId} 商品 ${productId}`, before ?? null)
+      audit('customerPrice:remove', `客户 ${customerId} 商品 ${productId}`, before ?? null, undefined, session)
       return true
     } },
     { channel: 'customerPrice:listByCustomer', handler: (_evt, payload) =>
@@ -440,10 +440,10 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const { id, name, options } = payload as { id: number; name?: string; options?: string | string[] }
       return productAttrSvc.update(Number(id), { name, options })
     } },
-    { channel: 'productAttribute:remove', handler: (_evt, payload) => {
+    { channel: 'productAttribute:remove', handler: (_evt, payload, session) => {
       const id = Number(payload)
       productAttrSvc.remove(id)
-      audit('productAttribute:remove', `属性 #${id}`)
+      audit('productAttribute:remove', `属性 #${id}`, undefined, undefined, session)
       return true
     } },
 
@@ -488,9 +488,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const { accountId, page } = payload as { accountId: number; page: number }
       return ledger.entries(accountId, page)
     } },
-    { channel: 'ledger:transfer', handler: (_evt, payload) => {
-      const fund = ledger.transfer(payload as FundTransferInput, reviewerId())
-      auditSvc.record('ledger:transfer', operator(), '资金账户转账', undefined, JSON.stringify(payload))
+    { channel: 'ledger:transfer', handler: (_evt, payload, session) => {
+      const fund = ledger.transfer(payload as FundTransferInput, reviewerId(session))
+      auditSvc.record('ledger:transfer', operator(session), '资金账户转账', undefined, JSON.stringify(payload))
       return fund
     } },
     { channel: 'fund:create', handler: (_evt, payload) => fundSvc.create(payload as never) },
@@ -513,11 +513,11 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       settingSvc.set(key, value)
     } },
     { channel: 'setting:getAll', handler: () => settingSvc.getAll() },
-    { channel: 'setting:remove', handler: (_evt, payload) => {
+    { channel: 'setting:remove', handler: (_evt, payload, session) => {
       const key = String(payload)
       const before = settingSvc.get(key)
       settingSvc.remove(key)
-      audit('setting:remove', key, before ?? null)
+      audit('setting:remove', key, before ?? null, undefined, session)
     } },
 
     // ── 收支科目主档 ──
@@ -530,11 +530,11 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const { id, ...input } = payload as { id: number } & Record<string, unknown>
       return categorySvc.update(Number(id), input as never)
     } },
-    { channel: 'category:remove', handler: (_evt, payload) => {
+    { channel: 'category:remove', handler: (_evt, payload, session) => {
       const id = Number(payload)
       const before = categorySvc.list({}).find((c) => c.id === id)
       categorySvc.remove(id)
-      audit('category:remove', `收支科目 #${id}`, before ?? null)
+      audit('category:remove', `收支科目 #${id}`, before ?? null, undefined, session)
     } },
     { channel: 'category:disable', handler: (_evt, payload) => categorySvc.disable(Number(payload)) },
     { channel: 'category:enable', handler: (_evt, payload) => categorySvc.enable(Number(payload)) },
@@ -547,11 +547,11 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const { id, ...input } = payload as { id: number } & Record<string, unknown>
       formulaSvc.update(Number(id), input as never)
     } },
-    { channel: 'formula:remove', handler: (_evt, payload) => {
+    { channel: 'formula:remove', handler: (_evt, payload, session) => {
       const id = Number(payload)
       const before = formulaSvc.getById(id)
       formulaSvc.remove(id)
-      audit('formula:remove', `配方 #${id}${before ? ` ${before.name}` : ''}`, before ?? null)
+      audit('formula:remove', `配方 #${id}${before ? ` ${before.name}` : ''}`, before ?? null, undefined, session)
     } },
     { channel: 'formula:disable', handler: (_evt, payload) => formulaSvc.disable(Number(payload)) },
     { channel: 'formula:enable', handler: (_evt, payload) => formulaSvc.enable(Number(payload)) },
@@ -611,9 +611,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     { channel: 'serial:trace', handler: (_evt, payload) => serialSvc.trace(String(payload)) },
 
     // ── 单据复制（再来一单）──
-    { channel: 'doc:copy', handler: (_evt, payload) => {
+    { channel: 'doc:copy', handler: (_evt, payload, session) => {
       const { docId, overrides } = payload as { docId: number; overrides?: never }
-      assertDocumentVisible(Number(docId))
+      assertDocumentVisible(Number(docId), session)
       return docCopySvc.copy(Number(docId), overrides)
     } },
 
@@ -627,8 +627,8 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       auditSvc.record('doc.reverse', op ?? user?.username, `红冲单据 ${rev.no}`, undefined, JSON.stringify({ id: rev.id, reversal_of: id }))
       return rev
     } },
-    { channel: 'doc:reversals', handler: (_evt, payload) => {
-      assertDocumentVisible(Number(payload))
+    { channel: 'doc:reversals', handler: (_evt, payload, session) => {
+      assertDocumentVisible(Number(payload), session)
       return docReversalSvc.listReversals(Number(payload))
     } },
 
@@ -662,15 +662,15 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     { channel: 'sale:query', handler: (_evt, payload) => saleSvc.query(payload as never) },
 
     // ── doc 查询/明细 ──
-    { channel: 'doc:query', handler: (_evt, payload) => {
+    { channel: 'doc:query', handler: (_evt, payload, session) => {
       const query = payload as DocQuery
       const requested = query.type ? [query.type] : query.types?.length ? query.types : Object.keys(documentPermissions) as DocType[]
-      const types = requested.filter(canViewDocument)
+      const types = requested.filter((t) => canForUser(session, documentPermissions[t]))
       return types.length ? docSvc.query({ ...query, type: undefined, types }) : { items: [], total: 0 }
     } },
-    { channel: 'doc:detail', handler: (_evt, payload) => {
+    { channel: 'doc:detail', handler: (_evt, payload, session) => {
       const id = Number(payload)
-      assertDocumentVisible(id)
+      assertDocumentVisible(id, session)
       return docSvc.getDetailWithItems(id)
     } },
 
@@ -687,10 +687,10 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const { type, partnerId, docId } = payload as { type: 'receipt' | 'payment'; partnerId: number; docId?: number }
       return paymentSvc.openDocuments(type, Number(partnerId), docId === undefined ? undefined : Number(docId))
     } },
-    { channel: 'payment:create', handler: (_evt, payload) => {
+    { channel: 'payment:create', handler: (_evt, payload, session) => {
       const { type, p } = payload as { type: unknown; p: PaymentCreateInput }
       const created = paymentSvc.createOne(paymentType(type), p)
-      auditSvc.record('payment:create', operator(), `收款付款单 ${String(type)}`, undefined, JSON.stringify({ id: created.id, no: created.no }))
+      auditSvc.record('payment:create', operator(session), `收款付款单 ${String(type)}`, undefined, JSON.stringify({ id: created.id, no: created.no }))
       return created
     } },
     { channel: 'payment:query', handler: (_evt, payload) => {
@@ -743,9 +743,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       getReportService().calendarSales((payload ?? {}) as { year: number; month: number }) },
 
     // ── P3：内部领用出库单（归库存组权限，带审计日志）──
-    { channel: 'internalUse:create', handler: (_evt, payload) => {
+    { channel: 'internalUse:create', handler: (_evt, payload, session) => {
       const doc = internalUseSvc.create(payload as never)
-      auditSvc.record('internalUse:create', operator(), `内部领用 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
+      auditSvc.record('internalUse:create', operator(session), `内部领用 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
       return doc
     } },
     { channel: 'internalUse:getDetail', handler: (_evt, payload) => internalUseSvc.getDetail(Number(payload)) },
@@ -809,9 +809,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     { channel: 'dashboard:reminders', handler: () => dashboardSvc.reminders() },
 
     // ── transfer ──
-    { channel: 'transfer:create', handler: (_evt, payload) => {
+    { channel: 'transfer:create', handler: (_evt, payload, session) => {
       const doc = transferSvc.create(payload as never)
-      auditSvc.record('transfer:create', operator(), `库存调拨 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
+      auditSvc.record('transfer:create', operator(session), `库存调拨 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
       return doc
     } },
     { channel: 'transfer:getDetail', handler: (_evt, payload) => transferSvc.getDetail(Number(payload)) },
@@ -822,9 +822,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const { warehouse_id, keyword } = payload as { warehouse_id: number; keyword?: string }
       return stocktakeSvc.getSheet(Number(warehouse_id), keyword)
     } },
-    { channel: 'stocktake:create', handler: (_evt, payload) => {
+    { channel: 'stocktake:create', handler: (_evt, payload, session) => {
       const doc = stocktakeSvc.create(payload as never)
-      auditSvc.record('stocktake:create', operator(), `盘点过账 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
+      auditSvc.record('stocktake:create', operator(session), `盘点过账 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
       return doc
     } },
     { channel: 'stocktake:review', handler: (_evt, payload, session) => {
@@ -890,13 +890,13 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
     { channel: 'user:query', handler: () => userSvc.query() },
     { channel: 'user:get', handler: (_evt, payload) => userSvc.getById(Number(payload)) },
-    { channel: 'user:create', handler: (_evt, payload) => {
+    { channel: 'user:create', handler: (_evt, payload, session) => {
       const input = payload as { username: string; password: string; role: string }
       const created = userSvc.create(input)
-      audit('user:create', `操作员 ${input.username} 角色 ${input.role}`, undefined, { username: created.username, role: created.role })
+      audit('user:create', `操作员 ${input.username} 角色 ${input.role}`, undefined, { username: created.username, role: created.role }, session)
       return created
     } },
-    { channel: 'user:update', handler: (_evt, payload) => {
+    { channel: 'user:update', handler: (_evt, payload, session) => {
       const { id, patch } = payload as {
         id: number
         patch: { password?: string; role?: string; disabled?: number | boolean }
@@ -907,29 +907,30 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
         'user:update',
         `操作员 #${id}`,
         before ? { role: before.role, disabled: before.disabled } : null,
-        { role: patch.role, disabled: patch.disabled, passwordChanged: patch.password !== undefined }
+        { role: patch.role, disabled: patch.disabled, passwordChanged: patch.password !== undefined },
+        session
       )
       return result
     } },
-    { channel: 'user:remove', handler: (_evt, payload) => {
+    { channel: 'user:remove', handler: (_evt, payload, session) => {
       const id = Number(payload)
       const before = userSvc.getById(id)
       userSvc.remove(id)
-      audit('user:remove', `操作员 #${id}${before ? ` ${before.username}` : ''}`, before ? { username: before.username, role: before.role } : null)
+      audit('user:remove', `操作员 #${id}${before ? ` ${before.username}` : ''}`, before ? { username: before.username, role: before.role } : null, undefined, session)
       return true
     } },
     // 角色（RBAC）：自定义角色的增删改查，权限点由 roleHas 判定
     { channel: 'role:list', handler: () => userSvc.listRoles() },
-    { channel: 'role:create', handler: (_evt, payload) => {
+    { channel: 'role:create', handler: (_evt, payload, session) => {
       const { name, permissions } = payload as { name: string; permissions: string[] }
       const created = userSvc.createRole({
         name: String(name ?? ''),
         permissions: (Array.isArray(permissions) ? permissions : []).filter(isPermissionKey)
       })
-      audit('role:create', `角色 ${name}`, undefined, { id: created })
+      audit('role:create', `角色 ${name}`, undefined, { id: created }, session)
       return created
     } },
-    { channel: 'role:update', handler: (_evt, payload) => {
+    { channel: 'role:update', handler: (_evt, payload, session) => {
       const { id, patch } = payload as {
         id: string
         patch: { name?: string; permissions?: string[] }
@@ -941,14 +942,14 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       }
       const before = userSvc.listRoles().find((r) => r.id === String(id)) ?? null
       const result = userSvc.updateRole(String(id), next)
-      audit('role:update', `角色 #${id}${patch?.name ? ` ${patch.name}` : ''}`, before, next)
+      audit('role:update', `角色 #${id}${patch?.name ? ` ${patch.name}` : ''}`, before, next, session)
       return result
     } },
-    { channel: 'role:remove', handler: (_evt, payload) => {
+    { channel: 'role:remove', handler: (_evt, payload, session) => {
       const id = String(payload)
       const before = userSvc.listRoles().find((r) => r.id === id) ?? null
       userSvc.removeRole(id)
-      audit('role:remove', `角色 ${id}`, before)
+      audit('role:remove', `角色 ${id}`, before, undefined, session)
       return true
     } }
   ]

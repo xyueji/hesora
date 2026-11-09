@@ -21,6 +21,8 @@ describe('gateway routing', () => {
     expect((await gw.handleRpc({ requestId: 'r1', channel: 'license:check', payload: null }, session)).code).toBe('E_LOCAL_ONLY')
     expect((await gw.handleRpc({ requestId: 'r1', channel: 'window:minimize', payload: null }, session)).code).toBe('E_LOCAL_ONLY')
     expect((await gw.handleRpc({ requestId: 'r1', channel: 'print:receipt', payload: null }, session)).code).toBe('E_LOCAL_ONLY')
+    expect((await gw.handleRpc({ requestId: 'r1', channel: 'auth:login', payload: null }, session)).code).toBe('E_LOCAL_ONLY')
+    expect((await gw.handleRpc({ requestId: 'r1', channel: 'auth:setup', payload: null }, session)).code).toBe('E_LOCAL_ONLY')
   })
 
   it('host-only prefixes backup:/sync: → E_HOST_ONLY', async () => {
