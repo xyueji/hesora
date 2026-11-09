@@ -358,11 +358,11 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
         }
       })()
     } },
-    { channel: 'product:get', handler: (_evt, payload) => visibleProduct(svc.getById(Number(payload))) },
-    { channel: 'product:getByBarcode', handler: (_evt, payload) => visibleProduct(svc.getByBarcode(String(payload))) },
-    { channel: 'product:query', handler: (_evt, payload) => {
+    { channel: 'product:get', handler: (_evt, payload, session) => visibleProduct(svc.getById(Number(payload)), session) },
+    { channel: 'product:getByBarcode', handler: (_evt, payload, session) => visibleProduct(svc.getByBarcode(String(payload)), session) },
+    { channel: 'product:query', handler: (_evt, payload, session) => {
       const result = svc.query(payload as never)
-      return { ...result, list: result.list.map(visibleProduct) }
+      return { ...result, list: result.list.map((p) => visibleProduct(p, session)) }
     } },
     { channel: 'product:disable', handler: (_evt, payload) => svc.disable(Number(payload)) },
     // S 级：商品成本映射（售价低于成本提醒用；复用 inventory.report 权限键）
@@ -498,10 +498,10 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const { id, p } = payload as { id: number; p: Record<string, unknown> }
       fundSvc.update(id, p)
     } },
-    { channel: 'fund:get', handler: (_evt, payload) => visibleFund(fundSvc.getById(Number(payload))) },
-    { channel: 'fund:query', handler: (_evt, payload) => {
+    { channel: 'fund:get', handler: (_evt, payload, session) => visibleFund(fundSvc.getById(Number(payload)), session) },
+    { channel: 'fund:query', handler: (_evt, payload, session) => {
       const result = fundSvc.query(payload as never)
-      return { ...result, list: result.list.map(visibleFund) }
+      return { ...result, list: result.list.map((f) => visibleFund(f, session)) }
     } },
     { channel: 'fund:disable', handler: (_evt, payload) => fundSvc.disable(Number(payload)) },
     { channel: 'fund:enable', handler: (_evt, payload) => fundSvc.enable(Number(payload)) },
@@ -623,8 +623,10 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const id = Number(docId)
       assertDocumentVisible(id, session)
       const user = userFor(session)
-      const rev = docReversalSvc.reverse(id, op ?? user?.username)
-      auditSvc.record('doc.reverse', op ?? user?.username, `红冲单据 ${rev.no}`, undefined, JSON.stringify({ id: rev.id, reversal_of: id }))
+      // LAN 会话下操作人强制为 session 用户（防伪造审计主体）；本地路径保留 payload 覆写权
+      const actor = session ? user?.username : (op ?? user?.username)
+      const rev = docReversalSvc.reverse(id, actor)
+      auditSvc.record('doc.reverse', actor, `红冲单据 ${rev.no}`, undefined, JSON.stringify({ id: rev.id, reversal_of: id }))
       return rev
     } },
     { channel: 'doc:reversals', handler: (_evt, payload, session) => {
@@ -675,10 +677,10 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
 
     // ── retail ──
-    { channel: 'retail:create', handler: (_evt, payload, session) => retailSvc.create(payload as never, userFor(session)!.id) },
-    { channel: 'retail:hold', handler: (_evt, payload, session) => retailSvc.hold(userFor(session)!.id, payload as never) },
-    { channel: 'retail:listHeld', handler: (_evt, _payload, session) => retailSvc.listHeld(userFor(session)!.id) },
-    { channel: 'retail:discardHeld', handler: (_evt, payload, session) => retailSvc.discardHeld(userFor(session)!.id, Number(payload)) },
+    { channel: 'retail:create', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.create(payload as never, u.id) } },
+    { channel: 'retail:hold', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.hold(u.id, payload as never) } },
+    { channel: 'retail:listHeld', handler: (_evt, _payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.listHeld(u.id) } },
+    { channel: 'retail:discardHeld', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.discardHeld(u.id, Number(payload)) } },
     { channel: 'retail:getDetail', handler: (_evt, payload) => retailSvc.getDetail(Number(payload)) },
     { channel: 'retail:query', handler: (_evt, payload) => retailSvc.query(payload as never) },
 
@@ -830,11 +832,13 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     { channel: 'stocktake:review', handler: (_evt, payload, session) => {
       const { docId, review_by, review_remark } = payload as { docId: number; review_by?: string; review_remark?: string }
       const user = userFor(session)
+      // LAN 会话下复盘人强制为 session 用户（防伪造审计主体）；本地路径保留 payload 覆写权
+      const actor = session ? user?.username ?? '' : (review_by ?? user?.username ?? '')
       const reviewed = stocktakeSvc.review(Number(docId), {
-        review_by: review_by ?? user?.username ?? '',
+        review_by: actor,
         review_remark
       })
-      auditSvc.record('stocktake:review', review_by ?? user?.username, `盘点复盘 ${reviewed.no}`, undefined, JSON.stringify({ id: reviewed.id }))
+      auditSvc.record('stocktake:review', actor, `盘点复盘 ${reviewed.no}`, undefined, JSON.stringify({ id: reviewed.id }))
       return reviewed
     } },
     { channel: 'stocktake:getDetail', handler: (_evt, payload) => stocktakeSvc.getDetail(Number(payload)) },

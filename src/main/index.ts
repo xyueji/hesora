@@ -8,7 +8,9 @@ import { isTrialExpiredWrite } from '../shared/license'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
 import { buildAllHandlers, canViewDocument, type HandlerDeps } from './ipc/handlers'
 import { PERMISSION_MAP } from './permissions-map'
-import { can, getCurrentUser } from './auth'
+import { can, getCurrentUser, installUserLookup } from './auth'
+import { createIdempotencyStore } from './host/idempotency'
+import { createUserService } from './services/user/user.service'
 import { createDesktopLicenseService } from './license'
 import { applyPendingRestore } from './services/backup/backup.service'
 import { createAuditService } from './services/audit/audit.service'
@@ -201,6 +203,22 @@ function initialize(): void {
 
   const backupIpc = createBackupIpc(getDb(), migrationsDir)
   backupIpc.autoBackup()
+
+  // v1.3 Task 3: userId→SessionUser 查找接线（LAN 网关 canFor 依赖；防御性——userFor 内部
+  // 已走 userSvc.sessionById，此处让 auth.canFor/getUserById 也基于库而非内存 currentUser）。
+  installUserLookup((id) => createUserService(getDb()).sessionById(id))
+  // 幂等防重放缓存清理：启动一次 + 每日一次（跟随 autoBackup 的启动钩子模式）。
+  const idemStore = createIdempotencyStore(getDb())
+  idemStore.cleanup()
+  const IDEMPOTENCY_CLEANUP_INTERVAL_MS = 24 * 3600 * 1000
+  const idemCleanupTimer = setInterval(() => {
+    try {
+      idemStore.cleanup()
+    } catch {
+      // 清理失败不影响业务运行，下次定时重试。
+    }
+  }, IDEMPOTENCY_CLEANUP_INTERVAL_MS)
+  idemCleanupTimer.unref?.()
   registerIpc({
     'backup:now': () => backupIpc.backupNow(),
     'backup:pickDir': () => backupIpc.pickDir(),
