@@ -103,7 +103,7 @@ describe('payment 优惠核销（write_off）', () => {
     const st = statement.statement({ partner_type: 'customer', partner_id: ctx.customerId })
     const saleLine = st.lines.find((l) => l.doc_id === ctx.saleId)
     expect(saleLine?.allocated).toBe(60) // 50 + 10
-    const aging = statement.aging({ partner_type: 'customer', as_of: new Date().toISOString().slice(0, 10) })
+    const aging = statement.aging({ partner_type: 'customer', as_of: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) })
     const row = aging.rows.find((r) => r.partner_id === ctx.customerId)
     expect(row?.balance).toBe(35) // 95 − 60，未核销口径含优惠
   })

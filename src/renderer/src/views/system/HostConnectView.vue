@@ -91,15 +91,21 @@ async function refreshStatus(): Promise<void> {
     const st = await call<HostStatus>('host:status')
     statusEnabled.value = st.enabled
     statusPort.value = st.port
+    refreshStatusFails = 0
     if (!st.enabled) {
       pairInfo.value = null
       qrDataUrl.value = ''
       pending.value = []
     }
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '查询主机状态失败')
+    // T8 双审 B8：轮询失败每 2s 弹错会刷屏——仅首次提示，连续失败静默。
+    refreshStatusFails++
+    if (refreshStatusFails === 1) {
+      ElMessage.error(e instanceof Error ? e.message : '查询主机状态失败')
+    }
   }
 }
+let refreshStatusFails = 0
 
 async function startPairing(deviceName: string): Promise<void> {
   manualSubmitting.value = true

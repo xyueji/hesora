@@ -98,6 +98,12 @@ router.beforeEach(async (to) => {
   }
   if (!currentUser.value && to.path !== '/login') return { path: '/login' }
   if (currentUser.value && to.path === '/login') return { path: '/' }
+  // T8 双审 B5：管理类路径守卫统一 admin（与 host:* IPC role==='admin' 一致）。
+  // host/*、system/*、setting*、sync、opening 均属本机管理功能。
+  const ADMIN_PREFIXES = ['/host', '/system', '/setting', '/sync', '/opening']
+  if (currentUser.value && ADMIN_PREFIXES.some((p) => to.path === p || to.path.startsWith(p + '/'))) {
+    if (currentUser.value.role !== 'admin') return { path: '/' }
+  }
   // 试用到期强制进入激活页（license:check / auth:* 通道不受试用守卫限制）
   if (
     currentUser.value &&

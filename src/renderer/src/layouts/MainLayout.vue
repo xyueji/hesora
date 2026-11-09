@@ -152,10 +152,20 @@ const groups: MenuGroup[] = [
 ]
 
 const activeGroup = computed(() => groups.find((g) => g.items.some((item) => item.path === route.path))?.key)
+// T8 双审 B5：管理类菜单（host/*、system/*、setting*、sync、opening）额外要求 admin，
+// 与 IPC host:* role==='admin' 守卫一致。
+const ADMIN_PREFIXES = ['/host', '/system', '/setting', '/sync', '/opening']
+function itemVisible(item: { path: string; perm?: PermissionKey }): boolean {
+  if (item.perm && !hasPermission(item.perm)) return false
+  if (ADMIN_PREFIXES.some((p) => item.path === p || item.path.startsWith(p + '/'))) {
+    return currentUser.value?.role === 'admin'
+  }
+  return true
+}
 const visibleGroups = computed(() =>
   groups
-    .filter((g) => g.items.some((i) => !i.perm || hasPermission(i.perm)))
-    .map((g) => ({ ...g, items: g.items.filter((i) => !i.perm || hasPermission(i.perm)) }))
+    .filter((g) => g.items.some(itemVisible))
+    .map((g) => ({ ...g, items: g.items.filter(itemVisible) }))
 )
 
 // 提示式更新：每天最多检查一次，有新版本时弹通知，点击"下载"用系统浏览器打开
