@@ -7,6 +7,7 @@ import type { DB } from '../db'
 import { BizError } from '../../shared/result'
 import type { IpcHandler } from '../../shared/result'
 import { can, getCurrentUser, setCurrentUser } from '../auth'
+import { roleHas } from '../../shared/permissions'
 import { isPermissionKey, type PermissionKey, type RoleInput } from '../../shared/permissions'
 import { WORKFLOW_KINDS, type FulfillmentRequest, type WorkflowKind } from '../../shared/types/workflow'
 import type { Product } from '../../shared/types/product'
@@ -14,7 +15,7 @@ import type { DocQuery, DocType } from '../../shared/types/doc'
 import type { PaymentCreateInput, PaymentType } from '../../shared/types/payment'
 import type { FundTransferInput } from '../../shared/types/fund-ledger'
 
-import { createUserService } from '../services/user/user.service'
+import { createUserService, type SessionUser } from '../services/user/user.service'
 import { createProductService } from '../services/product/product.service'
 import { createProductAttributeService } from '../services/product/product-attribute.service'
 import { createPriceLevelService } from '../services/product/price-level.service'
@@ -202,7 +203,7 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
 
   // 敏感操作审计：危险/敏感通道在执行后写 platform_log（AGENTS.md §5 红线要求）。
   const auditSvc = deps.auditSvc()
-  const operator = () => getCurrentUser()?.username
+  const operator = (session?: unknown) => userFor(session)?.username
   const audit = (action: string, detail: string, before?: unknown, after?: unknown): void => {
     auditSvc.record(
       action,
@@ -215,23 +216,23 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
 
   const licenseSvc = deps.licenseSvc()
   const workflow = getWorkflowService()
-  function workflowAllowed(kind: WorkflowKind): boolean {
-    return WORKFLOW_KINDS.includes(kind) && can(kind === 'purchase_order' || kind === 'purchase' ? 'doc.purchase' : 'doc.sale')
+  function workflowAllowed(session: unknown, kind: WorkflowKind): boolean {
+    return WORKFLOW_KINDS.includes(kind) && canForUser(session, kind === 'purchase_order' || kind === 'purchase' ? 'doc.purchase' : 'doc.sale')
   }
-  function workflowActor(kind: WorkflowKind): number {
-    const user = getCurrentUser()
-    if (!user || !can('doc.workflow') || !workflowAllowed(kind)) throw new BizError('FORBIDDEN', '当前操作员无此类单据的工作流权限')
+  function workflowActor(session: unknown, kind: WorkflowKind): number {
+    const user = userFor(session)
+    if (!user || !canForUser(session, 'doc.workflow') || !workflowAllowed(session, kind)) throw new BizError('FORBIDDEN', '当前操作员无此类单据的工作流权限')
     return user.id
   }
-  function reviewerId(): number {
-    const user = getCurrentUser()
+  function reviewerId(session?: unknown): number {
+    const user = userFor(session)
     if (user?.role !== 'admin') throw new BizError('FORBIDDEN', '只有管理员可以审核和转单')
     return user.id
   }
 
   const svc = getProductService()
-  function visibleProduct<T extends Product | null>(product: T): T {
-    if (!product || getCurrentUser()?.role === 'admin') return product
+  function visibleProduct<T extends Product | null>(product: T, session?: unknown): T {
+    if (!product || userFor(session)?.role === 'admin') return product
     return { ...product, purchase_price: 0 }
   }
 
@@ -244,8 +245,8 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
   const warehouseSvc = getWarehouseService()
   const fundSvc = getFundService()
   const ledger = createFundLedger(getDb())
-  const visibleFund = (fund: ReturnType<typeof fundSvc.getById>) =>
-    fund && getCurrentUser()?.role !== 'admin' ? { ...fund, opening_balance: undefined } : fund
+  const visibleFund = (fund: ReturnType<typeof fundSvc.getById>, session?: unknown) =>
+    fund && userFor(session)?.role !== 'admin' ? { ...fund, opening_balance: undefined } : fund
   const settingSvc = getSettingService()
   const categorySvc = getCategoryService()
   const formulaSvc = createFormulaService(getDb())
@@ -257,9 +258,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
   const docCopySvc = createDocCopyService(getDb())
   const docReversalSvc = createReversalService(getDb())
 
-  function assertDocumentVisible(id: number): void {
+  function assertDocumentVisible(id: number, session?: unknown): void {
     const doc = docSvc.getById(id)
-    if (!doc || !canViewDocument(doc.type)) throw new BizError('NO_PERMISSION', '当前操作员没有权限查看此单据')
+    if (!doc || !canForUser(session, documentPermissions[doc.type])) throw new BizError('NO_PERMISSION', '当前操作员没有权限查看此单据')
   }
 
   const purchaseSvc = getPurchaseService()
@@ -288,6 +289,21 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
   const printTemplateSvc = createPrintTemplateService(getDb())
   const userSvc = createUserService(getDb())
 
+  // ── v1.3 Task 3：session-aware dispatch ──
+  // session 存在（LAN 网关路径）→ 按库中该 userId 解析会话（含自定义角色权限解码）；
+  // session 为 undefined（本地 IPC 路径）→ 走原全局 currentUser，行为零变化。
+  const userFor = (session?: unknown): SessionUser | null => {
+    const userId = session && typeof session === 'object' && typeof (session as { userId?: unknown }).userId === 'number'
+      ? (session as { userId: number }).userId
+      : null
+    if (userId === null) return getCurrentUser()
+    return userSvc.sessionById(userId)
+  }
+  const canForUser = (session: unknown, permission: PermissionKey): boolean => {
+    const u = userFor(session)
+    return !!u && roleHas(u.role, permission, u.permissions)
+  }
+
   const handlers: { channel: string; handler: IpcHandler }[] = [
     // ── license / trial ──
     { channel: 'license:check', handler: () => licenseSvc.getStatus() },
@@ -306,31 +322,31 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
 
     // ── workflow ──
-    { channel: 'workflow:list', handler: (_evt, payload) => {
+    { channel: 'workflow:list', handler: (_evt, payload, session) => {
       const { page, kind } = payload as { page?: number; kind?: WorkflowKind }
-      return workflow.list(page, kind, WORKFLOW_KINDS.filter(workflowAllowed))
+      return workflow.list(page, kind, WORKFLOW_KINDS.filter((k) => workflowAllowed(session, k)))
     } },
-    { channel: 'workflow:save', handler: (_evt, payload) => {
+    { channel: 'workflow:save', handler: (_evt, payload, session) => {
       const input = payload as Parameters<typeof workflow.save>[0]
-      if (input.id !== undefined) workflowActor(workflow.get(input.id).kind)
-      return workflow.save(input, workflowActor(input.kind))
+      if (input.id !== undefined) workflowActor(session, workflow.get(input.id).kind)
+      return workflow.save(input, workflowActor(session, input.kind))
     } },
-    { channel: 'workflow:approve', handler: (_evt, payload) => {
+    { channel: 'workflow:approve', handler: (_evt, payload, session) => {
       const id = Number(payload)
-      return workflow.approve(id, workflowActor(workflow.get(id).kind))
+      return workflow.approve(id, workflowActor(session, workflow.get(id).kind))
     } },
-    { channel: 'workflow:convert', handler: (_evt, payload) => {
+    { channel: 'workflow:convert', handler: (_evt, payload, session) => {
       const { id, target, quantities } = payload as { id: number; target?: WorkflowKind; quantities?: FulfillmentRequest[] }
-      return workflow.convert(id, workflowActor(workflow.get(id).kind), target, quantities)
+      return workflow.convert(id, workflowActor(session, workflow.get(id).kind), target, quantities)
     } },
-    { channel: 'workflow:cancel', handler: (_evt, payload) => {
+    { channel: 'workflow:cancel', handler: (_evt, payload, session) => {
       const id = Number(payload)
-      return workflow.cancel(id, workflowActor(workflow.get(id).kind))
+      return workflow.cancel(id, workflowActor(session, workflow.get(id).kind))
     } },
 
     // ── product ──
     { channel: 'product:create', handler: (_evt, payload) => svc.create(payload as never) },
-    { channel: 'product:update', handler: (_evt, payload) => {
+    { channel: 'product:update', handler: (_evt, payload, session) => {
       const { id, p } = payload as { id: number; p: Record<string, unknown> }
       getDb().transaction(() => {
         const before = svc.getById(id)
@@ -338,7 +354,7 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
         const after = svc.getById(id)
         if (before && after && (before.retail_price !== after.retail_price || before.trade_price !== after.trade_price || before.purchase_price !== after.purchase_price)) {
           const prices = (product: Product) => JSON.stringify({ retail: product.retail_price, trade: product.trade_price, purchase: product.purchase_price })
-          auditSvc.record('product.price', getCurrentUser()?.username, after.code, prices(before), prices(after))
+          auditSvc.record('product.price', userFor(session)?.username, after.code, prices(before), prices(after))
         }
       })()
     } },
@@ -356,13 +372,13 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
     { channel: 'product:enable', handler: (_evt, payload) => svc.enable(Number(payload)) },
     // P3：批量修改（安全字段白名单），写操作日志
-    { channel: 'product:bulkUpdate', handler: (_evt, payload) => {
+    { channel: 'product:bulkUpdate', handler: (_evt, payload, session) => {
       const { ids, patch } = payload as { ids: number[]; patch: Record<string, unknown> }
       const r = svc.bulkUpdate(ids, patch)
       const fields = Object.keys(patch).join(',')
       auditSvc.record(
         'product.bulk_update',
-        getCurrentUser()?.username,
+        userFor(session)?.username,
         `${r.updated} 个商品；ids=[${ids.join(',')}]；字段=${fields}`
       )
       return r
@@ -395,13 +411,13 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
 
     // ── 客户×商品专属价 + 变价记录 ──
-    { channel: 'customerPrice:set', handler: (_evt, payload) => {
+    { channel: 'customerPrice:set', handler: (_evt, payload, session) => {
       const { customerId, productId, price } = payload as {
         customerId: number
         productId: number
         price: number
       }
-      return customerPriceSvc.setPrice(Number(customerId), Number(productId), price, getCurrentUser()?.username)
+      return customerPriceSvc.setPrice(Number(customerId), Number(productId), price, userFor(session)?.username)
     } },
     { channel: 'customerPrice:remove', handler: (_evt, payload) => {
       const { customerId, productId } = payload as { customerId: number; productId: number }
@@ -546,9 +562,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
 
     // ── inventory ──
     { channel: 'inventory:listCostLogs', handler: (_evt, payload) => invSvc.listCostLogs(Number(payload)) },
-    { channel: 'inventory:queryStock', handler: (_evt, payload) => {
+    { channel: 'inventory:queryStock', handler: (_evt, payload, session) => {
       const result = invSvc.queryStock(payload as never)
-      if (getCurrentUser()?.role === 'admin') return result
+      if (userFor(session)?.role === 'admin') return result
       return { ...result, items: result.items.map((row) => ({ ...row, moving_cost: 0, amount: 0 })) }
     } },
 
@@ -571,10 +587,10 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
     { channel: 'stock:purchaseSuggestions', handler: (_evt, payload) =>
       stockReportSvc.purchaseSuggestions((payload ?? {}) as { warehouse_id?: number }) },
-    { channel: 'stock:adjustPrices', handler: (_evt, payload) => {
-      const { items, operator } = payload as { items: never[]; operator?: string }
-      const r = stockReportSvc.adjustPrices(items, operator)
-      auditSvc.record('stock:adjustPrices', operator ?? getCurrentUser()?.username, `批量改价 ${r.updated} 项`, undefined, JSON.stringify({ updated: r.updated, products: r.products }))
+    { channel: 'stock:adjustPrices', handler: (_evt, payload, session) => {
+      const { items, operator: op } = payload as { items: never[]; operator?: string }
+      const r = stockReportSvc.adjustPrices(items, op)
+      auditSvc.record('stock:adjustPrices', op ?? userFor(session)?.username, `批量改价 ${r.updated} 项`, undefined, JSON.stringify({ updated: r.updated, products: r.products }))
       return r
     } },
 
@@ -602,13 +618,13 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
 
     // ── 已过账单据红冲（负向镜像单）──
-    { channel: 'doc:reverse', handler: (_evt, payload) => {
-      const { docId, operator } = payload as { docId: number; operator?: string }
+    { channel: 'doc:reverse', handler: (_evt, payload, session) => {
+      const { docId, operator: op } = payload as { docId: number; operator?: string }
       const id = Number(docId)
-      assertDocumentVisible(id)
-      const user = getCurrentUser()
-      const rev = docReversalSvc.reverse(id, operator ?? user?.username)
-      auditSvc.record('doc.reverse', operator ?? user?.username, `红冲单据 ${rev.no}`, undefined, JSON.stringify({ id: rev.id, reversal_of: id }))
+      assertDocumentVisible(id, session)
+      const user = userFor(session)
+      const rev = docReversalSvc.reverse(id, op ?? user?.username)
+      auditSvc.record('doc.reverse', op ?? user?.username, `红冲单据 ${rev.no}`, undefined, JSON.stringify({ id: rev.id, reversal_of: id }))
       return rev
     } },
     { channel: 'doc:reversals', handler: (_evt, payload) => {
@@ -617,19 +633,19 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
 
     // ── P2：直过账单据补审核（管理标记，不回滚账务）──
-    { channel: 'doc:review', handler: (_evt, payload) => {
+    { channel: 'doc:review', handler: (_evt, payload, session) => {
       const { docId, reviewer } = payload as { docId: number; reviewer?: string }
       const id = Number(docId)
-      assertDocumentVisible(id)
-      const user = getCurrentUser()
+      assertDocumentVisible(id, session)
+      const user = userFor(session)
       const reviewed = docSvc.review(id, { reviewer: reviewer ?? user?.username ?? '' })
       auditSvc.record('doc.review', reviewer ?? user?.username, `补审核单据 ${reviewed.no}`, undefined, JSON.stringify({ id }))
       return reviewed
     } },
 
     // ── purchase ──
-    { channel: 'purchase:create', handler: (_evt, payload) => {
-      if (!can('doc.approve')) throw new BizError('FORBIDDEN', '请先保存进货草稿，由有审核权限的操作员过账')
+    { channel: 'purchase:create', handler: (_evt, payload, session) => {
+      if (!canForUser(session, 'doc.approve')) throw new BizError('FORBIDDEN', '请先保存进货草稿，由有审核权限的操作员过账')
       return purchaseSvc.create(payload as never)
     } },
     { channel: 'purchase:createReturn', handler: (_evt, payload) => purchaseSvc.createReturn(payload as never) },
@@ -637,8 +653,8 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     { channel: 'purchase:query', handler: (_evt, payload) => purchaseSvc.query(payload as never) },
 
     // ── sale ──
-    { channel: 'sale:create', handler: (_evt, payload) => {
-      if (!can('doc.approve')) throw new BizError('FORBIDDEN', '请先保存销售草稿，由有审核权限的操作员过账')
+    { channel: 'sale:create', handler: (_evt, payload, session) => {
+      if (!canForUser(session, 'doc.approve')) throw new BizError('FORBIDDEN', '请先保存销售草稿，由有审核权限的操作员过账')
       return saleSvc.create(payload as never)
     } },
     { channel: 'sale:createReturn', handler: (_evt, payload) => saleSvc.createReturn(payload as never) },
@@ -659,10 +675,10 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
 
     // ── retail ──
-    { channel: 'retail:create', handler: (_evt, payload) => retailSvc.create(payload as never, getCurrentUser()!.id) },
-    { channel: 'retail:hold', handler: (_evt, payload) => retailSvc.hold(getCurrentUser()!.id, payload as never) },
-    { channel: 'retail:listHeld', handler: () => retailSvc.listHeld(getCurrentUser()!.id) },
-    { channel: 'retail:discardHeld', handler: (_evt, payload) => retailSvc.discardHeld(getCurrentUser()!.id, Number(payload)) },
+    { channel: 'retail:create', handler: (_evt, payload, session) => retailSvc.create(payload as never, userFor(session)!.id) },
+    { channel: 'retail:hold', handler: (_evt, payload, session) => retailSvc.hold(userFor(session)!.id, payload as never) },
+    { channel: 'retail:listHeld', handler: (_evt, _payload, session) => retailSvc.listHeld(userFor(session)!.id) },
+    { channel: 'retail:discardHeld', handler: (_evt, payload, session) => retailSvc.discardHeld(userFor(session)!.id, Number(payload)) },
     { channel: 'retail:getDetail', handler: (_evt, payload) => retailSvc.getDetail(Number(payload)) },
     { channel: 'retail:query', handler: (_evt, payload) => retailSvc.query(payload as never) },
 
@@ -774,9 +790,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       attachmentSvc.read(Number((payload as { id: number } | undefined)?.id)) },
 
     // ── dashboard ──
-    { channel: 'dashboard:summary', handler: (_evt, payload) => {
+    { channel: 'dashboard:summary', handler: (_evt, payload, session) => {
       const summary = dashboardSvc.summary(String(payload))
-      return getCurrentUser()?.role === 'admin' ? summary : {
+      return userFor(session)?.role === 'admin' ? summary : {
         ...summary, gross_profit: null, stock_amount: null, total_receivable: null, total_payable: null
       }
     } },
@@ -811,9 +827,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       auditSvc.record('stocktake:create', operator(), `盘点过账 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
       return doc
     } },
-    { channel: 'stocktake:review', handler: (_evt, payload) => {
+    { channel: 'stocktake:review', handler: (_evt, payload, session) => {
       const { docId, review_by, review_remark } = payload as { docId: number; review_by?: string; review_remark?: string }
-      const user = getCurrentUser()
+      const user = userFor(session)
       const reviewed = stocktakeSvc.review(Number(docId), {
         review_by: review_by ?? user?.username ?? '',
         review_remark

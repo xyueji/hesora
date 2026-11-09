@@ -4,7 +4,7 @@ export const fail = (code: string, msg: string): Result<never> => ({ ok: false, 
 export class BizError extends Error {
   constructor(public code: string, msg: string) { super(msg) }
 }
-export type IpcHandler = (evt: unknown, payload: unknown) => Promise<unknown> | unknown
+export type IpcHandler = (evt: unknown, payload: unknown, session?: unknown) => Promise<unknown> | unknown
 export function wrapHandler(channel: string, handler: IpcHandler) {
   return async (evt: unknown, payload: unknown): Promise<Result> => {
     try { return ok(await handler(evt, payload)) }
