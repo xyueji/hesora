@@ -41,6 +41,13 @@ export interface HostServerHandle {
   close(): Promise<void>
   /** T6 接管：WS hub 挂载点——每个新连接（upgrade 后）回调此 cb，参数为原生 ws 实例。 */
   onConnection(cb: (ws: unknown, req: IncomingMessage) => void): void
+  /** T8 双审 A2：/pair/start 后登记/更新配对轮询结果（index.ts pairGrant/pairDeny 接线调用）。 */
+  setPairResult(code: string, result: PairResultEntry): void
+  /** T8 双审 A3：按 deviceId 踢活跃 WS 连接（吊销设备用，close 4003）。
+   *  依赖 index.ts 在 hub 创建后经 installKick 注入 hub.disconnectDevice。 */
+  disconnectDevice(deviceId: string, closeCode?: number): number
+  /** T8 双审 A3：hub 创建后注入踢连接实现（hub.disconnectDevice 绑定）。 */
+  installKick(fn: (deviceId: string, closeCode?: number) => number): void
   /** T6 接管：底层 WebSocketServer 实例（不做多余封装）。listen 后才可用。 */
   readonly wss: WebSocketServer
   /** 真实监听（Electron 主进程启动时调用；测试用 inject 不调用）。 */
@@ -53,14 +60,14 @@ const PAIR_RATE_LIMIT = 10          // spec §5.2：10 req/min per IP
 const PAIR_RATE_WINDOW_MS = 60_000
 const MAX_BODY_BYTES = 10 * 1024 * 1024 // spec §4.1 内容长度上限 10MB
 
-/** 设备明文 secret 内存表：主机侧 HMAC 校验需要明文 secret。配对确认时经
- *  registerDeviceSecret 注入；主机重启后为空（T6 议题：持久化/重建策略），
- *  届时未重建的设备会得到 E_AUTH_FAILED「设备未配对」，需重新配对。 */
-const deviceSecrets = new Map<string, string>()
-
-/** 配对确认接线（index.ts / T8 调用）：记录设备明文 secret。 */
-export function registerDeviceSecret(deviceId: string, secretHex: string): void {
-  deviceSecrets.set(deviceId, secretHex)
+/** /pair/result 轮询结果（T8 双审 A2）：code → 状态快照。
+ *  pending：/pair/start 登记等待店长确认；granted：店长允许，secret 一次性下发后作废；
+ *  denied：店长拒绝（码已 discardPairing）；expired：码未知/过期。 */
+interface PairResultEntry {
+  status: 'pending' | 'granted' | 'denied'
+  deviceName?: string
+  deviceId?: string
+  secretHex?: string
 }
 
 function isLocalChannel(channel: string): boolean {
@@ -76,7 +83,11 @@ function sha256Hex(s: string): string {
 
 export async function createHostServer(deps: HostServerDeps): Promise<HostServerHandle> {
   const log = deps.log ?? (() => {})
-  const getSecret = deps.getDeviceSecret ?? ((id: string) => deviceSecrets.get(id) ?? null)
+  const getSecret = deps.getDeviceSecret ?? (() => null)
+  // /pair/result 轮询结果表（仅内存；进程重启即失效——配对流程本就要重来）。
+  const pairResults = new Map<string, PairResultEntry>()
+  // 吊销踢连接：onConnection 闭包把 hub.disconnectDevice 绑到 deviceId 上（见 disconnectDevice 实现引用）。
+  let hubKick: ((deviceId: string, closeCode?: number) => number) | null = null
   // /pair/start 限流：内存桶 key=IP，固定窗口近似（1min 重置）。3 台设备规模下
   // 精确性无关紧要，防暴力猜码即可（spec §5.2 实现裁定）。
   const rateBuckets = new Map<string, { windowStart: number; count: number }>()
@@ -146,8 +157,56 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
     // 本任务 console/通知占位——index.ts 接线处注释标明）。
     const started = deps.pairing.startPairing(deviceName.trim())
     log('info', `pairing request from ${ip}: device "${deviceName}" code ${started.code}（T8 弹窗确认占位）`)
+    pairResults.set(started.code, { status: 'pending', deviceName: deviceName.trim() })
     return {
       ok: true, code: 'OK', msg: '', data: { pending: true, pairingCode: started.code, expiresAt: started.expiresAt }
+    }
+  })
+
+  // ---- /pair/result：客户端配对结果轮询（spec §5.2）。
+  // 鉴权：配对码即认证（spec §4.2 /pair/start 行——配对确认前客户端尚无 secret，
+  // 无从计算 HMAC，故与 /pair/start 同级免 HMAC；码本身 6 位随机 + 限流即是门槛）。
+  // granted 时 secret 一次性下发并立即作废（重复轮询同码拿不到 secret）。
+  app.get('/pair/result', async (req, reply) => {
+    const code = String((req.query as Record<string, unknown>).code ?? '')
+    if (!/^\d{4,12}$/.test(code)) {
+      void reply.code(400)
+      return { ok: false, code: 'VALIDATION', msg: '配对码无效', data: null }
+    }
+    // 与 /pair/start 同级限流（防止穷举配对码）。
+    const ip = req.ip || 'unknown'
+    const nowMs = Date.now()
+    const bucket = rateBuckets.get(ip)
+    if (!bucket || nowMs - bucket.windowStart >= PAIR_RATE_WINDOW_MS) {
+      rateBuckets.set(ip, { windowStart: nowMs, count: 1 })
+    } else {
+      bucket.count++
+      if (bucket.count > PAIR_RATE_LIMIT) {
+        void reply.code(429)
+        return { ok: false, code: 'RATE_LIMIT', msg: '请求过于频繁，请稍后再试', data: null }
+      }
+    }
+    const entry = pairResults.get(code)
+    if (!entry) {
+      // 码未知或已过期：不区分细节，统一 expired（不泄漏码是否曾经存在）。
+      return { ok: true, code: 'OK', msg: '', data: { status: 'expired' } }
+    }
+    if (entry.status === 'granted') {
+      // 一次性下发：secret 随首个 granted 响应交出后作废（其余字段保留，status 仍 granted）。
+      const data: Record<string, unknown> = {
+        status: 'granted',
+        deviceName: entry.deviceName,
+        deviceId: entry.deviceId
+      }
+      if (entry.secretHex) {
+        data.secret = entry.secretHex
+        entry.secretHex = undefined
+      }
+      return { ok: true, code: 'OK', msg: '', data }
+    }
+    return {
+      ok: true, code: 'OK', msg: '',
+      data: entry.status === 'denied' ? { status: 'denied' } : { status: 'pending', deviceName: entry.deviceName }
     }
   })
 
@@ -227,6 +286,17 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
     },
     onConnection(cb) {
       connCb = cb
+    },
+    setPairResult(code, result) {
+      pairResults.set(code, result)
+    },
+    disconnectDevice(deviceId, closeCode) {
+      // hub 接线（index.ts）：installKick 注入 hub.disconnectDevice；
+      // 未接线（无 hub）时无活跃连接可踢，返回 0。
+      return hubKick ? hubKick(deviceId, closeCode) : 0
+    },
+    installKick(fn) {
+      hubKick = fn
     },
     get wss() {
       return wss

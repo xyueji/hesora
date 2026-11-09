@@ -52,6 +52,8 @@ export interface EventHub {
   registerConnection(conn: WsLike, session: SessionContext, canFor: CanFor): void
   broadcast(event: HostEvent): void
   connectionCount(): number
+  /** T8 双审 A3：按设备断开其全部活跃 WS 连接（吊销设备踢下线用，closeCode 默认 4003）。 */
+  disconnectDevice(deviceId: string, closeCode?: number): number
   /** T5 接线：wssLike 为 WebSocketServer（.on('connection')）或 { onConnection(cb) }；
    *  sessionOf(conn) 返回 null 时直接关闭该连接（未认证连接不得订阅）。 */
   attachWsHub(wssLike: WsHubLike, sessionOf: (conn: WsLike) => { session: SessionContext; canFor: CanFor } | null): void
@@ -154,6 +156,21 @@ export function createEventHub(opts?: EventHubOpts): EventHub {
     conn.on('error', () => detach(conn))
   }
 
+  function disconnectDevice(deviceId: string, closeCode = 4003): number {
+    let n = 0
+    for (const [conn, reg] of registry) {
+      if (reg.session.deviceId !== deviceId) continue
+      registry.delete(conn)
+      try {
+        ;(conn as WsLike & { close: (code?: number) => unknown }).close(closeCode)
+      } catch {
+        /* already dead */
+      }
+      n++
+    }
+    return n
+  }
+
   function broadcast(event: HostEvent): void {
     // 红线：只保留 { event, at, summary }——调用方误传明细全文也会被剥离
     const wire = JSON.stringify({
@@ -195,6 +212,7 @@ export function createEventHub(opts?: EventHubOpts): EventHub {
     registerConnection,
     broadcast,
     connectionCount: () => registry.size,
+    disconnectDevice,
     attachWsHub
   }
 }

@@ -250,7 +250,15 @@ function initialize(): void {
 
   // 双条件才启动：①授权含 lan_collaboration feature ②用户已开启 host_lan_enabled（默认 off）。
   // fastify 等重依赖只在满足条件时动态 import——无 feature 时零开销（T10 验收点）。
-  type HostServerHandleLike = { port: number; close(): Promise<void>; listen(): Promise<number>; onConnection(cb: (ws: unknown, req: import('node:http').IncomingMessage) => void): void }
+  type HostServerHandleLike = {
+    port: number
+    close(): Promise<void>
+    listen(): Promise<number>
+    onConnection(cb: (ws: unknown, req: import('node:http').IncomingMessage) => void): void
+    /** T8 双审 A2/A3：/pair/result 登记与按设备踢连接（server.ts 5.x 新增）。 */
+    setPairResult?(code: string, result: { status: 'pending' | 'granted' | 'denied'; deviceId?: string; secretHex?: string; deviceName?: string }): void
+    disconnectDevice?(deviceId: string, closeCode?: number): number
+  }
   let hostServer: HostServerHandleLike | null = null
   // v1.3 Task 8: pairing 实例提升到模块级闭包（host:* IPC 需在主机 IIFE 外可调）。
   let pairingRef: import('./host/pairing').PairingService | null = null
@@ -305,6 +313,10 @@ function initialize(): void {
       // 防双 ping 裁定：hub 侧 25s JSON ping 是唯一心跳；server.ts 无任何 ping（见 spec 勘误节）。
       if (hostServer) {
         const hub = createEventHub({ log: (msg) => console.log(`[hub] ${msg}`) })
+        // T8 双审 A3：hub 踢连接实现桥接进 hostServer（吊销设备 revokeDevice → kickDevice）。
+        ;(hostServer as { installKick?: (f: (deviceId: string, closeCode?: number) => number) => void }).installKick?.(
+          (deviceId, closeCode) => hub.disconnectDevice(deviceId, closeCode)
+        )
         // 业务事件 → hub.broadcast → 已订阅且有权重的 WS 客户端
         setHostEventSink((event) => hub.broadcast(event))
         const urlOf = (req: { url?: string }): string => req.url ?? ''
@@ -391,10 +403,6 @@ function initialize(): void {
     getPairing: () => pairingRef,
     getServerInfo: () => (hostServer ? { port: hostServer.port } : null),
     deviceSecrets,
-    registerDeviceSecret: (id, hex) => {
-      // server.ts 内存表兜底（动态 import 避免 host 未启动时顶层加载 fastify 链）。
-      void import('./host/server').then((m) => m.registerDeviceSecret(id, hex))
-    },
     secretStoreDeps: null, // initialize 下方 IIFE 异步填充（safeStorage 动态 import）
     saveDeviceSecret: (d, id, hex) => {
       // 异步写 DPAPI（失败仅影响持久化，不影响内存表两处写入）。
@@ -403,7 +411,15 @@ function initialize(): void {
     removeDeviceSecret: (d, id) => {
       void import('./host/secret-store').then((m) => m.removeDeviceSecret(d, id))
     },
-    lanAllowed: () => lanAllowed
+    lanAllowed: () => lanAllowed,
+    // T8 双审 A3：吊销设备时踢活跃 WS（经 hostServer.disconnectDevice → hub.disconnectDevice）。
+    kickDevice: (deviceId) => {
+      try {
+        hostServer?.disconnectDevice?.(deviceId)
+      } catch {
+        // 踢连接失败不影响吊销结果。
+      }
+    }
   })
   // DPAPI deps 异步补齐（safeStorage 只能动态 import；secret-store 模块本身禁顶层 electron）。
   void (async () => {
@@ -424,11 +440,23 @@ function initialize(): void {
       'host:pairPending': () => hostPairIpc.pairPending(),
       'host:pairGrant': (_evt, payload) => {
         const { code } = (payload ?? {}) as { code?: unknown }
-        return hostPairIpc.pairGrant(code)
+        const r = hostPairIpc.pairGrant(code)
+        // T8 双审 A2：/pair/result 轮询结果登记（granted + secret 一次性下发）。
+        if (r.ok && typeof code === 'string' && hostServer?.setPairResult) {
+          const { deviceId } = r.data as { deviceId: string }
+          const secretHex = deviceSecrets.get(deviceId)
+          hostServer.setPairResult(code.trim(), { status: 'granted', deviceId, secretHex })
+        }
+        return r
       },
       'host:pairDeny': (_evt, payload) => {
         const { code } = (payload ?? {}) as { code?: unknown }
-        return hostPairIpc.pairDeny(code)
+        const r = hostPairIpc.pairDeny(code)
+        // T8 双审 A2：deny 后 /pair/result 轮询返回 denied。
+        if (r.ok && typeof code === 'string' && hostServer?.setPairResult) {
+          hostServer.setPairResult(code.trim(), { status: 'denied' })
+        }
+        return r
       },
       'host:listDevices': () => hostPairIpc.listDevices(),
       'host:revokeDevice': (_evt, payload) => {
@@ -533,9 +561,9 @@ app.on('window-all-closed', () => {
     hostServerRef.close().catch(() => {})
   }
   if (process.platform !== 'darwin') {
-    // v1.3 Task 8: lanAllowed（有 Tray）时窗口全关 → 不退出，主机留在托盘持续可连；
-    // 用户从 Tray「打开主窗口」时 createWindow() 重建。
-    if (trayRef) return
+    // v1.3 Task 8 + T8 双审 B6：按 lanAllowed（license feature + 用户开关）判断，
+    // 而非 trayRef——Tray 创建失败（如无图标）时窗口全关也不应 quit，主机留在后台持续可连。
+    if (lanAllowed) return
     app.quit()
   }
 })

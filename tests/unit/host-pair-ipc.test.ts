@@ -36,22 +36,22 @@ interface Fixture {
   ipc: HostPairIpc
   pairing: PairingService
   secrets: Map<string, string>
-  registered: string[]
+  kicked: string[]
   secretDeps: SecretStoreDeps
 }
 
 function makeFixture(opts?: { lanAllowed?: boolean; serverPort?: number | null }): Fixture {
   const pairing = createPairingService(openMemDb(), { clock: () => now })
   const secrets = new Map<string, string>()
-  const registered: string[] = []
+  const kicked: string[] = []
   const secretDeps = makeSecretDeps()
   const saved: string[] = []
   const ipc = createHostPairIpc({
     getPairing: () => pairing,
     getServerInfo: () => (opts?.serverPort === null ? null : { port: opts?.serverPort ?? 18650 }),
     deviceSecrets: secrets,
-    registerDeviceSecret: (id, hex) => {
-      registered.push(`${id}:${hex}`)
+    kickDevice: (id) => {
+      kicked.push(id)
     },
     secretStoreDeps: secretDeps,
     saveDeviceSecret: () => {
@@ -65,7 +65,7 @@ function makeFixture(opts?: { lanAllowed?: boolean; serverPort?: number | null }
     now: () => now,
     startedAt: 900_000
   })
-  return { ipc, pairing, secrets, registered, secretDeps }
+  return { ipc, pairing, secrets, kicked, secretDeps }
 }
 
 beforeEach(() => {
@@ -99,7 +99,6 @@ describe('host:pairStart', () => {
       getPairing: () => pairing,
       getServerInfo: () => null,
       deviceSecrets: new Map(),
-      registerDeviceSecret: () => {},
       secretStoreDeps: null,
       saveDeviceSecret: () => false,
       removeDeviceSecret: () => {},
@@ -134,9 +133,6 @@ describe('host:pairPending / pairGrant / pairDeny', () => {
     // ① 内存 Map
     expect(f.secrets.has(g.deviceId)).toBe(true)
     expect(f.secrets.get(g.deviceId)).toMatch(/^[0-9a-f]{64}$/)
-    // ② registerDeviceSecret 兜底表
-    expect(f.registered).toHaveLength(1)
-    expect(f.registered[0]).toContain(g.deviceId)
     // ③ DPAPI spy 被调 + pending 清空
     expect(unwrap(f.ipc.pairPending())).toHaveLength(0)
   })
@@ -149,15 +145,17 @@ describe('host:pairPending / pairGrant / pairDeny', () => {
     expect(r.code).toBe('E_PAIRING_INVALID')
   })
 
-  it('deny removes pending code and grant afterwards fails', () => {
-    const { ipc } = makeFixture()
+  it('deny discards pairing code so grant afterwards fails (T8 双审 A1)', () => {
+    const { ipc, pairing } = makeFixture()
     const started = unwrap(ipc.pairStart('d1'))
     const d = ipc.pairDeny(started.code)
     expect(d.ok).toBe(true)
-    // deny 只删本侧缓存；pairing codes 仍在 → grant 仍可成功（deny 语义为移除 UI 卡片）。
-    // 断言 deny 后 pending 不再显示：
+    // deny 后 pending 不再显示：
     expect(unwrap(ipc.pairPending())).toHaveLength(0)
-    expect(ipc.pairGrant(started.code).ok).toBe(true)
+    // pairing 侧码已作废 → 同码 grant 必失败（安全：拒绝的配对请求不能被补授权）。
+    expect(ipc.pairGrant(started.code).ok).toBe(false)
+    // pairing 内部 codes 亦已删除（直接验证服务状态）。
+    expect(pairing.confirmPairing(started.code)).toBeNull()
   })
 
   it('deny unknown code fails', () => {
@@ -190,12 +188,14 @@ describe('host:listDevices / revokeDevice', () => {
     expect(dev.revoked_at).toBeNull()
   })
 
-  it('revokeDevice removes secret from map and revokes', () => {
+  it('revokeDevice removes secret from map, kicks active WS, and revokes', () => {
     const f = makeFixture()
     const id = pairOne(f)
     const r = f.ipc.revokeDevice(id)
     expect(r.ok).toBe(true)
     expect(f.secrets.has(id)).toBe(false)
+    // T8 双审 A3：吊销后踢活跃连接被调用。
+    expect(f.kicked).toEqual([id])
     const list = unwrap(f.ipc.listDevices())
     expect(list[0]!.revoked_at).not.toBeNull()
   })

@@ -1,7 +1,7 @@
 // v1.3 Task 8: 主机端 host:* IPC 逻辑层（渲染层配对确认/设备管理接线）。
 // 本模块不 import electron（禁顶层 electron；BrowserWindow/safeStorage 由调用方注入），
-// 只组装 pairing 服务 + secret 写回三处（deviceSecrets 内存 Map / registerDeviceSecret
-// server.ts 兜底表 / DPAPI saveDeviceSecret 持久化）——统一 Result 返回。
+// 只组装 pairing 服务 + secret 写回两处（deviceSecrets 内存 Map / DPAPI saveDeviceSecret
+// 持久化；T8 双审 A4 删除 server.ts 兜底表死代码后由三处简化为两处）——统一 Result 返回。
 import { networkInterfaces } from 'node:os'
 import { ok, fail, type Result } from '../../shared/result'
 import type { PairingService, PairedDeviceInfo } from '../host/pairing'
@@ -29,8 +29,8 @@ export interface HostPairIpcDeps {
   getServerInfo: () => { port: number } | null
   /** 内存 deviceSecrets Map（HMAC 查找源） */
   deviceSecrets: Map<string, string>
-  /** server.ts registerDeviceSecret（内存表兜底） */
-  registerDeviceSecret: (deviceId: string, secretHex: string) => void
+  /** 吊销设备时踢活跃 WS 连接（index.ts 接线 hub.disconnectDevice；缺省不踢） */
+  kickDevice?: (deviceId: string) => void
   /** DPAPI 持久化 deps（saveDeviceSecret/removeDeviceSecret 用）；null=不可用 */
   secretStoreDeps: SecretStoreDeps | null
   saveDeviceSecret: (deps: SecretStoreDeps, deviceId: string, secretHex: string) => void
@@ -121,9 +121,8 @@ export function createHostPairIpc(deps: HostPairIpcDeps): HostPairIpc {
       if (!confirmed) return fail('E_PAIRING_INVALID', '配对码无效、已过期或已被处理')
       const { deviceId, secret } = confirmed
       const secretHex = secret.toString('hex')
-      // ① 内存 Map（HMAC 查找源）② server.ts 兜底表 ③ DPAPI 持久化（三处都写）
+      // ① 内存 Map（HMAC 查找源） ② DPAPI 持久化（T8 双审 A4：三处写简化为两处）
       deps.deviceSecrets.set(deviceId, secretHex)
-      deps.registerDeviceSecret(deviceId, secretHex)
       if (secretStoreDeps) {
         deps.saveDeviceSecret(secretStoreDeps, deviceId, secretHex)
       }
@@ -131,12 +130,13 @@ export function createHostPairIpc(deps: HostPairIpcDeps): HostPairIpc {
       return ok({ deviceId })
     },
 
-    /** host:pairDeny(code)：确认码作废（pairing 的 codes 已 confirmed=false，本侧直接删缓存；
-     *  客户端轮询拿不到会话即失败，无需 pairing 侧配合）。 */
+    /** host:pairDeny(code)：作废配对码（T8 双审 A1：pairing.codes 一并删除，
+     *  deny 后同码 grant 必失败；本侧缓存同步清空）。 */
     pairDeny(code: unknown): Result<{ denied: boolean }> {
       const c = typeof code === 'string' ? code.trim() : ''
       if (!c || !startedCodes.has(c)) return fail('E_PAIRING_INVALID', '配对码无效或已过期')
       startedCodes.delete(c)
+      deps.getPairing()?.discardPairing(c)
       return ok({ denied: true })
     },
 
@@ -147,7 +147,7 @@ export function createHostPairIpc(deps: HostPairIpcDeps): HostPairIpc {
       return ok(pairing.listDevices())
     },
 
-    /** host:revokeDevice(deviceId)：吊销 + 三处 secret 一并清除 */
+    /** host:revokeDevice(deviceId)：吊销 + secret 两处清除 + 踢活跃 WS 连接（close 4003） */
     revokeDevice(deviceId: unknown): Result<{ deviceId: string }> {
       const pairing = deps.getPairing()
       if (!pairing) return fail('LAN_HOST_OFF', 'LAN 协作主机未启动')
@@ -158,6 +158,12 @@ export function createHostPairIpc(deps: HostPairIpcDeps): HostPairIpc {
       deps.deviceSecrets.delete(id)
       if (secretStoreDeps) {
         deps.removeDeviceSecret(secretStoreDeps, id)
+      }
+      // T8 双审 A3：吊销后立即断开该设备活跃 WS 连接（HMAC secret 已删，连接不再可用）。
+      try {
+        deps.kickDevice?.(id)
+      } catch {
+        // 踢连接失败不影响吊销结果（secret 已删，后续请求会被 401）。
       }
       return ok({ deviceId: id })
     },

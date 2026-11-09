@@ -144,3 +144,23 @@ describe('event hub', () => {
     }
   })
 })
+
+describe('disconnectDevice (T8 双审 A3)', () => {
+  it('closes all connections of the device with given code and detaches them', () => {
+    const hub = createEventHub({ pingIntervalMs: 0 })
+    const a = fakeWs()
+    const b = fakeWs()
+    const other = fakeWs()
+    hub.registerConnection(a, { deviceId: 'dev-1', userId: 1 }, () => true)
+    hub.registerConnection(b, { deviceId: 'dev-1', userId: 1 }, () => true)
+    hub.registerConnection(other, { deviceId: 'dev-2', userId: 1 }, () => true)
+    const n = hub.disconnectDevice('dev-1', 4003)
+    expect(n).toBe(2)
+    expect(a.close).toHaveBeenCalledWith(4003)
+    expect(b.close).toHaveBeenCalledWith(4003)
+    expect(other.close).not.toHaveBeenCalled()
+    expect(hub.connectionCount()).toBe(1)
+    // 再踢一次 → 0（已清理）
+    expect(hub.disconnectDevice('dev-1')).toBe(0)
+  })
+})

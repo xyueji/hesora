@@ -303,3 +303,47 @@ describe('host server misc', () => {
     await app.close()
   })
 })
+
+describe('host server /pair/result (T8 双审 A2)', () => {
+  it('unknown code → expired; invalid code → 400', async () => {
+    const r1 = await fx.app.inject({ method: 'GET', url: '/pair/result?code=123456' })
+    expect(r1.statusCode).toBe(200)
+    expect(r1.json().data.status).toBe('expired')
+    const r2 = await fx.app.inject({ method: 'GET', url: '/pair/result?code=abc' })
+    expect(r2.statusCode).toBe(400)
+  })
+
+  it('pending after /pair/start, granted once with secret then secret revoked, denied after deny', async () => {
+    const start = await fx.app.inject({
+      method: 'POST', url: '/pair/start', payload: { deviceName: 'poll-d1' }
+    })
+    expect(start.statusCode).toBe(200)
+    const { pairingCode } = start.json().data as { pairingCode: string }
+    const poll1 = await fx.app.inject({ method: 'GET', url: `/pair/result?code=${pairingCode}` })
+    expect(poll1.json().data).toMatchObject({ status: 'pending', deviceName: 'poll-d1' })
+
+    // 店长允许（index.ts pairGrant 接线等价：setPairResult granted + secret）
+    fx.app.setPairResult(pairingCode, { status: 'granted', deviceId: 'dev-new', secretHex: 'ff'.repeat(32) })
+    const poll2 = await fx.app.inject({ method: 'GET', url: `/pair/result?code=${pairingCode}` })
+    const d2 = poll2.json().data as Record<string, unknown>
+    expect(d2.status).toBe('granted')
+    expect(d2.deviceId).toBe('dev-new')
+    expect(d2.secret).toBe('ff'.repeat(32))
+    // secret 一次性：再次轮询拿不到 secret
+    const poll3 = await fx.app.inject({ method: 'GET', url: `/pair/result?code=${pairingCode}` })
+    expect(poll3.json().data.secret).toBeUndefined()
+
+    // 店长拒绝（pairDeny 接线等价）
+    const started2 = await fx.app.inject({ method: 'POST', url: '/pair/start', payload: { deviceName: 'poll-d2' } })
+    const code2 = (started2.json().data as { pairingCode: string }).pairingCode
+    fx.app.setPairResult(code2, { status: 'denied' })
+    const poll4 = await fx.app.inject({ method: 'GET', url: `/pair/result?code=${code2}` })
+    expect(poll4.json().data.status).toBe('denied')
+  })
+
+  it('disconnectDevice returns 0 without hub kick installed', () => {
+    expect(fx.app.disconnectDevice('dev-1')).toBe(0)
+    fx.app.installKick((id) => (id === 'dev-1' ? 2 : 0))
+    expect(fx.app.disconnectDevice('dev-1')).toBe(2)
+  })
+})

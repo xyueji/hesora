@@ -21,6 +21,8 @@ export interface PairingService {
   startPairing(deviceName: string): { code: string; expiresAt: number }
   confirmPairing(code: string): { deviceId: string; secret: Buffer } | null
   completePairing(deviceId: string, secretHex: string, approved: boolean): Result
+  /** 店长拒绝配对：作废该码（T8 双审 A1：deny 后码不可再被 grant）。 */
+  discardPairing(code: string): void
   revokeDevice(deviceId: string): Result
   listDevices(): PairedDeviceInfo[]
   cleanupExpired(): void
@@ -98,6 +100,10 @@ export function createPairingService(
       }
       if (!approved) return fail('E_PAIRING_REJECTED', '配对被拒绝')
       return ok({ deviceId })
+    },
+
+    discardPairing(code: string): void {
+      codes.delete(code)
     },
 
     revokeDevice(deviceId: string): Result {
