@@ -132,6 +132,8 @@ export function createHostPairIpc(deps: HostPairIpcDeps): HostPairIpc {
         deps.saveDeviceSecret(secretStoreDeps, deviceId, secretHex)
       }
       startedCodes.delete(c)
+      // HTTP /pair/start 发起的码也要清掉，避免过期前 pairPending 重复列出已允许设备。
+      httpPairRequests.delete(c)
       return ok({ deviceId })
     },
 
@@ -139,7 +141,9 @@ export function createHostPairIpc(deps: HostPairIpcDeps): HostPairIpc {
      *  deny 后同码 grant 必失败；本侧缓存同步清空）。 */
     pairDeny(code: unknown): Result<{ denied: boolean }> {
       const c = typeof code === 'string' ? code.trim() : ''
-      if (!c || !startedCodes.has(c)) return fail('E_PAIRING_INVALID', '配对码无效或已过期')
+      if (!c) return fail('E_PAIRING_INVALID', '配对码无效或已过期')
+      const isHttpInitiated = httpPairRequests.delete(c)
+      if (!startedCodes.has(c) && !isHttpInitiated) return fail('E_PAIRING_INVALID', '配对码无效或已过期')
       startedCodes.delete(c)
       deps.getPairing()?.discardPairing(c)
       return ok({ denied: true })

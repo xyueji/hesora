@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openMemDb } from '../helpers/mem-db'
 import { createPairingService, type PairingService } from '../../src/main/host/pairing'
-import { createHostPairIpc, shouldCreateTray, type HostPairIpc } from '../../src/main/ipc/host-pair-ipc'
+import { createHostPairIpc, noteHttpPairRequest, shouldCreateTray, type HostPairIpc } from '../../src/main/ipc/host-pair-ipc'
 import type { SecretStoreDeps } from '../../src/main/host/secret-store'
 import type { Result } from '../../src/shared/result'
 
@@ -162,6 +162,29 @@ describe('host:pairPending / pairGrant / pairDeny', () => {
     const { ipc } = makeFixture()
     const r = ipc.pairDeny('000000')
     expect(r.ok).toBe(false)
+  })
+
+  it('deny covers HTTP-initiated code and clears it from pending', () => {
+    const { ipc } = makeFixture()
+    // HTTP /pair/start 发起：server.ts 桥接进模块级 Map，不走 pairStart。
+    noteHttpPairRequest({ code: '424242', deviceName: 'http 机', expiresAt: now + 5 * 60_000 })
+    expect(unwrap(ipc.pairPending())).toHaveLength(1)
+    const d = ipc.pairDeny('424242')
+    expect(d.ok).toBe(true)
+    expect(unwrap(ipc.pairPending())).toHaveLength(0)
+    // 已删除条目：deny 后重复 deny 失败（幂等保护）。
+    expect(ipc.pairDeny('424242').ok).toBe(false)
+  })
+
+  it('grant deletes HTTP-initiated entry so pending no longer lists it', () => {
+    const { ipc } = makeFixture()
+    // 真实 HTTP 流程：server.ts 走 pairing.startPairing（startedCodes 也有），
+    // 再经 noteHttpPairRequest 桥进 UI 待确认列表。
+    const started = unwrap(ipc.pairStart('http 机2'))
+    noteHttpPairRequest({ code: started.code, deviceName: 'http 机2', expiresAt: started.expiresAt })
+    const g = unwrap(ipc.pairGrant(started.code))
+    expect(g.deviceId).toBeTruthy()
+    expect(unwrap(ipc.pairPending())).toHaveLength(0)
   })
 
   it('pending drops expired codes', () => {
