@@ -81,9 +81,8 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
   // 精确性无关紧要，防暴力猜码即可（spec §5.2 实现裁定）。
   const rateBuckets = new Map<string, { windowStart: number; count: number }>()
 
-  // https 选项会使 fastify 选中 http2 secure server 泛型（FastifyHttp2SecureOptions）；
-  // 统一按该泛型标注（inject 路径不受影响）。
-  // https 选项走 FastifyHttp2SecureOptions 重载；无 tls 时走普通重载——两条路径统一类型。
+  // HTTP/1.1 https server（fastify 5：仅传 https 选项默认即 node:https h1，不启用 h2；
+  // 客户端 lan-client 用 node:https 发 h1，h2 server 会拒绝，故此处绝不能设 http2）。
   // inject() 路径不触发 TLS；真实 listen 需要 deps.tls，否则报错（防止裸 HTTP 上线）。
   const app: FastifyInstance = (
     deps.tls
@@ -97,6 +96,23 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
           logger: false
         })
   ) as FastifyInstance
+
+  // HMAC 验签必须基于客户端的原始字节序列：fastify 默认 JSON.parse 后对象键序可能与
+  // 客户端序列化不一致，JSON.stringify(body) 重算 bodySha 会 flaky 失败。此处对
+  // application/json 保留 rawBody 字符串，verifyRequest 用原始体求 sha256；
+  // rawBody 缺失（inject 直传对象等）时回退 JSON.stringify(body)。
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (req, body, done) => {
+      ;(req as { rawBody?: string }).rawBody = body as string
+      try {
+        done(null, JSON.parse(body as string))
+      } catch (e) {
+        done(e as Error)
+      }
+    }
+  )
 
   const wss = new WebSocketServer({ noServer: true })
   let connCb: ((ws: unknown, req: IncomingMessage) => void) | null = null
@@ -153,8 +169,9 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
     }
     const session = { deviceId: sessionInfo.deviceId, userId: sessionInfo.userId }
 
-    // ② HMAC 请求头校验：ts/nonce/sig（body sha256）
-    const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? null)
+    // ② HMAC 请求头校验：ts/nonce/sig（body sha256，基于客户端原始字节序）
+    const rawBody = (req as { rawBody?: string }).rawBody
+    const bodyStr = typeof rawBody === 'string' ? rawBody : (typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? null))
     const bodySha = sha256Hex(bodyStr)
     const deviceId = hdr('x-device-id')
     const ts = Number(hdr('x-ts'))
@@ -222,7 +239,9 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
         wss.handleUpgrade(req, socket as never, head, (ws) => wss.emit('connection', ws, req))
       })
       await app.listen({ port, host: '0.0.0.0' })
-      return port
+      // port=0（测试临时端口）时返回 OS 实际分配端口；否则与配置端口一致。
+      const addr = app.server.address()
+      return typeof addr === 'object' && addr !== null ? addr.port : port
     }
   }
 }

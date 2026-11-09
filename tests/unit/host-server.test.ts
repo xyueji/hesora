@@ -1,6 +1,7 @@
 import { rmSync } from 'node:fs'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHash, randomBytes } from 'node:crypto'
+import * as https from 'node:https'
 import { openMemDb } from '../helpers/mem-db'
 import { createHostServer } from '../../src/main/host/server'
 import { createGateway } from '../../src/main/host/gateway'
@@ -242,5 +243,63 @@ describe('host server misc', () => {
     const conns: unknown[] = []
     fx.app.onConnection((ws) => { conns.push(ws) })
     expect(typeof fx.app.onConnection).toBe('function')
+  })
+
+  it('key-order robustness: raw body preserved (client byte order ≠ re-stringified)', async () => {
+    // 客户端故意用与 JSON.stringify 不同的键序序列化；服务端必须用原始字节验签
+    const body = '{"payload":{"b":2,"a":1},"requestId":"r-order","channel":"product:query"}'
+    const res = await fx.app.inject({ method: 'POST', url: '/rpc/product:query', payload: body, headers: rpcHeaders(fx, body) })
+    expect(res.json().ok).toBe(true)
+  })
+
+  it('real HTTP/1.1 client (node:https) against listened TLS server → 200/401 path works', async () => {
+    const { ensureHostCertificate } = await import('../../src/main/host/cert')
+    const { mkdtempSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const certDir = mkdtempSync(join(tmpdir(), 'hostsrv-test-'))
+    cleanups.push(certDir)
+    const cert = await ensureHostCertificate(certDir)
+    const app = await createHostServer({
+      getDb: () => fx.db as unknown as DB,
+      handlers: new Map([['product:query', { channel: 'product:query', handler: (_e, p) => ({ got: p }) }]]),
+      pairing: (await import('../../src/main/host/pairing')).createPairingService(fx.db as unknown as import('better-sqlite3').Database),
+      hostAuth: fx.hostAuth,
+      gateway: createGateway({ getDb: () => fx.db as unknown as DB, handlers: new Map([['product:query', { channel: 'product:query', handler: (_e, p) => ({ got: p }) }]]) }),
+      canFor: () => true,
+      getDeviceSecret: (id) => (id === 'dev-1' ? SECRET_HEX : null),
+      log: () => {},
+      tls: { keyPem: cert.keyPem, certPem: cert.certPem },
+      port: 0
+    })
+    const port = await app.listen()
+    const requestOnce = (body: string, headers: Record<string, string>): Promise<{ status: number; body: string }> =>
+      new Promise((resolve, reject) => {
+        const r = https.request({
+          host: '127.0.0.1', port, method: 'POST', path: '/rpc/product:query',
+          rejectUnauthorized: false, headers: { 'content-type': 'application/json', ...headers }
+        }, (res) => {
+          let data = ''
+          res.on('data', (c: Buffer) => { data += c.toString() })
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }))
+        })
+        r.on('error', reject)
+        r.end(body)
+      })
+
+    // 无会话头 → 401 E_AUTH_FAILED，但证明 h1 客户端可连通 h1 server
+    const body401 = JSON.stringify({ requestId: 'h1-1', channel: 'product:query', payload: null })
+    const r1 = await requestOnce(body401, {})
+    expect(r1.status).toBe(401)
+    expect(JSON.parse(r1.body).code).toBe('E_AUTH_FAILED')
+
+    // 带完整签名头的 h1 请求 → 200 ok
+    const bodyOk = JSON.stringify({ requestId: 'h1-2', channel: 'product:query', payload: { q: 'h1' } })
+    const res2 = await requestOnce(bodyOk, rpcHeaders(fx, bodyOk))
+    expect(res2.status).toBe(200)
+    const j = JSON.parse(res2.body)
+    expect(j.ok).toBe(true)
+    expect(j.data).toEqual({ got: { q: 'h1' } })
+    await app.close()
   })
 })
