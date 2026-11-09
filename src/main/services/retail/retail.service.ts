@@ -195,6 +195,13 @@ export function createRetailService(db: DB) {
       }
       // 收款腿：payments 优先（每腿一条流水）；否则单一 account_id 写一条全额流水（向后兼容）。
       const legs = paymentLegsOf(input)
+      // T8 双审 I3：组合收款须校验 Σlegs == netTotal（NaN 单腿回退除外）。
+      if (input.payments !== undefined && input.payments !== null && input.payments.length > 0) {
+        const sum = legs.reduce((acc, leg) => acc + (Number.isFinite(leg.amount) ? leg.amount : 0), 0)
+        if (Number(sum.toFixed(2)) !== Number(netTotal.toFixed(2))) {
+          throw new BizError('VALIDATION', `组合收款金额不一致：收款合计 ${sum.toFixed(2)} 元，应付 ${netTotal.toFixed(2)} 元`)
+        }
+      }
       for (const leg of legs) {
         const amount = Number.isNaN(leg.amount) ? netTotal : leg.amount
         db.prepare(

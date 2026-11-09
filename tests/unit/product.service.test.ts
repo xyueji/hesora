@@ -199,4 +199,19 @@ describe('product.service', () => {
     expect(s.getById(id)?.price_levels).toEqual([])
     expect(s.getById(id)?.shelf_life_days).toBeUndefined()
   })
+
+  it('T8 双审 M2: bulkUpdate logs given operator instead of hardcoded system', () => {
+    const db = openMemDb()
+    const ps = createProductService(db)
+    const pid = ps.create({
+      code: 'P-BULK', name: '批量', base_unit: '件', retail_price: 1, trade_price: 1,
+      purchase_price: 1, tracking_type: 'none', units: [], barcodes: []
+    })
+    ps.bulkUpdate([pid], { retail_price: 9.9 }, '张三')
+    const log = db.prepare(
+      "SELECT operator FROM platform_log WHERE action = 'product.bulk_update' ORDER BY id DESC LIMIT 1"
+    ).get() as { operator: string }
+    expect(log.operator).toBe('张三')
+  })
 })
+

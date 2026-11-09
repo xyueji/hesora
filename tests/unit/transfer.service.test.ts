@@ -39,7 +39,7 @@ function setup() {
   })
   const whA = warehouseService.create({ name: '仓A', is_default: true })
   const whB = warehouseService.create({ name: '仓B', is_default: false })
-  return { transferService, purchaseService, inventoryService, productService, productId, batchProductId, whA, whB }
+  return { db, transferService, purchaseService, inventoryService, productService, productId, batchProductId, whA, whB }
 }
 
 describe('transfer.service', () => {
@@ -178,4 +178,40 @@ describe('transfer.service', () => {
     expect(d.items).toHaveLength(1)
     expect(d.items[0]!.qty).toBeCloseTo(2)
   })
+
+  it('T8 双审 I5: transfer IN leg expiry prefers target-warehouse existing batch record', () => {
+    // A 仓批次效期 2026-06-01（旧），B 仓已有同批次记录效期 2026-12-31（新）
+    ctx.purchaseService.create({
+      warehouse_id: ctx.whA, date: '2026-11-01',
+      items: [{ product_id: ctx.batchProductId, qty: 10, price: 3, batch_no: 'B2024009', expire_date: '2026-06-01' }]
+    })
+    ctx.purchaseService.create({
+      warehouse_id: ctx.whB, date: '2026-11-01',
+      items: [{ product_id: ctx.batchProductId, qty: 1, price: 3, batch_no: 'B2024009', expire_date: '2026-12-31' }]
+    })
+    ctx.transferService.create({
+      warehouse_id: ctx.whA, warehouse_in_id: ctx.whB,
+      items: [{ product_id: ctx.batchProductId, batch_no: 'B2024009', qty: 5 }]
+    })
+    const pb = ctx.db.prepare(
+      'SELECT expire_date FROM product_batch WHERE product_id = ? AND warehouse_id = ? AND batch_no = ?'
+    ).get(ctx.batchProductId, ctx.whB, 'B2024009') as { expire_date: string }
+    expect(pb.expire_date).toBe('2026-12-31')
+  })
+
+  it('T8 双审 I5: transfer IN leg falls back to from-warehouse expiry when target has no record', () => {
+    ctx.purchaseService.create({
+      warehouse_id: ctx.whA, date: '2026-11-01',
+      items: [{ product_id: ctx.batchProductId, qty: 10, price: 3, batch_no: 'B2024010', expire_date: '2027-03-01' }]
+    })
+    ctx.transferService.create({
+      warehouse_id: ctx.whA, warehouse_in_id: ctx.whB,
+      items: [{ product_id: ctx.batchProductId, batch_no: 'B2024010', qty: 5 }]
+    })
+    const pb = ctx.db.prepare(
+      'SELECT expire_date FROM product_batch WHERE product_id = ? AND warehouse_id = ? AND batch_no = ?'
+    ).get(ctx.batchProductId, ctx.whB, 'B2024010') as { expire_date: string }
+    expect(pb.expire_date).toBe('2027-03-01')
+  })
 })
+

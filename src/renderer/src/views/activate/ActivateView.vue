@@ -10,8 +10,12 @@ const form = reactive({ code: '' })
 
 const onlineAvailable = ref(false)
 const online = ref(false)
+// D16（T8 商用闭环）：过期进入本页时提示数据只读语义，而非继续展示 15 天试用文案。
+const expired = ref(false)
 onMounted(async () => {
-  onlineAvailable.value = Boolean((await licenseApi.check().catch(() => null))?.onlineAvailable)
+  const status = await licenseApi.check().catch(() => null)
+  onlineAvailable.value = Boolean(status?.onlineAvailable)
+  expired.value = status?.phase === 'expired'
 })
 
 async function submit() {
@@ -39,11 +43,13 @@ async function submit() {
         <div class="activate-title">禾序进销存 · 软件激活</div>
       </template>
       <el-alert
-        type="info"
+        :type="expired ? 'warning' : 'info'"
         :closable="false"
         show-icon
-        title="试用说明"
-        description="本软件免费试用 15 天，到期后需输入激活码继续使用。请向供应商获取激活码。在线激活绑定本机设备，成功后可离线使用。"
+        :title="expired ? '试用已结束' : '试用说明'"
+        :description="expired
+          ? '试用已结束，数据只读——仍可查询/备份，激活后恢复。请向供应商获取激活码完成激活。'
+          : '本软件免费试用 15 天，到期后需输入激活码继续使用。请向供应商获取激活码。在线激活绑定本机设备，成功后可离线使用。'"
         style="margin-bottom: 16px"
       />
       <el-form @submit.prevent>

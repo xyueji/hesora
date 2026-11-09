@@ -6,6 +6,7 @@ import { createSaleService } from '../../src/main/services/sale/sale.service'
 import { createCustomerService } from '../../src/main/services/customer/customer.service'
 import { createSupplierService } from '../../src/main/services/supplier/supplier.service'
 import { createFundService } from '../../src/main/services/fund/fund.service'
+import { createReversalService } from '../../src/main/services/doc/reversal.service'
 
 // P1 功能 #2：预存款/订金管理。
 // 收款单 charge_type='prepaid'：金额计入 partner.prepaid，不写核销；
@@ -112,5 +113,40 @@ describe('prepaid（预存款）', () => {
     // 再退 200 超出余额
     expect(() => pay.createReceipt({ partner_id: customerId, account_id: accountId, amount: 200, date: '2026-11-04', charge_type: 'prepaid_refund' }))
       .toThrowError(/预存款不足/)
+  })
+
+  it('红冲销售抵扣单：恢复客户预存款 + 反向 prepaid fund_flow（T8 双审 I1）', () => {
+    const pay = createPaymentService(db)
+    pay.createReceipt({ partner_id: customerId, account_id: accountId, amount: 300, date: '2026-11-01', charge_type: 'prepaid' })
+    const sale = createSaleService(db).create({
+      customer_id: customerId, warehouse_id: warehouseId, date: '2026-11-02',
+      prepaid_amount: 200,
+      items: [{ product_id: productId, qty: 1, price: 300 }]
+    })
+    expect(prepaidOf(customerId)).toBe(100)
+    const rev = createReversalService(db).reverse(sale.id)
+    expect(prepaidOf(customerId)).toBe(300)
+    const flow = db.prepare(
+      "SELECT amount, direction, partner_id FROM fund_flow WHERE doc_id = ? AND partner_id IS NOT NULL"
+    ).get(rev.id) as { amount: number; direction: string; partner_id: number }
+    expect(flow.amount).toBe(200)
+    expect(flow.direction).toBe('out')
+    expect(flow.partner_id).toBe(customerId)
+  })
+
+  it('红冲预存收款单：回退 partner.prepaid（T8 双审 I1）', () => {
+    const pay = createPaymentService(db)
+    const rcpt = pay.createReceipt({ partner_id: customerId, account_id: accountId, amount: 300, date: '2026-11-01', charge_type: 'prepaid' })
+    expect(prepaidOf(customerId)).toBe(300)
+    createReversalService(db).reverse(rcpt.id)
+    expect(prepaidOf(customerId)).toBe(0)
+  })
+
+  it('红冲预存付款单：回退 supplier.prepaid（T8 双审 I1）', () => {
+    const pay = createPaymentService(db)
+    const payDoc = pay.createPayment({ partner_id: supplierId, account_id: accountId, amount: 150, date: '2026-11-01', charge_type: 'prepaid' })
+    expect(prepaidOf(supplierId, 'supplier')).toBe(150)
+    createReversalService(db).reverse(payDoc.id)
+    expect(prepaidOf(supplierId, 'supplier')).toBe(0)
   })
 })

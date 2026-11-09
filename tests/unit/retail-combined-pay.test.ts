@@ -103,7 +103,7 @@ describe('retail combined payment & discount', () => {
     ctx.retailService.create({
       warehouse_id: ctx.whId,
       discount: 0.8,
-      payments: [{ account_id: ctx.cashId, amount: 1 }, { account_id: ctx.wechatId, amount: 3.8 }],
+      payments: [{ account_id: ctx.cashId, amount: 1 }, { account_id: ctx.wechatId, amount: 6.2 }],
       items: [{ product_id: ctx.productId, qty: 3, price: 3 }]
     })
     const after = ctx.inventoryService.getByProduct(ctx.productId)
@@ -120,4 +120,25 @@ describe('retail combined payment & discount', () => {
       items: [{ product_id: ctx.productId, qty: 1, price: 3 }]
     })).toThrow(/账户不存在/)
   })
+
+  it('combined payment sum mismatch rejected (T8 双审 I3)', () => {
+    stockUp()
+    expect(() => ctx.retailService.create({
+      warehouse_id: ctx.whId,
+      payments: [{ account_id: ctx.cashId, amount: 2 }, { account_id: ctx.wechatId, amount: 3 }],
+      items: [{ product_id: ctx.productId, qty: 1, price: 3 }]
+    })).toThrow(/组合收款金额不一致/)
+  })
+
+  it('combined payment sum mismatch rejected with discount (netTotal after preferential)', () => {
+    stockUp()
+    // 3 × 3 × 0.8 = 7.2；收款合计 6 → 拒绝
+    expect(() => ctx.retailService.create({
+      warehouse_id: ctx.whId,
+      discount: 0.8,
+      payments: [{ account_id: ctx.cashId, amount: 2 }, { account_id: ctx.wechatId, amount: 4 }],
+      items: [{ product_id: ctx.productId, qty: 3, price: 3 }]
+    })).toThrow(/组合收款金额不一致/)
+  })
 })
+

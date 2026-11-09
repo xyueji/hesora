@@ -66,6 +66,16 @@ export function createInventoryService(db: DB) {
       } else if (c.source === 'sale_return') {
         if (c.source_doc_id === undefined) throw new BizError('VALIDATION', '序列号退货须关联原销售单')
         serial.restoreIn(items, c.source_doc_id, 'sale')
+      } else if (c.source === 'reversal') {
+        // T8 双审 C10：红冲不走 registerIn（原 SN 台账已存在，查重必拦），只做存在性校验；
+        // 台账重开 + 反向流水由 reversal.reverseSerialFlows 统一处理（原单 out/in 方向各异：
+        // transfer 红冲的 in 腿镜像为 out、out 腿镜像为 in，无法在此单点重开）。
+        for (const item of items) {
+          const exists = db
+            .prepare('SELECT 1 FROM serial_number WHERE sn = ? AND product_id = ?')
+            .get(item.sn, item.product_id)
+          if (!exists) throw new BizError('VALIDATION', `序列号不存在：${item.sn}`)
+        }
       } else {
         serial.registerIn(items)
       }
@@ -74,9 +84,14 @@ export function createInventoryService(db: DB) {
     }
     if (tracking !== 'batch') return
     if (!batchNo.trim()) throw new BizError('VALIDATION', '批次管理商品必须填写批次号')
-    const previous = selectBatch.get(c.product_id, c.from_warehouse_id ?? c.warehouse_id, batchNo) as {
+    // T8 双审 I5：效期优先取目标仓该批次已有序记录（同批次跨仓效期一致）；
+    // 目标仓没有该批次时退回 from_warehouse 记录（transfer 入库腿）。
+    const targetBatch = selectBatch.get(c.product_id, c.warehouse_id, batchNo) as {
       production_date: string | null; expire_date: string | null
     } | undefined
+    const previous = targetBatch ?? (selectBatch.get(c.product_id, c.from_warehouse_id ?? c.warehouse_id, batchNo) as {
+      production_date: string | null; expire_date: string | null
+    } | undefined)
     if (c.change_qty > 0) {
       shelf.ensureBatch(c.product_id, c.warehouse_id, batchNo, {
         production_date: c.production_date ?? previous?.production_date,

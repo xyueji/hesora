@@ -89,9 +89,21 @@ export function createReversalService(db: DB) {
       itemBuckets.set(key, [...(itemBuckets.get(key) ?? []), it.id])
     }
     return logs.map((log) => {
+      // T8 双审 C10：transfer 的入库腿 log.warehouse_id 是目标仓，而原单 doc_item.warehouse_id
+      // 是源仓——按源仓键回查 doc_item；找不到时退回按 (product, batch) 匹配。
+      // 一律 peek 不 shift：同一 doc_item 的出/入两条 cost_log 都要映射回同一明细行，
+      // 且都需带上 serial_numbers（一件一码校验 + 红冲流水），shift 会让第二条腿丢映射。
       const key = `${log.product_id}:${log.warehouse_id}:${log.batch_no}`
-      const bucket = itemBuckets.get(key)
-      const docItemId = bucket?.shift()
+      let bucket = itemBuckets.get(key)
+      if (!bucket) {
+        for (const [k, v] of itemBuckets) {
+          if (k.startsWith(`${log.product_id}:${log.batch_no}`) && v.length > 0) {
+            bucket = v
+            break
+          }
+        }
+      }
+      const docItemId = bucket?.[0]
       if (log.change_qty < 0) {
         // 原出库 → 红冲入库，按出库时点的移动加权成本记回
         return {
@@ -129,7 +141,8 @@ export function createReversalService(db: DB) {
     for (const flow of flows) {
       if (flow.doc_item_id === null) continue
       const list = map.get(flow.doc_item_id) ?? []
-      list.push(flow.sn)
+      // transfer 原单同一 doc_item 有 out/in 两条流水（同 SN 镜像），去重避免一件一码校验误判重复
+      if (!list.includes(flow.sn)) list.push(flow.sn)
       map.set(flow.doc_item_id, list)
     }
     return map
@@ -147,11 +160,17 @@ export function createReversalService(db: DB) {
       if (!row) throw new BizError('VALIDATION', `序列号台账缺失：${flow.sn}`)
       // 反向库存变动已把原 in 的 SN 标记为 out（status='out'）——这里只处理原 out 的红冲回库，
       // 原方向已是 out 的 SN 表示红冲后重新入库（无需再改台账，仅写反向流水）。
+      // 原 out → 红冲回库：重开 SN 状态（出库态清零），并把仓库恢复为原出库明细行的源仓
+      // （transfer 会把 SN 的 warehouse_id 改到目标仓，红冲须回到源仓）。
       if (flow.direction === 'out') {
+        const origWarehouse = flow.doc_item_id !== null
+          ? (db.prepare('SELECT warehouse_id FROM doc_item WHERE id = ?').get(flow.doc_item_id) as { warehouse_id: number } | undefined)?.warehouse_id
+          : undefined
         db.prepare(
           `UPDATE serial_number SET status = 'in_stock', out_qty = 0,
-             out_date = NULL, out_source = NULL, out_source_id = NULL WHERE id = ?`
-        ).run(row.id)
+             out_date = NULL, out_source = NULL, out_source_id = NULL
+             ${origWarehouse !== undefined ? ', warehouse_id = @wid' : ''} WHERE id = @id`
+        ).run(origWarehouse !== undefined ? { id: row.id, wid: origWarehouse } : { id: row.id })
       }
       db.prepare(
         `INSERT INTO serial_flow (sn, product_id, doc_id, doc_item_id, direction, qty, created_at)
@@ -163,6 +182,45 @@ export function createReversalService(db: DB) {
         flow.doc_item_id !== null ? itemMap.get(flow.doc_item_id) ?? null : null,
         flow.direction === 'in' ? 'out' : 'in'
       )
+    }
+  }
+
+  /**
+   * T8 双审 I1：红冲回退预存款并生成反向 prepaid fund_flow。
+   * 两种场景：销售/零售抵扣（doc.prepaid_amount>0，扣 customer.prepaid + 'in' 流水）；
+   * 收付款单预存（charge_type prepaid/prepaid_refund，改 supplier/customer.prepaid）。
+   */
+  function restorePrepaidOnReversal(sourceDocId: number, reversalId: number, date: string, sourceNo: string): void {
+    const origDoc = db
+      .prepare('SELECT type, partner_id, prepaid_amount, charge_type, total_amount FROM doc WHERE id = ?')
+      .get(sourceDocId) as { type: string; partner_id: number | null; prepaid_amount: number | null; charge_type: string | null; total_amount: number } | undefined
+    if (!origDoc) return
+    if ((origDoc.type === 'sale' || origDoc.type === 'retail') && (origDoc.prepaid_amount ?? 0) > 0 && origDoc.partner_id != null) {
+      const amt = Number(origDoc.prepaid_amount)
+      // 红冲抵扣：把扣掉的预存款加回客户
+      db.prepare('UPDATE customer SET prepaid = prepaid + ? WHERE id = ?').run(amt, origDoc.partner_id)
+      // 记账账户与正向抵扣同口径：最近一笔 prepaid 收款账户，兜底第一个账户
+      const acct = db.prepare(`
+        SELECT f.account_id FROM fund_flow f JOIN doc d ON d.id = f.doc_id
+        WHERE d.partner_id = ? AND d.type = 'receipt' AND d.charge_type = 'prepaid'
+        ORDER BY f.id DESC LIMIT 1
+      `).pluck().get(origDoc.partner_id) as number | undefined
+      const accountId = acct ?? (db.prepare('SELECT id FROM fund_account ORDER BY id LIMIT 1').pluck().get() as number | undefined)
+      if (accountId === undefined) throw new BizError('VALIDATION', '未找到资金账户，无法登记预存款红冲')
+      db.prepare(
+        `INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark, partner_id)
+         VALUES (?, ?, ?, ?, 'out', ?, ?, ?)`
+      ).run(accountId, origDoc.type, reversalId, amt, date, `红冲预存款抵扣 ${sourceNo}`, origDoc.partner_id)
+    } else if (origDoc.charge_type === 'prepaid' || origDoc.charge_type === 'prepaid_refund') {
+      // 收款单 prepaid：原 delta=+total → 红冲 -total；prepaid_refund：原 delta=-total → 红冲 +total
+      const table = origDoc.type === 'receipt' ? 'customer' : 'supplier'
+      const delta = origDoc.charge_type === 'prepaid' ? -origDoc.total_amount : origDoc.total_amount
+      const row = db.prepare(`SELECT prepaid FROM ${table} WHERE id = ?`).get(origDoc.partner_id ?? 0) as { prepaid: number } | undefined
+      const current = row?.prepaid ?? 0
+      if (delta < 0 && current + delta < 0) {
+        throw new BizError('PREPAID_INSUFFICIENT', `预存款不足：当前余额 ${current.toFixed(2)} 元，无法红冲`)
+      }
+      db.prepare(`UPDATE ${table} SET prepaid = prepaid + ? WHERE id = ?`).run(delta, origDoc.partner_id ?? 0)
     }
   }
 
@@ -271,6 +329,10 @@ export function createReversalService(db: DB) {
       }
       // 序列号反向
       if (!isFund) reverseSerialFlows(id, reversalId, itemMap)
+      // T8 双审 I1：红冲回退预存款并生成反向 prepaid fund_flow。
+      // 两种场景：销售/零售抵扣（doc.prepaid_amount>0，扣 customer.prepaid + 'in' 流水）；
+      // 收付款单预存（charge_type prepaid/prepaid_refund，改 supplier/customer.prepaid）。
+      restorePrepaidOnReversal(id, reversalId, date, source.no)
       // 资金单据：反向 fund_flow + 删除核销行
       if (isFund) {
         const flows = db

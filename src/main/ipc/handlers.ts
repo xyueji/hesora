@@ -384,7 +384,7 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     // P3：批量修改（安全字段白名单），写操作日志
     { channel: 'product:bulkUpdate', handler: (_evt, payload, session) => {
       const { ids, patch } = payload as { ids: number[]; patch: Record<string, unknown> }
-      const r = svc.bulkUpdate(ids, patch)
+      const r = svc.bulkUpdate(ids, patch, userFor(session)?.username)
       const fields = Object.keys(patch).join(',')
       auditSvc.record(
         'product.bulk_update',

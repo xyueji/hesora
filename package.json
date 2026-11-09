@@ -75,6 +75,10 @@
       {
         "from": "resources/hesora.png",
         "to": "hesora.png"
+      },
+      {
+        "from": "resources/license-public-key.txt",
+        "to": "license-public-key.txt"
       }
     ],
     "win": {

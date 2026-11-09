@@ -146,6 +146,25 @@ export function createSerialService(db: DB) {
     }).immediate()
   }
 
+  /**
+   * 红冲入库校验（T8 双审 C10）：
+   * 红冲镜像单的序列号入库不走 registerIn（原 SN 仍存在台账，查重必拦），
+   * 也不在此重开/写流水——台账重开与反向流水由 reversal.service 的 reverseSerialFlows 统一处理；
+   * 这里只校验每条 SN 确实处于原单的出库态，防误冲。
+   */
+  function reversalIn(items: RegisterSerialInput[], originalDocId: number): void {
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new BizError('VALIDATION', '序列号登记列表不能为空')
+    }
+    for (const item of items) {
+      const sn = trimSn(item.sn)
+      const row = findSerial.get(sn, item.product_id) as SerialNumberRow | undefined
+      if (!row || row.status !== 'out' || row.out_source_id !== originalDocId) {
+        throw new BizError('VALIDATION', `序列号不属于对应出库单：${sn}`)
+      }
+    }
+  }
+
   function assertProductIsSerial(productId: number): void {
     const row = db
       .prepare('SELECT id, tracking_type FROM product WHERE id = ?')
@@ -514,7 +533,7 @@ export function createSerialService(db: DB) {
     }
   }
 
-  return { registerIn, consumeOut, restoreIn, listStock, listFlow, validateSns, stockOf, trace }
+  return { registerIn, consumeOut, restoreIn, reversalIn, listStock, listFlow, validateSns, stockOf, trace }
 }
 
 export type SerialService = ReturnType<typeof createSerialService>

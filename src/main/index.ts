@@ -20,7 +20,8 @@ import { BizError } from '../shared/result'
 // v1.3 Task 5: LAN 主机服务退出关闭引用（initialize 内 IIFE 赋值，window-all-closed 消费）。
 let hostServerRef: { close(): Promise<void> } | null = null
 // v1.3 Task 8: Tray 引用（仅 lanAllowed 创建；window-all-closed 隐藏语义 + before-quit 清理用）。
-let trayRef: import('electron').Tray | null = null
+// B6（T8 双审）：window-all-closed 按 lanAllowed 判断（模块级，Tray 创建失败也不误退）。
+let lanAllowedRef = false
 import { createDocService } from './services/doc/doc.service'
 import { createPrintIpc } from './print'
 import { createCsvIpc } from './csv'
@@ -273,6 +274,7 @@ function initialize(): void {
   // v1.3 Task 8: Tray 门控复用的组合布尔（原 if 条件追加提炼，语义不变）。
   const lanAllowed =
     hasFeature(licensePayload, 'lan_collaboration') && lanEnabledRow === '1'
+  lanAllowedRef = lanAllowed
   if (hasFeature(licensePayload, 'lan_collaboration') && lanEnabledRow === '1') {
     // initialize() 同步——异步启动放进 IIFE，失败只记日志不阻断主进程。
     void (async () => {
@@ -531,7 +533,6 @@ function initialize(): void {
             createWindow()
           }
         })
-        trayRef = tray
       } catch (e) {
         console.warn('[tray] create failed:', e)
       }
@@ -563,7 +564,7 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     // v1.3 Task 8 + T8 双审 B6：按 lanAllowed（license feature + 用户开关）判断，
     // 而非 trayRef——Tray 创建失败（如无图标）时窗口全关也不应 quit，主机留在后台持续可连。
-    if (lanAllowed) return
+    if (lanAllowedRef) return
     app.quit()
   }
 })

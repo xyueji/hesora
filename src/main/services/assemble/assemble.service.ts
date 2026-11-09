@@ -245,12 +245,17 @@ export function createAssembleService(db: DB) {
       page: q.page,
       pageSize: q.pageSize
     }
-    // 无 type 过滤时合并组装/拆卸两类单据
+    // 无 type 过滤时合并组装/拆卸两类单据。
+    // M2（T8 双审）：两类各按 page/pageSize 分页再合并会导致第 N 页数据错乱
+    // （每类都已消耗前 N-1 页），改为每类一次拉取足量后合并排序再正确切片。
     if (q.type) return docService.query({ ...base, type: q.type })
-    const a = docService.query({ ...base, type: 'assemble' })
-    const d = docService.query({ ...base, type: 'disassemble' })
+    const page = Math.max(1, Number(q.page) || 1)
+    const pageSize = Math.max(1, Number(q.pageSize) || 20)
+    const fetchSize = pageSize * page
+    const a = docService.query({ ...base, type: 'assemble', page: 1, pageSize: fetchSize })
+    const d = docService.query({ ...base, type: 'disassemble', page: 1, pageSize: fetchSize })
     const items = [...a.items, ...d.items].sort((x, y) => y.id - x.id)
-    return { total: a.total + d.total, items: items.slice(0, base.pageSize) }
+    return { total: a.total + d.total, items: items.slice((page - 1) * pageSize, page * pageSize) }
   }
 
   return {

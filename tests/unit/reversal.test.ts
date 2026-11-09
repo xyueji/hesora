@@ -389,3 +389,66 @@ it('stocktake 红冲：反向调整恢复库存与成本', () => {
   expect(items[0]?.qty).toBeCloseTo(-30)
   void inventoryService
 })
+
+it('序列号销售单红冲：原 SN 重开回库（T8 双审 C10，不再被 registerIn 查重拦截）', () => {
+  const { productService, purchaseService, saleService, reversalService, serialService, db, whId, customerId } = ctx
+  const snProductId = productService.create({
+    code: 'P-SN2', name: '笔记本', base_unit: '台',
+    retail_price: 5000, trade_price: 4800, purchase_price: 4500,
+    tracking_type: 'serial', units: [], barcodes: []
+  })
+  purchaseService.create({
+    warehouse_id: whId,
+    date: '2026-11-01',
+    items: [{ product_id: snProductId, unit: '台', qty: 1, price: 4500, serial_numbers: ['SN-S1'] }]
+  })
+  const sale = saleService.create({
+    warehouse_id: whId,
+    date: '2026-11-02',
+    customer_id: customerId,
+    items: [{ product_id: snProductId, unit: '台', qty: 1, price: 5000, serial_numbers: ['SN-S1'] }]
+  })
+  expect(serialService.stockOf(snProductId)).toBe(0)
+  // 红冲前 SN 为 out，且 out_source 指向原销售单
+  const outRow = db.prepare('SELECT status, out_source, out_source_id FROM serial_number WHERE sn=?').get('SN-S1') as { status: string; out_source: string; out_source_id: number }
+  expect(outRow.status).toBe('out')
+  expect(outRow.out_source).toBe('sale')
+  expect(outRow.out_source_id).toBe(sale.id)
+  // 红冲必须成功（修复前：applyChanges→registerIn 抛「序列号已存在」）
+  const rev = reversalService.reverse(sale.id)
+  expect(serialService.stockOf(snProductId)).toBe(1)
+  const row = db.prepare('SELECT status, warehouse_id FROM serial_number WHERE sn=?').get('SN-S1') as { status: string; warehouse_id: number }
+  expect(row.status).toBe('in_stock')
+  expect(row.warehouse_id).toBe(whId)
+  // 反向流水：红冲单含 SN-S1 的 in 流水
+  const flows = db.prepare('SELECT direction FROM serial_flow WHERE sn=? AND doc_id=?').all('SN-S1', rev.id) as { direction: string }[]
+  expect(flows.map((f) => f.direction)).toContain('in')
+})
+
+it('序列号 transfer 红冲：两仓对称回退，SN 回到源仓（T8 双审 C10）', () => {
+  const { productService, purchaseService, transferService, reversalService, serialService, db, whId, wh2Id } = ctx
+  const snProductId = productService.create({
+    code: 'P-SN3', name: '平板', base_unit: '台',
+    retail_price: 3000, trade_price: 2900, purchase_price: 2600,
+    tracking_type: 'serial', units: [], barcodes: []
+  })
+  purchaseService.create({
+    warehouse_id: whId,
+    date: '2026-11-01',
+    items: [{ product_id: snProductId, unit: '台', qty: 1, price: 2600, serial_numbers: ['SN-T1'] }]
+  })
+  const tr = transferService.create({
+    warehouse_id: whId,
+    warehouse_in_id: wh2Id,
+    date: '2026-11-02',
+    items: [{ product_id: snProductId, unit: '台', qty: 1, serial_numbers: ['SN-T1'] }]
+  })
+  expect(serialService.stockOf(snProductId)).toBe(1)
+  expect((db.prepare('SELECT warehouse_id FROM serial_number WHERE sn=?').get('SN-T1') as { warehouse_id: number }).warehouse_id).toBe(wh2Id)
+  // 红冲调拨单：SN 回源仓（修复前：镜像 in 腿走 registerIn 抛「序列号已存在」）
+  reversalService.reverse(tr.id)
+  const row = db.prepare('SELECT status, warehouse_id FROM serial_number WHERE sn=?').get('SN-T1') as { status: string; warehouse_id: number }
+  expect(row.status).toBe('in_stock')
+  expect(row.warehouse_id).toBe(whId)
+  expect(serialService.stockOf(snProductId)).toBe(1)
+})

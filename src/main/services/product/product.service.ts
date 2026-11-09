@@ -450,7 +450,7 @@ export function createProductService(db: DB) {
      * （未提供的字段保持原值）。整个操作在一个事务内完成，任一商品
      * 不存在则整体回滚。
      */
-    bulkUpdate(ids: number[], patch: BulkUpdatePatch): { updated: number } {
+    bulkUpdate(ids: number[], patch: BulkUpdatePatch, operator?: string): { updated: number } {
       if (!Array.isArray(ids) || ids.length === 0) {
         throw new BizError('VALIDATION', '请选择要修改的商品')
       }
@@ -507,7 +507,7 @@ export function createProductService(db: DB) {
         'INSERT INTO platform_log (action, operator, detail, created_at) VALUES (?, ?, ?, ?)'
       ).run(
         'product.bulk_update',
-        'system',
+        operator?.trim() ? operator.trim() : 'system',
         `批量修改 ${updated} 个商品；ids=[${cleanIds.join(',')}]; 字段=${Object.keys(vals).join(',')}`,
         new Date().toISOString()
       )

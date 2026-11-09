@@ -181,4 +181,23 @@ describe('assemble.service', () => {
     expect(ctx.assembleService.query({ page: 1, pageSize: 20, type: 'disassemble' }).total).toBe(1)
     expect(ctx.assembleService.query({ page: 1, pageSize: 20, keyword: 'ZZ' }).total).toBe(1)
   })
+
+  it('T8 双审 M2: merged query paginates consistently across pages (total matches items across all pages)', () => {
+    // 组装 2 张 + 拆卸 2 张 = 4 单（seed() 备足子件库存，拆卸回库不亏）
+    seed()
+    ctx.assembleService.create({ warehouse_id: ctx.wh, combo_id: ctx.comboC, qty: 2 })
+    ctx.assembleService.create({ warehouse_id: ctx.wh, combo_id: ctx.comboC, qty: 2 })
+    ctx.assembleService.disassemble({ warehouse_id: ctx.wh, combo_id: ctx.comboC, qty: 2 })
+    ctx.assembleService.disassemble({ warehouse_id: ctx.wh, combo_id: ctx.comboC, qty: 2 })
+    const p1 = ctx.assembleService.query({ page: 1, pageSize: 2 })
+    const p2 = ctx.assembleService.query({ page: 2, pageSize: 2 })
+    expect(p1.total).toBe(4)
+    expect(p1.items).toHaveLength(2)
+    expect(p2.items).toHaveLength(2)
+    // 两页合并 = 全部单据，无重复无遗漏，id 降序
+    const ids = [...p1.items.map((d) => d.id), ...p2.items.map((d) => d.id)]
+    expect(new Set(ids).size).toBe(4)
+    expect([...ids].sort((a, b) => b - a)).toEqual(ids)
+  })
 })
+
