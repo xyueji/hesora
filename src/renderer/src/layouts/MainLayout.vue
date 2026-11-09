@@ -142,6 +142,9 @@ const groups: MenuGroup[] = [
       { path: '/system/users', label: '用户管理', perm: 'system.user' },
       { path: '/system/roles', label: '角色权限', perm: 'system.role' },
       { path: '/sync', label: '同步备份', perm: 'data.sync' },
+      // v1.3 Task 8: LAN 主机（本机管理功能，host:* 通道 IPC 端另有 admin 守卫）
+      { path: '/host/connect', label: '设备配对', perm: 'system.setting' },
+      { path: '/host/devices', label: '已配对设备', perm: 'system.setting' },
       { path: '/guide?replay=1', label: '重新查看引导' },
       { path: '/about', label: '关于禾序' }
     ]

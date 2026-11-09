@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import MainLayout from './layouts/MainLayout.vue'
+import ConnectionStatusBar from './components/ConnectionStatusBar.vue'
 import { setLanConnected } from './lib/lan-state'
 
 // v1.3 Task 8: 打通 preload lan:state-changed → lanState（主进程在 LAN 主机启停、
@@ -17,6 +18,8 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <!-- v1.3 Task 8: 连接状态条置顶（CONNECTED 隐藏；断开黄/红条）。 -->
+  <ConnectionStatusBar />
   <router-view v-if="$route.path === '/login' || $route.path === '/activate'" />
   <MainLayout v-else />
 </template>

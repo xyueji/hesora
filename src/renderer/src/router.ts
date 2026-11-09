@@ -75,7 +75,10 @@ const routes: RouteRecordRaw[] = [
   { path: '/setting/print-templates', name: 'setting-print-templates', component: () => import('./views/setting/PrintTemplateView.vue'), meta: { title: '打印模板' } },
   { path: '/system/users', name: 'system-users', component: () => import('./views/system/UserListView.vue'), meta: { title: '用户管理' } },
   { path: '/system/roles', name: 'system-roles', component: () => import('./views/system/RoleListView.vue'), meta: { title: '角色权限' } },
-  { path: '/sync', name: 'sync', component: () => import('./views/sync/SyncView.vue'), meta: { title: '同步备份' } }
+  { path: '/sync', name: 'sync', component: () => import('./views/sync/SyncView.vue'), meta: { title: '同步备份' } },
+  // v1.3 Task 8: LAN 主机配对与设备管理
+  { path: '/host/connect', name: 'host-connect', component: () => import('./views/system/HostConnectView.vue'), meta: { title: '设备配对' } },
+  { path: '/host/devices', name: 'host-devices', component: () => import('./views/system/HostDevicesView.vue'), meta: { title: '已配对设备' } }
 ]
 
 const router = createRouter({

@@ -6,6 +6,7 @@ import { ensureProfileDir, resolveProfilePath } from './db/profile'
 import { seedDemoData, resetDemoData } from './db/seed'
 import { isTrialExpiredWrite, hasFeature } from '../shared/license'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
+import { createHostPairIpc, shouldCreateTray } from './ipc/host-pair-ipc'
 import { buildAllHandlers, canViewDocument, type HandlerDeps } from './ipc/handlers'
 import { PERMISSION_MAP } from './permissions-map'
 import { can, getCurrentUser, installUserLookup, canFor } from './auth'
@@ -18,6 +19,8 @@ import { BizError } from '../shared/result'
 
 // v1.3 Task 5: LAN 主机服务退出关闭引用（initialize 内 IIFE 赋值，window-all-closed 消费）。
 let hostServerRef: { close(): Promise<void> } | null = null
+// v1.3 Task 8: Tray 引用（仅 lanAllowed 创建；window-all-closed 隐藏语义 + before-quit 清理用）。
+let trayRef: import('electron').Tray | null = null
 import { createDocService } from './services/doc/doc.service'
 import { createPrintIpc } from './print'
 import { createCsvIpc } from './csv'
@@ -249,6 +252,8 @@ function initialize(): void {
   // fastify 等重依赖只在满足条件时动态 import——无 feature 时零开销（T10 验收点）。
   type HostServerHandleLike = { port: number; close(): Promise<void>; listen(): Promise<number>; onConnection(cb: (ws: unknown, req: import('node:http').IncomingMessage) => void): void }
   let hostServer: HostServerHandleLike | null = null
+  // v1.3 Task 8: pairing 实例提升到模块级闭包（host:* IPC 需在主机 IIFE 外可调）。
+  let pairingRef: import('./host/pairing').PairingService | null = null
   const licenseCodeRow = getDb().prepare("SELECT value FROM app_setting WHERE key='license.code'").pluck().get() as
     | string
     | undefined
@@ -257,6 +262,9 @@ function initialize(): void {
   const lanEnabledRow = getDb().prepare("SELECT value FROM app_setting WHERE key='host_lan_enabled'").pluck().get() as
     | string
     | undefined
+  // v1.3 Task 8: Tray 门控复用的组合布尔（原 if 条件追加提炼，语义不变）。
+  const lanAllowed =
+    hasFeature(licensePayload, 'lan_collaboration') && lanEnabledRow === '1'
   if (hasFeature(licensePayload, 'lan_collaboration') && lanEnabledRow === '1') {
     // initialize() 同步——异步启动放进 IIFE，失败只记日志不阻断主进程。
     void (async () => {
@@ -273,6 +281,7 @@ function initialize(): void {
       const handlers = new Map(buildAllHandlers(handlerDeps).map((h) => [h.channel, h]))
       const gw = createGateway({ getDb, handlers: handlers as never })
       const pairing = createPairingService(getDb() as never)
+      pairingRef = pairing
       const hostAuth = createHostAuthService(getDb() as never)
       hostServer = await createHostServer({
         getDb,
@@ -337,10 +346,9 @@ function initialize(): void {
           ;(ws as { on: (ev: string, cb: () => void) => void }).on('close', () => notifyLanState(hub.connectionCount() > 0))
         })
       }
-      // 配对确认：host 侧需要物理确认——UI 弹窗属 T8，本任务 console/通知占位。
-      // T8 接管点：轮询 pairing 待确认请求或事件推送，弹窗确认后调
-      // pairing.confirmPairing(code) → deviceSecrets.set(deviceId, secret.toString('hex'))。
-      console.log('[host] LAN 协作主机已启动（配对确认 UI 待 T8 接入）')
+      // 配对确认 UI 已接（v1.3 Task 8）：客户端 POST /pair/start 产生的码经 host:pairPending
+      // 轮询进主窗口确认卡片（/host/connect），[允许]→host:pairGrant 写三处 secret。
+      console.log('[host] LAN 协作主机已启动（配对确认 UI 已接：/host/connect 确认卡片）')
         hostServerRef = hostServer
       } catch (e) {
         // 主机服务启动失败不阻断主进程业务（本机单机模式仍完整可用）。
@@ -377,6 +385,131 @@ function initialize(): void {
   // 提示式更新（无需权限，登录前也可检查）
   registerUpdateIpc()
 
+  // ── v1.3 Task 8: 主机端 host:* IPC（配对确认/设备管理/状态） ──
+  // 逻辑层抽在 ipc/host-pair-ipc.ts（可测）；此处接线 main 侧真实依赖。
+  const hostPairIpc = createHostPairIpc({
+    getPairing: () => pairingRef,
+    getServerInfo: () => (hostServer ? { port: hostServer.port } : null),
+    deviceSecrets,
+    registerDeviceSecret: (id, hex) => {
+      // server.ts 内存表兜底（动态 import 避免 host 未启动时顶层加载 fastify 链）。
+      void import('./host/server').then((m) => m.registerDeviceSecret(id, hex))
+    },
+    secretStoreDeps: null, // initialize 下方 IIFE 异步填充（safeStorage 动态 import）
+    saveDeviceSecret: (d, id, hex) => {
+      // 异步写 DPAPI（失败仅影响持久化，不影响内存表两处写入）。
+      void import('./host/secret-store').then((m) => m.saveDeviceSecret(d, id, hex))
+    },
+    removeDeviceSecret: (d, id) => {
+      void import('./host/secret-store').then((m) => m.removeDeviceSecret(d, id))
+    },
+    lanAllowed: () => lanAllowed
+  })
+  // DPAPI deps 异步补齐（safeStorage 只能动态 import；secret-store 模块本身禁顶层 electron）。
+  void (async () => {
+    try {
+      const { safeStorage } = await import('electron')
+      hostPairIpc.setSecretStoreDeps({ userDataDir: app.getPath('userData'), safeStorage })
+    } catch {
+      // safeStorage 不可用→secret 只进内存（重启后重新配对），不阻断 IPC。
+    }
+  })()
+  // host:* 通道：admin only（host 属本机管理功能，不进 PERMISSION_MAP 走角色直判）。
+  registerIpc(
+    {
+      'host:pairStart': (_evt, payload) => {
+        const { deviceName } = (payload ?? {}) as { deviceName?: unknown }
+        return hostPairIpc.pairStart(deviceName)
+      },
+      'host:pairPending': () => hostPairIpc.pairPending(),
+      'host:pairGrant': (_evt, payload) => {
+        const { code } = (payload ?? {}) as { code?: unknown }
+        return hostPairIpc.pairGrant(code)
+      },
+      'host:pairDeny': (_evt, payload) => {
+        const { code } = (payload ?? {}) as { code?: unknown }
+        return hostPairIpc.pairDeny(code)
+      },
+      'host:listDevices': () => hostPairIpc.listDevices(),
+      'host:revokeDevice': (_evt, payload) => {
+        const { deviceId } = (payload ?? {}) as { deviceId?: unknown }
+        return hostPairIpc.revokeDevice(deviceId)
+      },
+      'host:status': () => hostPairIpc.status()
+    },
+    () => getCurrentUser()?.role === 'admin'
+  )
+
+  // ── v1.3 Task 8: Tray（仅 lanAllowed 创建，D4） ──
+  if (shouldCreateTray(lanAllowed)) {
+    void (async () => {
+      try {
+        const { Tray, Menu, nativeImage } = await import('electron')
+        const iconPath = app.isPackaged
+          ? join(process.resourcesPath, 'hesora.png')
+          : join(app.getAppPath(), 'resources/hesora.png')
+        const tray = new Tray(nativeImage.createFromPath(iconPath))
+        const rebuildMenu = (): void => {
+          const deviceCount = pairingRef
+            ? pairingRef.listDevices().filter((d) => d.revoked_at === null).length
+            : 0
+          tray.setContextMenu(
+            Menu.buildFromTemplate([
+              { label: hostServer ? '主机状态：运行中 (18650)' : '主机状态：未运行', enabled: false },
+              { label: `已连接设备：${deviceCount}`, enabled: false },
+              { type: 'separator' },
+              {
+                label: '打开主窗口',
+                click: () => {
+                  const win = BrowserWindow.getAllWindows()[0]
+                  if (win) {
+                    win.show()
+                    win.focus()
+                  } else {
+                    createWindow()
+                  }
+                }
+              },
+              {
+                label: '退出',
+                click: () => {
+                  // 彻底退出：先关 hostServer、清 Tray，再 app.exit（绕过 window-all-closed 隐藏逻辑）。
+                  void (async () => {
+                    try {
+                      if (hostServerRef) await hostServerRef.close()
+                    } catch { /* ignore */ }
+                    try {
+                      const { setHostEventSink } = await import('./host/event-bus')
+                      setHostEventSink(null)
+                    } catch { /* ignore */ }
+                    tray.destroy()
+                    app.exit(0)
+                  })()
+                }
+              }
+            ])
+          )
+        }
+        rebuildMenu()
+        // 设备数随配对/吊销变化：定时刷新菜单（3 台设备规模，30s 足够）。
+        const trayTimer = setInterval(rebuildMenu, 30_000)
+        trayTimer.unref?.()
+        tray.on('click', () => {
+          const win = BrowserWindow.getAllWindows()[0]
+          if (win) {
+            win.show()
+            win.focus()
+          } else {
+            createWindow()
+          }
+        })
+        trayRef = tray
+      } catch (e) {
+        console.warn('[tray] create failed:', e)
+      }
+    })()
+  }
+
   createWindow()
 
   app.on('activate', function () {
@@ -400,6 +533,9 @@ app.on('window-all-closed', () => {
     hostServerRef.close().catch(() => {})
   }
   if (process.platform !== 'darwin') {
+    // v1.3 Task 8: lanAllowed（有 Tray）时窗口全关 → 不退出，主机留在托盘持续可连；
+    // 用户从 Tray「打开主窗口」时 createWindow() 重建。
+    if (trayRef) return
     app.quit()
   }
 })
