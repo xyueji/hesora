@@ -6,7 +6,7 @@
 import { rmSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, it, expect, afterAll } from 'vitest'
+import { describe, it, expect, afterAll, vi } from 'vitest'
 import { openMemDb } from '../helpers/mem-db'
 import { createHostServer } from '../../src/main/host/server'
 import { createGateway } from '../../src/main/host/gateway'
@@ -63,7 +63,7 @@ async function startWired(): Promise<Ctx> {
   setHostEventSink((event) => hub.broadcast(event))
   app.onConnection((ws: unknown, req: IncomingMessage) => {
     const u = req.url ?? ''
-    if (!u.startsWith('/events')) {
+    if (!(u === '/events' || u.startsWith('/events?') || u.startsWith('/events/'))) {
       ;(ws as { close: () => void }).close()
       return
     }
@@ -105,6 +105,8 @@ function wsCloseInfo(ws: WsClient): Promise<{ code: number }> {
 }
 
 describe('Task 8: WS hub wiring (integration)', () => {
+  // T8 双审勘误：真实 TLS server + ws 握手偶发慢，整组放宽到 15s 防 flaky。
+  vi.setConfig({ testTimeout: 15_000 })
   it('valid token on /events → subscribe → subscribed', async () => {
     const ctx = await startWired()
     const ws = await wsOpen(ctx.url('/events', ctx.token))

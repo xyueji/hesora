@@ -6,7 +6,7 @@
 // 行为同 T5（重启后设备重新配对），只记日志。
 // 本模块禁止 import electron 顶层——由调用方（index.ts）注入 SafeStorageLike，
 // 测试可注入 fake（交付项⑤的注入式测试约定）。
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** electron safeStorage 的最小结构（主进程注入；测试用 fake 实现）。 */
@@ -34,6 +34,14 @@ interface StoredShape {
 function filePath(deps: SecretStoreDeps): string {
   return join(deps.userDataDir, FILE_NAME)
 }
+
+/** T8 双审勘误 I3：tmp 文件 + renameSync 原子写（同目录同盘 rename 原子），防中途崩溃留半截密文。 */
+function atomicWrite(file: string, data: string): void {
+  const tmp = `${file}.tmp`
+  writeFileSync(tmp, data, 'utf8')
+  renameSync(tmp, file)
+}
+
 
 function readStore(deps: SecretStoreDeps): StoredShape {
   const p = filePath(deps)
@@ -75,7 +83,7 @@ export function saveDeviceSecret(deps: SecretStoreDeps, deviceId: string, secret
   try {
     const store = readStore(deps)
     store.secrets[deviceId] = deps.safeStorage.encryptString(secretHex).toString('base64')
-    writeFileSync(filePath(deps), JSON.stringify(store), 'utf8')
+    atomicWrite(filePath(deps), JSON.stringify(store))
     return true
   } catch (e) {
     deps.log?.('error', `saveDeviceSecret failed: ${String(e)}`)
@@ -108,7 +116,7 @@ export function removeDeviceSecret(deps: SecretStoreDeps, deviceId: string): voi
     const store = readStore(deps)
     if (deviceId in store.secrets) {
       delete store.secrets[deviceId]
-      writeFileSync(filePath(deps), JSON.stringify(store), 'utf8')
+      atomicWrite(filePath(deps), JSON.stringify(store))
     }
   } catch (e) {
     deps.log?.('error', `removeDeviceSecret failed: ${String(e)}`)

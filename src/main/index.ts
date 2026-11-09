@@ -307,16 +307,18 @@ function initialize(): void {
             return null
           }
         }
-        // 连接数变化 → 渲染端 lan:state-changed（devHubInfo 是 T5 已有 shape 的扩展）
-        const notifyLanState = (): void => {
+        // 连接数变化 → 渲染端 lan:state-changed。
+        // T8 双审勘误（C1/I1）：payload 为布尔 connected（与 preload/App.vue 契约一致），
+        // 且按真实状态发送：连接成功 true，连接关闭后 hub 无连接则 false。
+        const notifyLanState = (connected: boolean): void => {
           for (const win of BrowserWindow.getAllWindows()) {
-            win.webContents.send('lan:state-changed', { connected: true, clients: hub.connectionCount() })
+            win.webContents.send('lan:state-changed', connected)
           }
         }
         hostServer.onConnection((ws: unknown, req: import("node:http").IncomingMessage) => {
           const u = urlOf(req)
           // upgrade 路径过滤：仅 /events 进 hub；其他 upgrade 路径一律关闭
-          if (!u.startsWith('/events')) {
+          if (!(u === '/events' || u.startsWith('/events?') || u.startsWith('/events/'))) {
             try { (ws as { close: () => void }).close() } catch { /* ignore */ }
             return
           }
@@ -331,8 +333,8 @@ function initialize(): void {
             { deviceId: session.deviceId, userId: session.userId },
             (userId, key) => canFor(userId, key)
           )
-          notifyLanState()
-          ;(ws as { on: (ev: string, cb: () => void) => void }).on('close', notifyLanState)
+          notifyLanState(true)
+          ;(ws as { on: (ev: string, cb: () => void) => void }).on('close', () => notifyLanState(hub.connectionCount() > 0))
         })
       }
       // 配对确认：host 侧需要物理确认——UI 弹窗属 T8，本任务 console/通知占位。
@@ -384,6 +386,16 @@ function initialize(): void {
 
 app.on('window-all-closed', () => {
   // v1.3 Task 5: 退出时关闭 LAN 主机服务（若已启动）。
+  // T8 双审勘误（I5）：退出时摘除主机事件 sink，防止退出途中再向已关闭的 hub 广播；
+  // pending 幂等登记 flush 留 TODO——pending-registry 目前在 lan-client（T9 客户端接线）
+  // 中实例化，本任务未实例化故无可 flush 对象。
+  void (async () => {
+    try {
+      const { setHostEventSink } = await import('./host/event-bus')
+      setHostEventSink(null)
+    } catch { /* ignore */ }
+  })()
+  // TODO(T9): lan-client + PendingRegistry 在客户端接线时实例化，届时在此 flush()
   if (hostServerRef) {
     hostServerRef.close().catch(() => {})
   }

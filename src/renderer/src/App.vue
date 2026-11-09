@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import MainLayout from './layouts/MainLayout.vue'
 import { setLanConnected } from './lib/lan-state'
 
 // v1.3 Task 8: 打通 preload lan:state-changed → lanState（主进程在 LAN 主机启停、
-// 设备连上/断开时 send('lan:state-changed', { connected, clients? })）。
+// 设备连上/断开时 send('lan:state-changed', connected: boolean)——T8 双审勘误 C1：
+// payload 为布尔，与 preload 契约一致）。onUnmounted 解绑防重复订阅泄漏。
+let handler: ((connected: boolean) => void) | null = null
 onMounted(() => {
-  window.api.onLanStateChanged((connected: boolean) => setLanConnected(connected))
+  handler = (connected: boolean) => setLanConnected(connected)
+  window.api.onLanStateChanged(handler)
+})
+onUnmounted(() => {
+  handler = null
 })
 </script>
 

@@ -49,19 +49,41 @@ export function isTransientFailure(result: Result): boolean {
   return !result.ok && !(DETERMINISTIC_CODES as ReadonlySet<string>).has(result.code)
 }
 
+/** T8 双审勘误 Minor：pending 上限，超出驱逐最旧（Map 保序 = 插入序）。 */
+const MAX_PENDING = 200
+
 export function createPendingRegistry(deps?: PendingRegistryDeps): PendingRegistry {
   const map = new Map<string, PendingEntry>() // key=requestId
   if (deps?.persist) {
-    for (const e of deps.persist.load()) map.set(e.requestId, e)
+    // T8 双审勘误 I4：load/save 降级——持久化损坏不阻断业务，记 console 后按空恢复。
+    try {
+      for (const e of deps.persist.load()) map.set(e.requestId, e)
+    } catch (e) {
+      console.error('[pending-registry] persist.load failed, starting empty:', e)
+    }
   }
 
   function persist(): void {
-    deps?.persist?.save([...map.values()])
+    if (!deps?.persist) return
+    try {
+      deps.persist.save([...map.values()])
+    } catch (e) {
+      console.error('[pending-registry] persist.save failed (kept in memory):', e)
+    }
+  }
+
+  function evictOldest(): void {
+    while (map.size >= MAX_PENDING) {
+      const oldest = map.keys().next()
+      if (oldest.done) break
+      map.delete(oldest.value)
+    }
   }
 
   return {
     track(entry) {
       if (!isIdempotent(entry.channel)) return false
+      evictOldest()
       map.set(entry.requestId, entry)
       persist()
       return true
