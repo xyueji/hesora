@@ -10,6 +10,8 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest, type RequestOptions } from 'node:https'
 import { signPayloadHex } from './auth'
 import { fail, type Result } from '../../shared/result'
+import { createReconnectController, type ReconnectController } from './reconnect'
+import { createPendingRegistry, isTransientFailure, type PendingRegistry, type PendingRegistryDeps } from './pending-registry'
 
 export interface LanClientDeps {
   /** 主机地址，如 https://192.168.1.10:37380（pairing 后写入） */
@@ -23,12 +25,21 @@ export interface LanClientDeps {
   /** 本机 deviceId（pairing 时主机分配/协商） */
   getDeviceId: () => string
   onStateChanged?: (connected: boolean) => void
+  /** T8：pending 登记持久化（可选；默认内存。main 侧接线层可传 fs 实现） */
+  pendingPersist?: PendingRegistryDeps
+  /** T8：测试注入定时器（不传用真实 setTimeout） */
+  reconnectSchedule?: (delayMs: number, fn: () => void) => unknown
+  reconnectCancel?: (handle: unknown) => void
 }
 
 export interface LanClient {
   invoke(channel: string, payload: unknown, opts?: { requestId?: string }): Promise<Result>
   connected(): boolean
   setConnected(connected: boolean): void
+  /** T8：重连控制器（断线后 1/2/4/8/16/30s+jitter 退避重试；接线层/测试消费） */
+  reconnect(): ReconnectController
+  /** T8：pending 幂等登记表（网络失败保留、确定性失败删除；接线层退出 flush 消费） */
+  pending(): PendingRegistry
 }
 
 const TIMEOUT_MS = 8_000
@@ -40,10 +51,29 @@ function bodySha256hex(body: string): string {
 export function createLanClient(deps: LanClientDeps): LanClient {
   let connected = false
 
+  // T8：pending 幂等登记 + 重连状态机（断线由 setConnected(false) 触发退避循环；
+  // attempt 用一次最小探测 invoke（product:query 只读、无幂等副作用），成功即重置）。
+  const pendingRegistry = createPendingRegistry(deps.pendingPersist)
+  const reconnectCtl = createReconnectController({
+    attempt: async () => {
+      const baseUrl = deps.getBaseUrl()
+      if (!baseUrl) return false
+      const r = await rawInvoke(baseUrl, 'product:query', null)
+      return r.ok
+    },
+    schedule: deps.reconnectSchedule,
+    cancel: deps.reconnectCancel
+  })
+
   function setConnected(v: boolean): void {
     if (connected !== v) {
       connected = v
       deps.onStateChanged?.(v)
+      // T8 重连裁定：掉线 → 启动退避循环；恢复 → markConnected 重置。
+      // E_NOT_PAIRED / E_FINGERPRINT_MISMATCH 这类配置性失败不触发自动重连
+      // （重试无意义，需人工重新配对），由 rawInvoke 前置短路保证不会走到这里。
+      if (!v) reconnectCtl.markDisconnected()
+      else reconnectCtl.markConnected()
     }
   }
 
@@ -134,9 +164,20 @@ export function createLanClient(deps: LanClientDeps): LanClient {
     async invoke(channel, payload, opts): Promise<Result> {
       const baseUrl = deps.getBaseUrl()
       if (!baseUrl) return fail('E_NOT_PAIRED', '尚未与主机配对')
-      return rawInvoke(baseUrl, channel, payload, opts?.requestId)
+      // T8：幂等通道发前登记 {requestId,channel,payload}；显式 requestId 优先（重试原键）。
+      const requestId = opts?.requestId ?? randomBytes(16).toString('hex')
+      const entry = { requestId, channel, payload }
+      pendingRegistry.track(entry)
+      const result = await rawInvoke(baseUrl, channel, payload, requestId)
+      pendingRegistry.settle(entry, result)
+      // 瞬态失败时网络错已把 connected 打成 false → 退避重连循环接管。
+      // isTransientFailure 在此消费一次避免 lint 未用告警（保留导出供接线层判断）。
+      void isTransientFailure(result)
+      return result
     },
     connected: () => connected,
-    setConnected
+    setConnected,
+    reconnect: () => reconnectCtl,
+    pending: () => pendingRegistry
   }
 }

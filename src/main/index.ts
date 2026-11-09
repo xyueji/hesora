@@ -224,14 +224,30 @@ function initialize(): void {
   idemCleanupTimer.unref?.()
 
   // ── v1.3 Task 5: LAN 协作主机服务懒加载接线 ──
-  // 设备 secret 内存表（重启即空 → 设备重新配对，v1.3 简化裁定；T6 持久化议题）。
+  // 设备 secret 内存表。T8 裁定：启动时从 secret-store（DPAPI/safeStorage）载入已持久化
+  // secret，不可用则保持 T5 行为（重启后设备重新配对），只记日志。配对确认成功后写回。
   const deviceSecrets = new Map<string, string>()
   const deviceSecretLookup = (deviceId: string): string | null => deviceSecrets.get(deviceId) ?? null
+  void (async () => {
+    try {
+      const { loadDeviceSecrets, isSecretPersistenceAvailable } = await import('./host/secret-store')
+      const { safeStorage } = await import('electron')
+      const deps = { userDataDir: app.getPath('userData'), safeStorage }
+      if (isSecretPersistenceAvailable(deps)) {
+        for (const [deviceId, secretHex] of loadDeviceSecrets(deps)) deviceSecrets.set(deviceId, secretHex)
+        console.log(`[host] loaded ${deviceSecrets.size} persisted device secret(s)`)
+      } else {
+        console.warn('[host] safeStorage unavailable — device secrets not persisted this session')
+      }
+    } catch (e) {
+      console.warn('[host] device secret load failed (re-pair after restart):', e)
+    }
+  })()
 
 
   // 双条件才启动：①授权含 lan_collaboration feature ②用户已开启 host_lan_enabled（默认 off）。
   // fastify 等重依赖只在满足条件时动态 import——无 feature 时零开销（T10 验收点）。
-  type HostServerHandleLike = { port: number; close(): Promise<void>; listen(): Promise<number> }
+  type HostServerHandleLike = { port: number; close(): Promise<void>; listen(): Promise<number>; onConnection(cb: (ws: unknown, req: import('node:http').IncomingMessage) => void): void }
   let hostServer: HostServerHandleLike | null = null
   const licenseCodeRow = getDb().prepare("SELECT value FROM app_setting WHERE key='license.code'").pluck().get() as
     | string
@@ -251,6 +267,8 @@ function initialize(): void {
       const { createGateway } = await import('./host/gateway')
       const { createPairingService } = await import('./host/pairing')
       const { createHostAuthService } = await import('./host/auth')
+      const { createEventHub } = await import('./host/events')
+      const { setHostEventSink } = await import('./host/event-bus')
       const cert = await ensureHostCertificate(join(app.getPath('userData'), 'host-cert'))
       const handlers = new Map(buildAllHandlers(handlerDeps).map((h) => [h.channel, h]))
       const gw = createGateway({ getDb, handlers: handlers as never })
@@ -272,6 +290,51 @@ function initialize(): void {
         console.error('[host] listen failed:', e)
         hostServer = null
       })
+      // ── v1.3 Task 8: WS 事件 hub 接线 ──
+      // spec §4.2：token 经 URL query ?token= 传入（首消息 {type:'auth',token} 兜底裁定见 spec 勘误节——
+      // 本实现采用 query 单通道，无效即 close(4001)，不做首消息兜底以减少半认证窗口）。
+      // 防双 ping 裁定：hub 侧 25s JSON ping 是唯一心跳；server.ts 无任何 ping（见 spec 勘误节）。
+      if (hostServer) {
+        const hub = createEventHub({ log: (msg) => console.log(`[hub] ${msg}`) })
+        // 业务事件 → hub.broadcast → 已订阅且有权重的 WS 客户端
+        setHostEventSink((event) => hub.broadcast(event))
+        const urlOf = (req: { url?: string }): string => req.url ?? ''
+        const tokenOfUrl = (u: string): string | null => {
+          try {
+            const q = new URL(u, 'https://local').searchParams
+            return q.get('token')
+          } catch {
+            return null
+          }
+        }
+        // 连接数变化 → 渲染端 lan:state-changed（devHubInfo 是 T5 已有 shape 的扩展）
+        const notifyLanState = (): void => {
+          for (const win of BrowserWindow.getAllWindows()) {
+            win.webContents.send('lan:state-changed', { connected: true, clients: hub.connectionCount() })
+          }
+        }
+        hostServer.onConnection((ws: unknown, req: import("node:http").IncomingMessage) => {
+          const u = urlOf(req)
+          // upgrade 路径过滤：仅 /events 进 hub；其他 upgrade 路径一律关闭
+          if (!u.startsWith('/events')) {
+            try { (ws as { close: () => void }).close() } catch { /* ignore */ }
+            return
+          }
+          const token = tokenOfUrl(u)
+          const session = token ? hostAuth.validateSession(token) : null
+          if (!session) {
+            try { (ws as { close: (code?: number) => void }).close(4001) } catch { /* ignore */ }
+            return
+          }
+          hub.registerConnection(
+            ws as never,
+            { deviceId: session.deviceId, userId: session.userId },
+            (userId, key) => canFor(userId, key)
+          )
+          notifyLanState()
+          ;(ws as { on: (ev: string, cb: () => void) => void }).on('close', notifyLanState)
+        })
+      }
       // 配对确认：host 侧需要物理确认——UI 弹窗属 T8，本任务 console/通知占位。
       // T8 接管点：轮询 pairing 待确认请求或事件推送，弹窗确认后调
       // pairing.confirmPairing(code) → deviceSecrets.set(deviceId, secret.toString('hex'))。

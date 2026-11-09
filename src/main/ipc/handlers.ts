@@ -27,6 +27,8 @@ import { createWarehouseService } from '../services/warehouse/warehouse.service'
 import { createFundService } from '../services/fund/fund.service'
 import { createFundLedger } from '../services/fund/ledger.service'
 import { createSettingService } from '../services/setting/setting.service'
+import { emitHostEvent } from '../host/event-bus'
+
 import { createCategoryService } from '../services/setting/category.service'
 import { createFormulaService } from '../services/product/formula.service'
 import { createOpeningService } from '../services/opening/opening.service'
@@ -345,7 +347,7 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
 
     // ── product ──
-    { channel: 'product:create', handler: (_evt, payload) => svc.create(payload as never) },
+    { channel: 'product:create', handler: (_evt, payload) => { const created = svc.create(payload as never); emitHostEvent({ event: 'master.changed', at: new Date().toISOString(), summary: { id: created } }); return created } },
     { channel: 'product:update', handler: (_evt, payload, session) => {
       const { id, p } = payload as { id: number; p: Record<string, unknown> }
       getDb().transaction(() => {
@@ -448,7 +450,7 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
 
     // ── customer ──
-    { channel: 'customer:create', handler: (_evt, payload) => customerSvc.create(payload as never) },
+    { channel: 'customer:create', handler: (_evt, payload) => { const created = customerSvc.create(payload as never); emitHostEvent({ event: 'master.changed', at: new Date().toISOString(), summary: { id: created } }); return created } },
     { channel: 'customer:update', handler: (_evt, payload) => {
       const { id, p } = payload as { id: number; p: Record<string, unknown> }
       customerSvc.update(id, p)
@@ -518,6 +520,17 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const before = settingSvc.get(key)
       settingSvc.remove(key)
       audit('setting:remove', key, before ?? null, undefined, session)
+    } },
+
+    // ── v1.3 Task 8: LAN 主机配置（权限复用 system.setting；host_lan_enabled 默认 '0'）──
+    // 写入后不热启：懒加载在主进程启动时判定，用户需重启应用生效。
+    { channel: 'lan:getConfig', handler: () => ({ hostLanEnabled: settingSvc.get('host_lan_enabled') === '1' }) },
+    { channel: 'lan:setConfig', handler: (_evt, payload, session) => {
+      const { hostLanEnabled } = payload as { hostLanEnabled?: boolean }
+      const value = hostLanEnabled ? '1' : '0'
+      const before = settingSvc.get('host_lan_enabled') ?? '0'
+      settingSvc.set('host_lan_enabled', value)
+      audit('lan:setConfig', value, before, undefined, session)
     } },
 
     // ── 收支科目主档 ──
@@ -642,13 +655,17 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const user = userFor(session)
       const reviewed = docSvc.review(id, { reviewer: reviewer ?? user?.username ?? '' })
       auditSvc.record('doc.review', reviewer ?? user?.username, `补审核单据 ${reviewed.no}`, undefined, JSON.stringify({ id }))
+      emitHostEvent({ event: 'doc.changed', at: new Date().toISOString(), summary: { no: reviewed.no } })
       return reviewed
     } },
 
     // ── purchase ──
     { channel: 'purchase:create', handler: (_evt, payload, session) => {
       if (!canForUser(session, 'doc.approve')) throw new BizError('FORBIDDEN', '请先保存进货草稿，由有审核权限的操作员过账')
-      return purchaseSvc.create(payload as never)
+      const created = purchaseSvc.create(payload as never)
+      emitHostEvent({ event: 'doc.changed', at: new Date().toISOString(), summary: { no: created.no }})
+      emitHostEvent({ event: 'inventory.changed', at: new Date().toISOString(), summary: { no: created.no }})
+      return created
     } },
     { channel: 'purchase:createReturn', handler: (_evt, payload) => purchaseSvc.createReturn(payload as never) },
     { channel: 'purchase:getDetail', handler: (_evt, payload) => purchaseSvc.getDetail(Number(payload)) },
@@ -657,7 +674,10 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     // ── sale ──
     { channel: 'sale:create', handler: (_evt, payload, session) => {
       if (!canForUser(session, 'doc.approve')) throw new BizError('FORBIDDEN', '请先保存销售草稿，由有审核权限的操作员过账')
-      return saleSvc.create(payload as never)
+      const created = saleSvc.create(payload as never)
+      emitHostEvent({ event: 'doc.changed', at: new Date().toISOString(), summary: { no: created.no }})
+      emitHostEvent({ event: 'inventory.changed', at: new Date().toISOString(), summary: { no: created.no }})
+      return created
     } },
     { channel: 'sale:createReturn', handler: (_evt, payload) => saleSvc.createReturn(payload as never) },
     { channel: 'sale:getDetail', handler: (_evt, payload) => saleSvc.getDetail(Number(payload)) },
@@ -677,7 +697,7 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
 
     // ── retail ──
-    { channel: 'retail:create', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.create(payload as never, u.id) } },
+    { channel: 'retail:create', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); const created = retailSvc.create(payload as never, u.id); emitHostEvent({ event: 'inventory.changed', at: new Date().toISOString(), summary: { no: created.no }}); return created } },
     { channel: 'retail:hold', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.hold(u.id, payload as never) } },
     { channel: 'retail:listHeld', handler: (_evt, _payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.listHeld(u.id) } },
     { channel: 'retail:discardHeld', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.discardHeld(u.id, Number(payload)) } },
@@ -693,6 +713,7 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       const { type, p } = payload as { type: unknown; p: PaymentCreateInput }
       const created = paymentSvc.createOne(paymentType(type), p)
       auditSvc.record('payment:create', operator(session), `收款付款单 ${String(type)}`, undefined, JSON.stringify({ id: created.id, no: created.no }))
+      emitHostEvent({ event: 'doc.changed', at: new Date().toISOString(), summary: { no: created.no }})
       return created
     } },
     { channel: 'payment:query', handler: (_evt, payload) => {

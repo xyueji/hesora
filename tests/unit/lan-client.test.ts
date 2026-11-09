@@ -111,7 +111,9 @@ describe('lan-client', () => {
         return { ok: true, code: 'OK', msg: '', data: null }
       },
       connected: () => true,
-      setConnected: () => {}
+      setConnected: () => {},
+      reconnect: () => ({ markDisconnected: () => {}, markConnected: () => {}, stop: () => {}, state: () => 'idle' as const, nextDelayMs: () => null }),
+      pending: () => ({ track: () => false, settle: () => {}, all: () => [], size: () => 0, flush: () => {} })
     })
     await handlers.invoke('product:query', null)
     expect(calls).toEqual(['product:query'])

@@ -166,6 +166,9 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'setting:get': 'system.setting',
   'setting:set': 'system.setting',
   'setting:getAll': 'system.setting',
+  // v1.3 Task 8: LAN 主机配置（复用系统设置权限）
+  'lan:getConfig': 'system.setting',
+  'lan:setConfig': 'system.setting',
   'setting:remove': 'system.setting',
   'category:list': 'system.setting',
   'category:create': 'system.setting',

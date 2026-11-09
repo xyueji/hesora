@@ -66,7 +66,9 @@ const form = reactive({
   // 让利闭环：开单抹零（sale.rounding，JSON {enabled, mode}）
   // 抹零档位以字符串存放，保存/校验时收窄为 'jiao'|'yuan'|'fen'（service 层同样校验）
   'sale.rounding.enabled': false,
-  'sale.rounding.mode': 'fen'
+  'sale.rounding.mode': 'fen',
+  // v1.3 Task 8: LAN 协作主机开关（默认关；写入后需重启应用生效——启动时懒加载判定）
+  'host_lan_enabled': false
 })
 
 onMounted(async () => {
@@ -83,6 +85,8 @@ onMounted(async () => {
         // 枚举字段由下方 JSON 解析回填，不在此处赋值
       } else if (key === 'sale.rounding.enabled') {
         form['sale.rounding.enabled'] = v === '1'
+      } else if (key === 'host_lan_enabled') {
+        form['host_lan_enabled'] = v === '1'
       } else if (v !== undefined) {
         form[key] = v
       }
@@ -139,7 +143,10 @@ async function save() {
       JSON.stringify({ enabled: form['sale.rounding.enabled'], mode: form['sale.rounding.mode'] })
     )
     await settingApi.set('doc.no_prefix', JSON.stringify(docPrefixes))
-    ElMessage.success('设置已保存')
+    // LAN 主机开关经专用 IPC（权限 system.setting）；开启时提示需重启
+    await call('lan:setConfig', { hostLanEnabled: form['host_lan_enabled'] })
+    if (form['host_lan_enabled']) ElMessage.success('设置已保存。局域网协作将在下次启动应用时生效')
+    else ElMessage.success('设置已保存')
   } catch (e) {
     ElMessage.error((e as Error).message || '保存失败')
   } finally {
@@ -180,6 +187,11 @@ async function save() {
         <el-divider content-position="left">显示开关</el-divider>
         <el-form-item label="新手引导">
           <el-checkbox v-model="form['guide.show']">是否显示新手引导</el-checkbox>
+        </el-form-item>
+        <el-form-item label="局域网协作">
+          <el-checkbox v-model="form['host_lan_enabled']">
+            允许局域网内已配对设备连接本机协作（需授权包含协作功能；修改后重启应用生效）
+          </el-checkbox>
         </el-form-item>
         <el-form-item label="批号必录">
           <el-checkbox v-model="form['product.batch_required']">

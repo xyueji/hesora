@@ -33,6 +33,8 @@ const EXPECTED_CHANNELS: string[] = [
   'ledger:accounts', 'ledger:entries', 'ledger:transfer', 'fund:create', 'fund:update', 'fund:get', 'fund:query', 'fund:disable', 'fund:enable',
   // setting
   'setting:get', 'setting:set', 'setting:getAll', 'setting:remove',
+  // v1.3 Task 8: LAN config
+  'lan:getConfig', 'lan:setConfig',
   // category
   'category:list', 'category:create', 'category:update', 'category:remove', 'category:disable', 'category:enable',
   // formula
