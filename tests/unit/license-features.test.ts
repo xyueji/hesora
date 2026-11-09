@@ -46,11 +46,12 @@ describe('resolveLicenseFeatures', () => {
     const p = { customer: 'c', issuedAt: 'x', edition: 'ultimate', features: ['rbac'], maxDevices: 5 } as unknown as LicensePayload
     expect(resolveLicenseFeatures(p)).toEqual({ edition: 'standard', features: [], maxDevices: 1 })
   })
-  it('maxDevices 0 / -5 / NaN → 1; valid kept', () => {
+  it('maxDevices 0 / -5 / NaN / 2.5 → 1; valid kept', () => {
     const base = { customer: 'c', issuedAt: 'x', edition: 'professional' } as const
     expect(resolveLicenseFeatures({ ...base, maxDevices: 0 }).maxDevices).toBe(1)
     expect(resolveLicenseFeatures({ ...base, maxDevices: -5 }).maxDevices).toBe(1)
     expect(resolveLicenseFeatures({ ...base, maxDevices: Number.NaN }).maxDevices).toBe(1)
+    expect(resolveLicenseFeatures({ ...base, maxDevices: 2.5 }).maxDevices).toBe(1)
     expect(resolveLicenseFeatures({ ...base, maxDevices: 3 }).maxDevices).toBe(3)
   })
   it('generateLicenseCode roundtrip preserves edition/features/maxDevices', () => {

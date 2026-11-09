@@ -1,3 +1,4 @@
+-- 082: LAN 主机会话表（多机协同会话令牌哈希与状态）
 CREATE TABLE IF NOT EXISTS host_sessions (
   token_hash   TEXT PRIMARY KEY,
   device_id    TEXT NOT NULL,

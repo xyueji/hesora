@@ -1,3 +1,4 @@
+-- 080: LAN 指令结果表（渲染层命令回执/结果留存，v1.3 多机协同）
 CREATE TABLE IF NOT EXISTS command_results (
   request_id   TEXT PRIMARY KEY,
   channel      TEXT NOT NULL,

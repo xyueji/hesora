@@ -120,7 +120,7 @@ export function resolveLicenseFeatures(p: LicensePayload | null | undefined): Re
   const features = Array.isArray(p.features)
     ? p.features.filter((f): f is LicenseFeature => VALID_FEATURES.includes(f))
     : []
-  const maxDevices = typeof p.maxDevices === 'number' && Number.isFinite(p.maxDevices) && p.maxDevices >= 1
+  const maxDevices = typeof p.maxDevices === 'number' && Number.isInteger(p.maxDevices) && p.maxDevices >= 1
     ? p.maxDevices
     : 1
   return { edition: p.edition, features, maxDevices }
