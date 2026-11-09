@@ -29,6 +29,8 @@ export interface RetailCreateInput {
   remark?: string
   /** 业务员（操作员用户名） */
   operator?: string
+  /** P1 功能 #2 预存款抵扣：从 customer.prepaid 扣减的金额（需 ≤ 预存款余额；散客不可用） */
+  prepaid_amount?: number
   items: RetailItemInput[]
 }
 

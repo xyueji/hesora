@@ -174,3 +174,19 @@ describe('payment.service', () => {
     expect(ctx.paymentService.query(type, { page: 1, pageSize: 20 }).items).toHaveLength(1)
   })
 })
+
+// ── S 级功能批次 B：[10] 资金流水关联收支科目 ──
+describe('payment.service category_id (S 批次 B)', () => {
+  let ctx: ReturnType<typeof setup>
+  beforeEach(() => { ctx = setup() })
+
+  it('writes fund_flow.category_id when valid; rejects unknown category', () => {
+    const catId = Number(
+      ctx.db.prepare("INSERT INTO income_category (name, kind) VALUES ('运费', 'expense')").run().lastInsertRowid
+    )
+    const doc = ctx.paymentService.createOne('other_out', { account_id: ctx.accountId, amount: 12.5, category_id: catId })
+    const flow = ctx.db.prepare('SELECT category_id FROM fund_flow WHERE doc_id = ? AND doc_type = ?').get(doc.id, 'other_out') as { category_id: number | null }
+    expect(flow.category_id).toBe(catId)
+    expect(() => ctx.paymentService.createOne('other_out', { account_id: ctx.accountId, amount: 1, category_id: 99999 })).toThrow(/收支科目不存在/)
+  })
+})

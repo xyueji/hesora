@@ -73,8 +73,7 @@ describe('dashboard.service', () => {
     expect(s.gross_profit).toBe(10)
   })
 
-  it('summary: retail_amount counts retail docs of the date; stock_amount sums inventory qty*moving_cost', () => {
-    const { warehouseId, accountId, productId } = setupBase()
+  it('summary: retail_amount counts retail docs of the date; stock_amount sums inventory qty*moving_cost', () => {    const { warehouseId, accountId, productId } = setupBase()
     createPurchaseService(db).create({
       warehouse_id: warehouseId,
       date: '2026-03-08',
@@ -205,5 +204,52 @@ describe('dashboard.service', () => {
     const s = svc.summary(today)
     expect(s.expiring_batch_count).toBe(1)
     expect(s.expired_batch_count).toBe(1)
+  })
+
+  // ── S 级功能批次 B [5] 日报速览 ──
+  describe('[5] todayBrief', () => {
+    it('computes today in/sale/stock and yesterday closing qty', () => {
+      const { customerId, supplierId, warehouseId, productId } = setupBase()
+      const purchases = createPurchaseService(db)
+      const sales = createSaleService(db)
+      // 昨日采购入库 10 → 昨日期末 10
+      purchases.create({ supplier_id: supplierId, warehouse_id: warehouseId, date: '2026-03-09', items: [{ product_id: productId, qty: 10, price: 2 }] })
+      // 今日采购入库 5、销售出库 4 → 今日入库 5、销售量 4、期末 11、昨日 10
+      purchases.create({ supplier_id: supplierId, warehouse_id: warehouseId, date: TODAY, items: [{ product_id: productId, qty: 5, price: 2 }] })
+      sales.create({ customer_id: customerId, warehouse_id: warehouseId, date: TODAY, items: [{ product_id: productId, qty: 4, price: 5 }] })
+      // 销售退货入库 1（计入今日入库）
+      sales.createReturn({ customer_id: customerId, warehouse_id: warehouseId, date: TODAY, account_id: undefined, source_doc_id: undefined, items: [{ product_id: productId, qty: 1, price: 5 }] } as never)
+      const brief = svc.todayBrief(TODAY)
+      expect(brief.today_in_qty).toBe(6) // 采购 5 + 退货入库 1
+      expect(brief.today_sale_qty).toBe(4)
+      expect(brief.today_stock_qty).toBe(12) // 10 昨日采购 + 5 今日采购 - 4 销售 + 1 退货
+      expect(brief.yesterday_stock_qty).toBe(10)
+    })
+
+    it('returns zeros on an empty day', () => {
+      const brief = svc.todayBrief(TODAY)
+      expect(brief).toEqual({ yesterday_stock_qty: 0, today_sale_qty: 0, today_in_qty: 0, today_stock_qty: 0 })
+    })
+  })
+
+  // ── S 级功能批次 B [6] 待办提醒聚合 ──
+  describe('[6] reminders', () => {
+    it('aggregates stock_warn with item details, arrears and expiring counts', () => {
+      const { warehouseId, productId } = setupBase()
+      db.prepare('UPDATE product SET min_stock = ? WHERE id = ?').run(8, productId) // 缺 8
+      const off = (n: number): string => {
+        const x = new Date()
+        x.setDate(x.getDate() + n)
+        return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+      }
+      db.prepare('INSERT INTO product_batch (product_id, warehouse_id, batch_no, expire_date) VALUES (?,?,?,?)')
+        .run(productId, warehouseId, 'B-NEAR', off(10))
+      const rs = svc.reminders()
+      const stockWarn = rs.find((r) => r.type === 'stock_warn')
+      expect(stockWarn?.count).toBe(1)
+      expect(stockWarn?.items?.[0]).toEqual({ product_name: '商品1', shortage: 8 })
+      expect(rs.find((r) => r.type === 'expiring')?.count).toBe(1)
+      expect(rs.find((r) => r.type === 'arrears')?.count).toBe(2) // 应收 100 + 应付 50
+    })
   })
 })

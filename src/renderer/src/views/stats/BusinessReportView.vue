@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { reportApi } from '../../api/stats'
+import { reportApi, fundSummaryByCategoryApi, type FundSummaryCategoryRow } from '../../api/stats'
 import { csvApi } from '../../api/csv'
 import { warehouseApi } from '../../api/warehouse'
 import { fundApi } from '../../api/fund'
@@ -93,6 +93,7 @@ function display(row: ReportRow, column: ReportColumn): string | number {
 
 onMounted(async () => {
   void load()
+  void loadFundSummary()
   try {
     const [wh, fund] = await Promise.all([warehouseApi.query({ page: 1, pageSize: 200 }), fundApi.query({ page: 1, pageSize: 200 })])
     warehouses.value = wh.list
@@ -101,6 +102,28 @@ onMounted(async () => {
     ElMessage.error((e as Error).message)
   }
 })
+
+// ── S 级功能批次 B [10] 按科目资金汇总区块 ──
+const fundSummaryRows = ref<FundSummaryCategoryRow[]>([])
+const fundSummaryLoading = ref(false)
+
+async function loadFundSummary(): Promise<void> {
+  fundSummaryLoading.value = true
+  try {
+    fundSummaryRows.value = await fundSummaryByCategoryApi.query({
+      date_from: dates.value?.[0],
+      date_to: dates.value?.[1]
+    })
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    fundSummaryLoading.value = false
+  }
+}
+
+function fmtMoney(v: number): string {
+  return v.toFixed(2)
+}
 </script>
 
 <template>
@@ -144,10 +167,38 @@ onMounted(async () => {
     <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total"
       class="report-pager" layout="total, prev, pager, next" @current-change="load" />
   </el-card>
+
+  <!-- [10] 按科目资金汇总（S 级功能批次 B）：与上方报表共用日期区间 -->
+  <el-card shadow="never" class="fund-summary-card">
+    <template #header>
+      <div class="fund-summary-header">
+        <strong>按科目汇总</strong>
+        <el-button size="small" @click="loadFundSummary">刷新</el-button>
+      </div>
+    </template>
+    <el-table v-loading="fundSummaryLoading" :data="fundSummaryRows" empty-text="所选日期内暂无资金流水" stripe>
+      <el-table-column prop="category_name" label="科目" min-width="140" />
+      <el-table-column label="类型" width="90">
+        <template #default="{ row }">{{ row.category_kind === 'income' ? '收入' : row.category_kind === 'expense' ? '支出' : '—' }}</template>
+      </el-table-column>
+      <el-table-column label="收入" width="130" align="right">
+        <template #default="{ row }">{{ fmtMoney(row.income) }}</template>
+      </el-table-column>
+      <el-table-column label="支出" width="130" align="right">
+        <template #default="{ row }">{{ fmtMoney(row.expense) }}</template>
+      </el-table-column>
+      <el-table-column label="净额" width="130" align="right">
+        <template #default="{ row }">{{ fmtMoney(row.net) }}</template>
+      </el-table-column>
+    </el-table>
+    <p class="note">未指定科目的资金流水归入"未分类"；在收款/付款/其他收支单据上选择科目后可按科目统计。</p>
+  </el-card>
 </template>
 
 <style scoped>
 .report-filters { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
 .note { color: var(--el-text-color-secondary); }
 .report-pager { justify-content: flex-end; margin-top: 16px; }
+.fund-summary-card { margin-top: 16px; }
+.fund-summary-header { display: flex; justify-content: space-between; align-items: center; }
 </style>

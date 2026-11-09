@@ -117,6 +117,8 @@ const groups: MenuGroup[] = [
     items: [
       { path: '/stats/business', label: '经营报表', perm: 'report.business' },
       { path: '/stats/operator', label: '员工业绩', perm: 'report.business' },
+      { path: '/stats/statement', label: '客商对账单', perm: 'report.arrears' },
+      { path: '/stats/aging', label: '账龄分析', perm: 'report.arrears' },
       { path: '/doc/search', label: '单据查询', perm: 'report.docSearch' }
     ]
   },

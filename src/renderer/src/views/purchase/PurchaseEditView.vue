@@ -39,7 +39,9 @@ const form = reactive({
   date: today(),
   supplier_id: null as number | null,
   warehouse_id: null as number | null,
-  remark: ''
+  remark: '',
+  // [7] 发票状态（S 级功能批次 B）
+  invoice_status: 'none' as 'none' | 'invoiced'
 })
 
 const supplierOptions = ref<Supplier[]>([])
@@ -172,6 +174,7 @@ async function save(): Promise<void> {
       warehouse_id: form.warehouse_id,
       date: form.date || undefined,
       remark: form.remark || undefined,
+      invoice_status: form.invoice_status, // [7] S 级功能批次 B
       items
     })
     ElMessage.success(`保存成功：${doc.no}`)
@@ -255,6 +258,13 @@ useDocumentScanner({ onProduct: fillScanned })
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="form.remark" placeholder="备注" style="width: 260px" />
+        </el-form-item>
+        <!-- [7] 发票状态（S 级功能批次 B） -->
+        <el-form-item label="发票">
+          <el-select v-model="form.invoice_status" style="width: 120px">
+            <el-option label="未开票" value="none" />
+            <el-option label="已开票" value="invoiced" />
+          </el-select>
         </el-form-item>
       </el-form>
 

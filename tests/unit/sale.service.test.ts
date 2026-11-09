@@ -209,3 +209,51 @@ describe('sale.service', () => {
 function dbOf(ctx: ReturnType<typeof setup>): DB {
   return ctx.db
 }
+
+// ── S 级功能批次 B：[3] 外部订单号、[7] 发票状态、[9] 快递单号 ──
+describe('sale.service external_no / invoice_status / express (S 批次 B)', () => {
+  it('create stores external_no + invoice_status + express fields; query lists them', () => {
+    const ctx = setup()
+    ctx.purchaseService.create({ warehouse_id: ctx.whId, date: '2026-03-09', items: [{ product_id: ctx.productId, qty: 10, price: 2 }] })
+    const id = ctx.saleService.create({
+      customer_id: ctx.customerId,
+      warehouse_id: ctx.whId,
+      date: '2026-03-10',
+      operator: '张店长',
+      external_no: 'TB-20260310-001',
+      invoice_status: 'invoiced',
+      express_com: '顺丰',
+      express_no: 'SF1234567890',
+      delivery_status: 'shipped',
+      items: [{ product_id: ctx.productId, qty: 2, price: 3 }]
+    })
+    const detail = ctx.saleService.getDetail(id.id ?? 0)
+    expect(detail.doc.external_no).toBe('TB-20260310-001')
+    expect(detail.doc.invoice_status).toBe('invoiced')
+    expect(detail.doc.express_com).toBe('顺丰')
+    expect(detail.doc.express_no).toBe('SF1234567890')
+    expect(detail.doc.delivery_status).toBe('shipped')
+    // 默认值
+    const id2 = ctx.saleService.create({ customer_id: ctx.customerId, warehouse_id: ctx.whId, date: '2026-03-10', items: [{ product_id: ctx.productId, qty: 1, price: 3 }] })
+    expect(ctx.saleService.getDetail(id2.id ?? 0).doc.invoice_status).toBe('none')
+    expect(ctx.saleService.getDetail(id2.id ?? 0).doc.delivery_status).toBe('none')
+    // 列表筛选
+    expect(ctx.saleService.query({ date_from: '2026-03-01', date_to: '2026-03-10', invoice_status: 'invoiced', page: 1, pageSize: 10 } as never).total).toBe(1)
+    expect(ctx.saleService.query({ date_from: '2026-03-01', date_to: '2026-03-10', delivery_status: 'shipped', page: 1, pageSize: 10 } as never).total).toBe(1)
+    expect(ctx.saleService.query({ date_from: '2026-03-01', date_to: '2026-03-10', invoice_status: 'none', page: 1, pageSize: 10 } as never).total).toBe(1)
+  })
+
+  it('createReturn accepts external_no + invoice_status', () => {
+    const ctx = setup()
+    ctx.purchaseService.create({ warehouse_id: ctx.whId, date: '2026-03-09', items: [{ product_id: ctx.productId, qty: 10, price: 2 }] })
+    const saleId = ctx.saleService.create({ customer_id: ctx.customerId, warehouse_id: ctx.whId, date: '2026-03-10', items: [{ product_id: ctx.productId, qty: 2, price: 3 }] })
+    const retId = ctx.saleService.createReturn({
+      customer_id: ctx.customerId, warehouse_id: ctx.whId, date: '2026-03-11',
+      external_no: 'TB-R-001', invoice_status: 'invoiced',
+      items: [{ product_id: ctx.productId, qty: 1, price: 3 }]
+    })
+    expect(ctx.saleService.getDetail(retId.id ?? 0).doc.external_no).toBe('TB-R-001')
+    expect(ctx.saleService.getDetail(retId.id ?? 0).doc.invoice_status).toBe('invoiced')
+    expect(saleId.id ?? 0).toBeGreaterThan(0)
+  })
+})

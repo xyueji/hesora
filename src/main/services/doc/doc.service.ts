@@ -56,6 +56,12 @@ function toDocRow(row: DocDbRow): DocRow {
     source_doc_id: row.source_doc_id,
     reversal_of: (row as { reversal_of?: number | null }).reversal_of ?? null,
     operator: (row as { operator?: string | null }).operator ?? null,
+    // ── S 级功能批次 B ──
+    external_no: (row as { external_no?: string | null }).external_no ?? null,
+    invoice_status: ((row as { invoice_status?: string }).invoice_status ?? 'none') as DocRow['invoice_status'],
+    express_com: (row as { express_com?: string | null }).express_com ?? null,
+    express_no: (row as { express_no?: string | null }).express_no ?? null,
+    delivery_status: ((row as { delivery_status?: string }).delivery_status ?? 'none') as DocRow['delivery_status'],
     total_amount: row.total_amount,
     remark: row.remark,
     status: row.status as DocRow['status'],
@@ -66,8 +72,8 @@ function toDocRow(row: DocDbRow): DocRow {
 
 export function createDocService(db: DB) {
   const insertDoc = db.prepare(`
-    INSERT INTO doc (no, type, date, partner_id, warehouse_id, warehouse_in_id, account_id, total_amount, remark, source_doc_id, operator)
-    VALUES (@no, @type, @date, @partner_id, @warehouse_id, @warehouse_in_id, @account_id, @total_amount, @remark, @source_doc_id, @operator)
+    INSERT INTO doc (no, type, date, partner_id, warehouse_id, warehouse_in_id, account_id, total_amount, remark, source_doc_id, operator, external_no, invoice_status, express_com, express_no, delivery_status)
+    VALUES (@no, @type, @date, @partner_id, @warehouse_id, @warehouse_in_id, @account_id, @total_amount, @remark, @source_doc_id, @operator, @external_no, @invoice_status, @express_com, @express_no, @delivery_status)
   `)
   const insertItem = db.prepare(`
     INSERT INTO doc_item (doc_id, product_id, warehouse_id, batch_no, unit, rate, qty, price, amount)
@@ -201,6 +207,12 @@ export function createDocService(db: DB) {
           account_id: input.account_id ?? null,
           source_doc_id: input.source_doc_id ?? null,
           operator: input.operator?.trim() ? input.operator.trim() : null,
+          // ── S 级功能批次 B：业务扩展字段 ──
+          external_no: input.external_no?.trim() ? input.external_no.trim() : null,
+          invoice_status: input.invoice_status ?? 'none',
+          express_com: input.express_com?.trim() ? input.express_com.trim() : null,
+          express_no: input.express_no?.trim() ? input.express_no.trim() : null,
+          delivery_status: input.delivery_status ?? 'none',
           total_amount: totalAmount,
           remark: input.remark ?? null
         }).lastInsertRowid
@@ -243,6 +255,19 @@ export function createDocService(db: DB) {
     if (partnerKeyword) {
       where.push('(INSTR(COALESCE(c.name, s.name), @partner_keyword) > 0 OR INSTR(COALESCE(c.code, s.code), @partner_keyword) > 0)')
       params['partner_keyword'] = partnerKeyword
+    }
+    // ── S 级功能批次 B：业务字段筛选 ──
+    if (q.external_no?.trim()) {
+      where.push('d.external_no = @external_no')
+      params['external_no'] = q.external_no.trim()
+    }
+    if (q.invoice_status) {
+      where.push('d.invoice_status = @invoice_status')
+      params['invoice_status'] = q.invoice_status
+    }
+    if (q.delivery_status) {
+      where.push('d.delivery_status = @delivery_status')
+      params['delivery_status'] = q.delivery_status
     }
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
     const total = Number(

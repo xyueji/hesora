@@ -154,5 +154,44 @@ export function createReportService(db: Database) {
     }>
   }
 
-  return { query, exportCsv, operatorPerformance }
+  /** [10] 科目资金汇总：income_category 科目 × 收入/支出合计（S 级功能批次 B）
+   *  口径：fund_flow.category_id 关联科目（migration 040）；
+   *  - 仅统计已审核单据（与 fund 报表口径一致：LEFT JOIN doc 校验 status）；
+   *  - category_id 为 NULL 的流水归入"未分类"；
+   *  - income/expense 取自 fund_flow.direction，不区分单据方向符号。
+   */
+  function fundSummaryByCategory(query: { date_from?: string; date_to?: string }) {
+    const dateFrom = query?.date_from || '0001-01-01'
+    const dateTo = query?.date_to || '9999-12-31'
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/
+    if (!datePattern.test(dateFrom) || !datePattern.test(dateTo) || dateFrom > dateTo) {
+      throw new BizError('VALIDATION', '请选择有效的日期范围')
+    }
+    return db
+      .prepare(
+        `SELECT COALESCE(cat.id, 0) AS category_id,
+                COALESCE(cat.name, '未分类') AS category_name,
+                cat.kind AS category_kind,
+                COALESCE(SUM(CASE WHEN f.direction = 'in' THEN f.amount ELSE 0 END), 0) AS income,
+                COALESCE(SUM(CASE WHEN f.direction = 'out' THEN f.amount ELSE 0 END), 0) AS expense,
+                COALESCE(SUM(CASE WHEN f.direction = 'in' THEN f.amount ELSE -f.amount END), 0) AS net
+         FROM fund_flow f
+         LEFT JOIN income_category cat ON cat.id = f.category_id
+         LEFT JOIN doc d ON d.id = f.doc_id AND d.type = f.doc_type
+         WHERE f.date BETWEEN @date_from AND @date_to
+           AND (d.id IS NULL OR d.status = 'done')
+         GROUP BY cat.id, cat.name, cat.kind
+         ORDER BY income + expense DESC`
+      )
+      .all({ date_from: dateFrom, date_to: dateTo }) as Array<{
+      category_id: number
+      category_name: string
+      category_kind: string | null
+      income: number
+      expense: number
+      net: number
+    }>
+  }
+
+  return { query, exportCsv, operatorPerformance, fundSummaryByCategory }
 }

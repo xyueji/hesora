@@ -23,8 +23,19 @@ const form = ref<Customer>({
   price_level: '',
   opening_receivable: 0,
   credit_limit: null,
-  remark: ''
+  remark: '',
+  // ── S 级功能批次 B：[4] 邮箱、[8] 分类 ──
+  email: '',
+  category: ''
 })
+
+// [4] 简单邮箱格式校验（与服务层一致：非空须含 @ 且两侧非空）
+function validEmail(v: string | undefined): boolean {
+  const s = (v ?? '').trim()
+  if (!s) return true
+  const at = s.indexOf('@')
+  return at > 0 && at < s.length - 1 && !s.includes(' ')
+}
 
 const saving = ref(false)
 
@@ -45,6 +56,10 @@ async function load(): Promise<void> {
 async function save(): Promise<void> {
   if (!form.value.code.trim() || !form.value.name.trim()) {
     ElMessage.warning('编码、名称为必填项')
+    return
+  }
+  if (!validEmail(form.value.email)) {
+    ElMessage.warning('邮箱格式不正确')
     return
   }
   saving.value = true
@@ -95,6 +110,18 @@ onMounted(load)
           </el-form-item>
           <el-form-item label="价格等级">
             <el-input v-model="form.price_level" placeholder="如：零售 / 批发 / VIP" />
+          </el-form-item>
+          <!-- [4] 邮箱、[8] 分类（S 级功能批次 B） -->
+          <el-form-item label="邮箱">
+            <el-input v-model="form.email" placeholder="电子邮箱" />
+          </el-form-item>
+          <el-form-item label="分类">
+            <el-input v-model="form.category" list="customer-category-options" placeholder="普通 / 批发 / VIP" />
+            <datalist id="customer-category-options">
+              <option value="普通" />
+              <option value="批发" />
+              <option value="VIP" />
+            </datalist>
           </el-form-item>
         </div>
 

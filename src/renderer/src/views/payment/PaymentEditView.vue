@@ -9,7 +9,7 @@ import { supplierApi } from '../../api/supplier'
 import type { FundAccount } from '../../../../shared/types/fund'
 import type { Customer } from '../../../../shared/types/customer'
 import type { Supplier } from '../../../../shared/types/supplier'
-import type { SettlementDocument } from '../../../../shared/types/payment'
+import type { PaymentCreateInput, SettlementDocument } from '../../../../shared/types/payment'
 
 const props = defineProps<{ mode: 'receipt' | 'payment' }>()
 
@@ -31,7 +31,9 @@ const form = reactive({
   account_id: null as number | null,
   amount: null as number | null,
   date: today(),
-  remark: ''
+  remark: '',
+  // P1 功能 #2 预存款：收款/付款可选择"计入预存款"（不核销往来单据）
+  charge_prepaid: false
 })
 
 const accountOptions = ref<FundAccount[]>([])
@@ -106,7 +108,7 @@ async function save(): Promise<void> {
   }
   saving.value = true
   try {
-    const input = {
+    const input: PaymentCreateInput = {
       partner_id: form.partner_id ?? undefined,
       account_id: split.value ? undefined : form.account_id ?? undefined,
       accounts: split.value ? legs.value.map((row) => ({ account_id: row.account_id!, amount: row.amount! })) : undefined,
@@ -116,11 +118,13 @@ async function save(): Promise<void> {
       }),
       amount: form.amount,
       date: form.date || undefined,
-      remark: form.remark || undefined
+      remark: form.remark || undefined,
+      // P1 功能 #2 预存款：计入预存款时不核销（charge_type='prepaid'，服务层强制）
+      charge_type: form.charge_prepaid && isReceipt.value ? 'prepaid' : undefined
     }
     const doc = isReceipt.value ? await paymentApi.createReceipt(input) : await paymentApi.createPayment(input)
     ElMessage.success(`保存成功：${doc.no}`)
-    Object.assign(form, { partner_id: null, account_id: null, amount: null, date: today(), remark: '' })
+    Object.assign(form, { partner_id: null, account_id: null, amount: null, date: today(), remark: '', charge_prepaid: false })
     split.value = false
     legs.value = []
     await loadOpenBills(null)
@@ -193,6 +197,9 @@ watch(split, (active) => {
         </el-form-item>
         <el-form-item label="金额" required>
           <el-input-number v-model="form.amount" :min="0.01" :precision="2" :controls="false" placeholder="金额" style="width: 160px" />
+        </el-form-item>
+        <el-form-item v-if="isReceipt" label="计入预存款">
+          <el-switch v-model="form.charge_prepaid" active-text="计入" inactive-text="直接核销" />
         </el-form-item>
         <el-form-item label="日期">
           <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD" style="width: 160px" />

@@ -96,6 +96,8 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'payment:queryReceipt': 'doc.payment',
   'payment:queryPayment': 'doc.payment',
 
+  'stats:statement': 'report.arrears',
+  'stats:partnerAging': 'report.arrears',
   'stats:receivables': 'report.arrears',
   'stats:payables': 'report.arrears',
   'stats:summary': 'report.arrears',
@@ -104,6 +106,10 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'stats:operatorPerformance': 'report.business',
   'dashboard:summary': 'report.dashboard',
   'dashboard:trend': 'report.dashboard',
+  // S 级功能批次 B：复用现有权限键，不新增
+  'dashboard:todayBrief': 'report.dashboard',
+  'dashboard:reminders': 'report.dashboard',
+  'stats:fundSummaryByCategory': 'report.business',
   'workflow:list': 'doc.workflow',
   'workflow:save': 'doc.workflow',
   'workflow:approve': 'doc.approve',

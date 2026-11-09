@@ -49,6 +49,7 @@ onMounted(load)
         <el-descriptions-item label="电话">{{ detail.customer.phone || '—' }}</el-descriptions-item>
         <el-descriptions-item label="地址">{{ detail.customer.address || '—' }}</el-descriptions-item>
         <el-descriptions-item label="价格等级">{{ detail.customer.price_level || '—' }}</el-descriptions-item>
+        <el-descriptions-item label="预存款">¥{{ fmt(detail.customer.prepaid ?? 0) }}</el-descriptions-item>
         <el-descriptions-item label="期初应收">¥{{ fmt(detail.customer.opening_receivable) }}</el-descriptions-item>
         <el-descriptions-item label="应收余额">
           <span class="arrears" :class="{ warn: detail.arrears > 0 }">¥{{ fmt(detail.arrears) }}</span>

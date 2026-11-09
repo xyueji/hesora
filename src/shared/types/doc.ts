@@ -13,6 +13,12 @@ export type DocType =
   | 'other_out'
   | 'other_in'
 
+/** [7] 发票状态（S 级功能批次 B） */
+export type InvoiceStatus = 'none' | 'invoiced'
+
+/** [9] 发货状态（S 级功能批次 B） */
+export type DeliveryStatus = 'none' | 'shipped'
+
 export interface DocItemInput {
   product_id: number
   warehouse_id?: number
@@ -33,6 +39,17 @@ export interface DocCreateInput {
   source_doc_id?: number
   /** 业务员（操作员用户名）；NULL 表示无业务员（旧数据或未传） */
   operator?: string
+  // ── S 级功能批次 B：单据业务扩展字段 ──
+  /** [3] 外部订单号（电商平台/线上订单号等，人工录入） */
+  external_no?: string
+  /** [7] 发票状态：'none' 未开票 | 'invoiced' 已开票 */
+  invoice_status?: InvoiceStatus
+  /** [9] 快递公司 */
+  express_com?: string
+  /** [9] 快递单号 */
+  express_no?: string
+  /** [9] 发货状态：'none' 未发货 | 'shipped' 已发货 */
+  delivery_status?: DeliveryStatus
   remark?: string
   items: DocItemInput[]
 }
@@ -65,6 +82,17 @@ export interface DocRow {
   reversal_of?: number | null
   /** 业务员（操作员用户名）；NULL 表示无业务员（旧数据或未传） */
   operator?: string | null
+  // ── S 级功能批次 B ──
+  /** [3] 外部订单号 */
+  external_no?: string | null
+  /** [7] 发票状态：'none' 未开票 | 'invoiced' 已开票 */
+  invoice_status?: InvoiceStatus
+  /** [9] 快递公司 */
+  express_com?: string | null
+  /** [9] 快递单号 */
+  express_no?: string | null
+  /** [9] 发货状态：'none' 未发货 | 'shipped' 已发货 */
+  delivery_status?: DeliveryStatus
   total_amount: number
   remark: string | null
   status: 'done'
@@ -82,6 +110,13 @@ export interface DocQuery {
   keyword?: string
   partner_id?: number
   partner_keyword?: string
+  // ── S 级功能批次 B：筛选 ──
+  /** [3] 外部订单号精确匹配 */
+  external_no?: string
+  /** [7] 发票状态筛选 */
+  invoice_status?: InvoiceStatus
+  /** [9] 发货状态筛选 */
+  delivery_status?: DeliveryStatus
   page: number
   pageSize: number
 }

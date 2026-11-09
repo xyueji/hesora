@@ -22,6 +22,9 @@ const productNames = ref<Record<number, string>>({})
 
 const detailVisible = ref(false)
 const detail = ref<PurchaseDetail | null>(null)
+// [7] 发票状态筛选（S 级功能批次 B）
+const filterInvoiceStatus = ref<'none' | 'invoiced' | ''>('')
+const invoiceLabel: Record<string, string> = { none: '未开票', invoiced: '已开票' }
 
 async function load(): Promise<void> {
   loading.value = true
@@ -31,7 +34,8 @@ async function load(): Promise<void> {
       pageSize: pageSize.value,
       keyword: keyword.value || undefined,
       date_from: dateRange.value?.[0],
-      date_to: dateRange.value?.[1]
+      date_to: dateRange.value?.[1],
+      invoice_status: filterInvoiceStatus.value || undefined // [7] S 级功能批次 B
     })
     list.value = r.items
     total.value = r.total
@@ -139,6 +143,16 @@ async function printA4(): Promise<void> {
       <div class="toolbar">
         <h3 class="title">进货单</h3>
         <div class="actions">
+          <el-select
+            v-model="filterInvoiceStatus"
+            clearable
+            placeholder="发票状态"
+            style="width: 120px"
+            @change="search"
+          >
+            <el-option label="未开票" value="none" />
+            <el-option label="已开票" value="invoiced" />
+          </el-select>
           <el-date-picker
             v-model="dateRange"
             type="daterange"
@@ -172,6 +186,10 @@ async function printA4(): Promise<void> {
         </el-table-column>
         <el-table-column label="总金额" width="120" align="right">
           <template #default="{ row }">{{ fmt(row.total_amount) }}</template>
+        </el-table-column>
+        <!-- [7] 发票状态列（S 级功能批次 B） -->
+        <el-table-column label="发票" width="90">
+          <template #default="{ row }">{{ invoiceLabel[row.invoice_status as string] ?? '未开票' }}</template>
         </el-table-column>
         <el-table-column prop="remark" label="备注" min-width="140" show-overflow-tooltip />
         <el-table-column label="操作" width="90" align="center">

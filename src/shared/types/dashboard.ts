@@ -30,3 +30,23 @@ export interface DashboardTrendRow {
   date: string
   amount: number
 }
+
+/** [5] 日报速览（S 级功能批次 B） */
+export interface TodayBrief {
+  /** 昨日期末库存总量（所有仓 Σ inventory.qty，按查询日昨天的库存快照口径 = 当前库存减今日变动） */
+  yesterday_stock_qty: number
+  /** 今日销售出库量（sale 出库数量） */
+  today_sale_qty: number
+  /** 今日入库量（采购入库 + 销售退货入库） */
+  today_in_qty: number
+  /** 今日期末库存总量（当前实时 Σ inventory.qty） */
+  today_stock_qty: number
+}
+
+/** [6] 首页待办提醒聚合项（S 级功能批次 B） */
+export interface ReminderItem {
+  type: 'stock_warn' | 'arrears' | 'expiring'
+  count: number
+  /** 仅库存预警附带明细（商品+缺口），便于直接展示 */
+  items?: { product_name: string; shortage: number }[]
+}

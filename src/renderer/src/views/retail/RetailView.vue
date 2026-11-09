@@ -6,6 +6,8 @@ import { retailApi } from '../../api/retail'
 import { productApi } from '../../api/product'
 import { warehouseApi } from '../../api/warehouse'
 import { fundApi } from '../../api/fund'
+import { customerApi } from '../../api/customer'
+import type { Customer } from '../../../../shared/types/customer'
 import { printApi } from '../../api/print'
 import { resolveScannedProduct } from '../../composables/useDocumentScanner'
 import type { Product } from '../../../../shared/types/product'
@@ -50,8 +52,13 @@ const payForm = reactive({
   account_id: null as number | null,
   received: null as number | null,
   discount: 1 as number,
-  payLines: [] as Array<{ account_id: number | null; amount: number | null }>
+  payLines: [] as Array<{ account_id: number | null; amount: number | null }>,
+  // P1 功能 #2 预存款：会员（客户）使用预存款抵扣金额
+  customer_id: null as number | null,
+  prepaid_amount: null as number | null
 })
+const payCustomerOptions = ref<Customer[]>([])
+const payCustomerPrepaid = ref(0)
 const changeAmount = computed(() => {
   const received = Number(payForm.received ?? 0)
   return Number((received - Number(discountedTotal.value.toFixed(2))).toFixed(2))
@@ -153,12 +160,18 @@ function removeLine(index: number): void {
 
 function cartPayload(): RetailCreateInput {
   if (form.warehouse_id === null) throw new Error('请选择仓库')
-  return {
+  const payload: RetailCreateInput = {
     held_id: heldId.value,
     warehouse_id: form.warehouse_id,
     remark: form.remark || undefined,
     items: lines.value.map(({ name: _name, ...line }) => line)
   }
+  // P1 功能 #2：会员预存款抵扣（仅已选会员且金额 > 0 时带上）
+  if (payForm.customer_id !== null && payForm.prepaid_amount !== null && payForm.prepaid_amount > 0) {
+    payload.customer_id = payForm.customer_id
+    payload.prepaid_amount = payForm.prepaid_amount
+  }
+  return payload
 }
 
 function clearCart(): void {
@@ -251,11 +264,41 @@ function openPay(): void {
   payVisible.value = true
 }
 
+/** P1 功能 #2：收款弹窗会员远程搜索 + 预存款余额联动 */
+async function searchPayCustomers(keyword: string): Promise<void> {
+  try {
+    const r = await customerApi.query({ page: 1, pageSize: 20, keyword: keyword || undefined })
+    payCustomerOptions.value = r.list
+  } catch {
+    /* 静默：搜索失败不阻断收款 */
+  }
+}
+
+function onPayCustomerChange(id: number | null): void {
+  payForm.prepaid_amount = null
+  payCustomerPrepaid.value = 0
+  if (id !== null) {
+    void customerApi.get(id).then((c) => {
+      payCustomerPrepaid.value = c?.prepaid ?? 0
+    }).catch(() => { /* 静默 */ })
+  }
+}
+
 async function savePay(): Promise<void> {
   if (saving.value) return
   const d = Number(payForm.discount)
   if (!Number.isFinite(d) || d <= 0 || d > 1) {
     ElMessage.warning('整单折扣率需在 (0, 1] 之间')
+    return
+  }
+  // P1 功能 #2：预存款抵扣校验（散客不可用；不超余额与应付）
+  const prepaidUse = payForm.prepaid_amount ?? 0
+  if (prepaidUse > 0 && payForm.customer_id === null) {
+    ElMessage.warning('使用预存款请先选择会员（客户）')
+    return
+  }
+  if (prepaidUse > 0 && (payCustomerPrepaid.value < prepaidUse || prepaidUse > Number(discountedTotal.value.toFixed(2)))) {
+    ElMessage.warning('预存款抵扣金额不能超过会员预存款余额或应付金额')
     return
   }
   // 组合收款：填了多账户行则按行校验并组装 payments；否则回退单一账户语义。
@@ -289,6 +332,9 @@ async function savePay(): Promise<void> {
         : { account_id: payForm.account_id as number, discount: d !== 1 ? d : undefined })
     })
     payVisible.value = false
+    payForm.customer_id = null
+    payForm.prepaid_amount = null
+    payCustomerPrepaid.value = 0
     lastReceiptDocId.value = doc.id
     ElMessage.success(`收款完成，合计 ¥${discountedTotal.value.toFixed(2)}，找零 ¥${Math.max(changeAmount.value, 0).toFixed(2)}`)
     clearCart()
@@ -429,6 +475,32 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onCashShortcut))
       <el-form label-width="90px">
         <el-form-item label="合计金额">
           <span class="pay-total">¥{{ fmt(totalAmount) }}</span>
+        </el-form-item>
+        <el-form-item label="会员">
+          <el-select
+            v-model="payForm.customer_id"
+            filterable
+            remote
+            clearable
+            :remote-method="searchPayCustomers"
+            placeholder="搜索会员（可选）"
+            style="width: 100%"
+            @change="onPayCustomerChange"
+          >
+            <el-option v-for="c in payCustomerOptions" :key="c.id" :label="c.name" :value="c.id as number" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="payForm.customer_id !== null" label="预存款">
+          <span class="prepaid-balance">余额 ¥{{ payCustomerPrepaid.toFixed(2) }}</span>
+          <el-input-number
+            v-model="payForm.prepaid_amount"
+            :min="0"
+            :max="Math.min(payCustomerPrepaid, discountedTotal)"
+            :precision="2"
+            :controls="false"
+            placeholder="使用预存款"
+            style="width: 130px; margin-left: 10px"
+          />
         </el-form-item>
         <el-form-item label="整单折扣">
           <el-input-number v-model="payForm.discount" :min="0.01" :max="1" :step="0.05" :precision="2" style="width: 160px" />

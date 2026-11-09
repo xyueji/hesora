@@ -54,6 +54,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/product/batches', name: 'product-batches', component: () => import('./views/product/ProductBatchListView.vue'), meta: { title: '批次效期' } },
   { path: '/stats/arrears', name: 'stats-arrears', component: () => import('./views/stats/ArrearsView.vue'), meta: { title: '应收应付' } },
   { path: '/stats/aging', name: 'stats-aging', component: () => import('./views/stats/AgingView.vue'), meta: { title: '账龄报表' } },
+  { path: '/stats/statement', name: 'stats-statement', component: () => import('./views/stats/StatementView.vue'), meta: { title: '客商对账单' } },
   { path: '/stats/business', name: 'stats-business', component: () => import('./views/stats/BusinessReportView.vue'), meta: { title: '经营报表' } },
   { path: '/stats/operator', name: 'stats-operator', component: () => import('./views/stats/OperatorPerformanceView.vue'), meta: { title: '员工业绩' } },
   { path: '/doc/search', name: 'doc-search', component: () => import('./views/doc/DocSearchView.vue'), meta: { title: '单据查询' } },

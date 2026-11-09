@@ -54,3 +54,24 @@ describe('supplier.service', () => {
     expect(s.getById(id)?.name).toBe('宏达批发部')
   })
 })
+
+// ── S 级功能批次 B：[4] 邮箱、[8] 分类 ──
+describe('supplier.service email/category (S 批次 B)', () => {
+  let s: ReturnType<typeof createSupplierService>
+  beforeEach(() => { s = svc() })
+
+  it('[4] create/update stores email; invalid rejected', () => {
+    const id = s.create({ ...base, email: 's@sup.cn' })
+    expect(s.getById(id)?.email).toBe('s@sup.cn')
+    expect(() => s.create({ ...base, code: 'S002', name: '丙', email: 'bad-email' })).toThrow(/邮箱格式不正确/)
+    s.update(id, { email: 'new@sup.cn' })
+    expect(s.getById(id)?.email).toBe('new@sup.cn')
+  })
+
+  it('[8] category stored and query filters by it', () => {
+    s.create({ ...base, category: 'VIP' })
+    s.create({ ...base, code: 'S002', name: '丙' })
+    expect(s.query({ page: 1, pageSize: 10, category: 'VIP' }).total).toBe(1)
+    expect(s.query({ page: 1, pageSize: 10 }).total).toBe(2)
+  })
+})

@@ -86,4 +86,26 @@ describe('print template service', () => {
     expect(a4NoAmount).not.toContain('>金额<')
     expect(renderA4Html(a4Data)).toContain('>金额<')
   })
+
+  // ── S 级功能批次 B [2] 打印模板业务员行 ──
+  describe('[2] operator line', () => {
+    it('shows 业务员 line when doc.operator exists (receipt + A4)', () => {
+      const html = renderReceiptHtml({ ...receiptData, operator: '张店长' })
+      expect(html).toContain('业务员：张店长')
+      const a4 = renderA4Html({ ...a4Data, operator: '张店长' })
+      expect(a4).toContain('业务员：张店长')
+    })
+
+    it('hides operator line when doc.operator absent or blank', () => {
+      expect(renderReceiptHtml(receiptData)).not.toContain('业务员')
+      expect(renderReceiptHtml({ ...receiptData, operator: '  ' })).not.toContain('业务员')
+      expect(renderA4Html(a4Data)).not.toContain('业务员')
+    })
+
+    it('showOperator: false hides the line even when operator exists', () => {
+      const html = renderReceiptHtml({ ...receiptData, operator: '张店长' }, { showOperator: false })
+      expect(html).not.toContain('业务员')
+      expect(renderA4Html({ ...a4Data, operator: '张店长' }, { showOperator: false })).not.toContain('业务员')
+    })
+  })
 })

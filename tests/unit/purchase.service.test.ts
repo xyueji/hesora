@@ -179,3 +179,19 @@ describe('purchase.service', () => {
     expect(r2.total).toBe(1)
   })
 })
+
+// ── S 级功能批次 B：[7] 发票状态 ──
+describe('purchase.service invoice_status (S 批次 B)', () => {
+  it('create/createReturn store invoice_status; query filters by it', () => {
+    const ctx = setup()
+    const id = ctx.purchaseService.create({
+      supplier_id: ctx.supplierId, warehouse_id: ctx.whId, date: '2026-03-10',
+      invoice_status: 'invoiced',
+      items: [{ product_id: ctx.productId, qty: 10, price: 2 }]
+    })
+    expect(ctx.purchaseService.getDetail(id.id ?? 0).doc.invoice_status).toBe('invoiced')
+    const id2 = ctx.purchaseService.create({ supplier_id: ctx.supplierId, warehouse_id: ctx.whId, date: '2026-03-10', items: [{ product_id: ctx.productId, qty: 1, price: 2 }] })
+    expect(ctx.purchaseService.getDetail(id2.id ?? 0).doc.invoice_status).toBe('none')
+    expect(ctx.purchaseService.query({ date_from: '2026-03-01', date_to: '2026-03-10', invoice_status: 'invoiced', page: 1, pageSize: 10 } as never).total).toBe(1)
+  })
+})

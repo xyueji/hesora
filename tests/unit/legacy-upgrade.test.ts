@@ -43,6 +43,22 @@ it('upgrades a version 21 account and safely restores the original snapshot with
   db = openDb(legacyDb, oldMigrations)
   expect(db.pragma('user_version', { simple: true })).toBe(21)
   // 基线随迁移演进至 021（doc.operator/income_category 已就位），fixture 可直接用现有服务造数据。
+  // S 批次 B 起 customer.service 写入 email/category（迁移 039）；legacy 库停在 21，此处按服务当前
+  // 所需列补齐（幂等，仅当列缺失时添加），避免 fixture 建数据因缺列失败。
+  const legacyCols = (db.prepare('PRAGMA table_info(customer)').all() as Array<{ name: string }>).map((c) => c.name)
+  if (!legacyCols.includes('email')) db.exec("ALTER TABLE customer ADD COLUMN email TEXT")
+  if (!legacyCols.includes('category')) db.exec("ALTER TABLE customer ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+  // S 批次 B：doc.service 写入 external_no/invoice_status/express_*/delivery_status（迁移 038），legacy 库同样补齐
+  const docCols = (db.prepare('PRAGMA table_info(doc)').all() as Array<{ name: string }>).map((c) => c.name)
+  if (!docCols.includes('external_no')) db.exec('ALTER TABLE doc ADD COLUMN external_no TEXT')
+  if (!docCols.includes('invoice_status')) db.exec("ALTER TABLE doc ADD COLUMN invoice_status TEXT NOT NULL DEFAULT 'none'")
+  if (!docCols.includes('express_com')) db.exec('ALTER TABLE doc ADD COLUMN express_com TEXT')
+  if (!docCols.includes('express_no')) db.exec('ALTER TABLE doc ADD COLUMN express_no TEXT')
+  if (!docCols.includes('delivery_status')) db.exec("ALTER TABLE doc ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'none'")
+  // P1 功能 #2 预存款：doc.prepaid_amount/charge_type（迁移 029），legacy 库同样补齐（实时重查列，幂等）
+  const docCols2 = (db.prepare('PRAGMA table_info(doc)').all() as Array<{ name: string }>).map((c) => c.name)
+  if (!docCols2.includes('prepaid_amount')) db.exec('ALTER TABLE doc ADD COLUMN prepaid_amount REAL NOT NULL DEFAULT 0')
+  if (!docCols2.includes('charge_type')) db.exec("ALTER TABLE doc ADD COLUMN charge_type TEXT NOT NULL DEFAULT 'normal'")
   const owner = createUserService(db).setupAdmin('旧账管理员', 'legacy-owner-password')
   db.prepare("INSERT INTO app_setting VALUES ('shop.name', '老店'), ('license.install_id', 'legacy-device')").run()
   const customer = createCustomerService(db).create({ code: 'C18', name: '旧客户', opening_receivable: 5 })
@@ -65,6 +81,16 @@ it('upgrades a version 21 account and safely restores the original snapshot with
   workflow.approve(order.id, owner.id)
   const historical = Number(db.prepare("INSERT INTO doc_workflow (kind, status, body, source_id, posted_doc_id) VALUES ('sale', 'approved', ?, ?, ?)")
     .run(JSON.stringify({ date, warehouse_id: warehouse, partner_id: customer, items: [item] }), order.id, sale.id).lastInsertRowid)
+  // 造数用的服务层 INSERT 引用了迁移 029/038/039 才会添加的列（见上方补列）。快照必须还原为
+  // 纯 v21 schema，否则后续 runMigrations 再 ADD COLUMN 会撞 duplicate column。造数完成后
+  // 用 DROP COLUMN（SQLite ≥3.35）撤掉全部补列——数据行的这些列均为 NULL/默认值，可安全删除。
+  for (const [table, col] of [
+    ['customer', 'email'], ['customer', 'category'],
+    ['doc', 'external_no'], ['doc', 'invoice_status'], ['doc', 'express_com'], ['doc', 'express_no'], ['doc', 'delivery_status'],
+    ['doc', 'prepaid_amount'], ['doc', 'charge_type']
+  ] as Array<[string, string]>) {
+    db.exec(`ALTER TABLE ${table} DROP COLUMN ${col}`)
+  }
   db.close()
   const oldSnapshot = join(temp, 'old-backup.db')
   copyFileSync(legacyDb, oldSnapshot)

@@ -44,3 +44,34 @@ it('reports completed dated activity, historical cost and signed stocktake quant
   expect(csv).toContain('2026-11-07,1,20,0,20')
   db.close()
 })
+
+// ── S 级功能批次 B：[10] 科目资金汇总 ──
+import { createCategoryService } from '../../src/main/services/setting/category.service'
+
+it('[10] fundSummaryByCategory aggregates income/expense by category, unclassified grouped as 未分类', () => {
+  const db = openMemDb()
+  const reports = createReportService(db)
+  const payments = createPaymentService(db)
+  const accountId = db.prepare("INSERT INTO fund_account (code, name, type) VALUES ('ZJ001', '现金', 'cash')").run().lastInsertRowid
+  const catFreight = Number(
+    db.prepare("INSERT INTO income_category (name, kind) VALUES ('运费', 'expense')").run().lastInsertRowid
+  )
+  const catService = createCategoryService(db)
+  const catMisc = Number(catService.create({ name: '杂费', kind: 'income' }))
+  // 带科目的支出 100 + 无科目的支出 50
+  payments.createOne('other_out', { account_id: Number(accountId), amount: 100, date: '2026-03-10', category_id: catFreight })
+  payments.createOne('other_out', { account_id: Number(accountId), amount: 50, date: '2026-03-11' })
+  // 带科目的收入 300
+  payments.createOne('other_in', { account_id: Number(accountId), amount: 300, date: '2026-03-12', category_id: catMisc })
+  const rows = reports.fundSummaryByCategory({ date_from: '2026-03-01', date_to: '2026-03-31' })
+  const freight = rows.find((r) => r.category_id === catFreight)
+  const misc = rows.find((r) => r.category_id === catMisc)
+  const unclassified = rows.find((r) => r.category_id === 0)
+  expect(freight).toMatchObject({ category_name: '运费', income: 0, expense: 100, net: -100 })
+  expect(misc).toMatchObject({ category_name: '杂费', income: 300, expense: 0, net: 300 })
+  expect(unclassified).toMatchObject({ category_name: '未分类', expense: 50 })
+  // 日期过滤
+  expect(reports.fundSummaryByCategory({ date_from: '2026-03-11', date_to: '2026-03-11' }).map((r) => r.expense)).toEqual([50])
+  // 校验
+  expect(() => reports.fundSummaryByCategory({ date_from: '2026-03-31', date_to: '2026-03-01' })).toThrow(/请选择有效的日期范围/)
+})

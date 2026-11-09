@@ -55,6 +55,8 @@ export function createPurchaseService(db: DB) {
         partner_id: input.supplier_id,
         warehouse_id: warehouseId,
         remark: input.remark,
+        // ── S 级功能批次 B：[7] 发票状态 ──
+        invoice_status: input.invoice_status,
         items: input.items.map((it) => ({
           product_id: it.product_id,
           warehouse_id: warehouseId,
@@ -127,6 +129,8 @@ export function createPurchaseService(db: DB) {
         account_id: accountId ?? undefined,
         source_doc_id: input.source_doc_id,
         remark: input.remark,
+        // ── S 级功能批次 B：[7] 发票状态 ──
+        invoice_status: input.invoice_status,
         items: input.items.map((it) => ({
           product_id: it.product_id,
           warehouse_id: warehouseId,
@@ -193,6 +197,8 @@ export function createPurchaseService(db: DB) {
       date_to: q.date_to,
       keyword: q.keyword,
       partner_id: q.partner_id,
+      // ── S 级功能批次 B ──
+      invoice_status: q.invoice_status,
       page: q.page,
       pageSize: q.pageSize
     }

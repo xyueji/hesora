@@ -1,8 +1,13 @@
 import type { Database } from 'better-sqlite3'
-import type { DashboardSummary, DashboardTrendRow } from '../../../shared/types/dashboard'
+import type {
+  DashboardSummary,
+  DashboardTrendRow,
+  ReminderItem,
+  TodayBrief
+} from '../../../shared/types/dashboard'
 import { createArrearsService } from './arrears.service'
 
-export type { DashboardSummary, DashboardTrendRow }
+export type { DashboardSummary, DashboardTrendRow, ReminderItem, TodayBrief }
 
 export function createDashboardService(db: Database) {
   const arrears = createArrearsService(db)
@@ -97,7 +102,95 @@ export function createDashboardService(db: Database) {
     return out
   }
 
-  return { summary, trend }
+  /** [5] 日报速览：昨日/今日库存量、今日销售出库量、今日入库量（S 级功能批次 B）
+   *  口径：
+   *  - today_stock_qty：实时 Σ inventory.qty（所有仓）
+   *  - yesterday_stock_qty = today_stock_qty − 今日净变动（今日入库 − 今日出库），
+   *    变动统一从 cost_log 取（所有库存变动必经 inventory+cost_log，见 AGENTS.md §4）
+   *  - today_in_qty = 采购入库 + 销售退货入库（cost_log change_qty>0 且 source 归属）
+   *  - today_sale_qty = 销售出库量（cost_log change_qty<0 且 source='sale'）
+   */
+  function todayBrief(date: string): TodayBrief {
+    // 单据发生日（d.date）作为口径基准：cost_log.created_at 是入库时间，与单据日期可能不同天。
+    const moveAgg = db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(CASE WHEN c.change_qty > 0 THEN c.change_qty ELSE 0 END), 0) AS in_qty,
+           COALESCE(SUM(CASE WHEN c.change_qty < 0 THEN -c.change_qty ELSE 0 END), 0) AS out_qty
+         FROM cost_log c
+         JOIN doc d ON d.id = c.source_id AND d.type = c.source
+         WHERE d.date = ? AND c.source IN ('purchase','sale','sale_return','purchase_return')`
+      )
+      .get(date) as { in_qty: number; out_qty: number }
+    const saleOut = db
+      .prepare(
+        `SELECT COALESCE(SUM(-c.change_qty), 0) AS qty FROM cost_log c
+         JOIN doc d ON d.id = c.source_id AND d.type = c.source
+         WHERE d.date = ? AND c.source = 'sale' AND c.change_qty < 0`
+      )
+      .get(date) as { qty: number }
+    const totalAgg = db.prepare('SELECT COALESCE(SUM(qty), 0) AS qty FROM inventory').get() as { qty: number }
+    const todayStock = totalAgg.qty
+    const inQty = moveAgg.in_qty
+    const outQty = moveAgg.out_qty
+    return {
+      yesterday_stock_qty: todayStock - (inQty - outQty),
+      today_sale_qty: saleOut.qty,
+      today_in_qty: inQty,
+      today_stock_qty: todayStock
+    }
+  }
+
+  /** [6] 首页待办提醒聚合：库存预警 / 往来欠款 / 批次临期（S 级功能批次 B）
+   *  复用 summary() 内的库存预警与临期口径；欠款复用 arrears.summary()。
+   */
+  function reminders(): ReminderItem[] {
+    // 库存预警：低于最低库存的商品，附缺口明细（最多 10 条）
+    const lowStockRows = db
+      .prepare(
+        `SELECT p.name AS product_name,
+                p.min_stock - COALESCE((SELECT SUM(i.qty) FROM inventory i WHERE i.product_id = p.id), 0) AS shortage
+         FROM product p
+         WHERE p.disabled = 0 AND p.min_stock > COALESCE((SELECT SUM(i.qty) FROM inventory i WHERE i.product_id = p.id), 0)
+         ORDER BY shortage DESC LIMIT 10`
+      )
+      .all() as { product_name: string; shortage: number }[]
+    const lowStockCount = db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM product p
+         WHERE p.disabled = 0 AND p.min_stock > COALESCE((SELECT SUM(i.qty) FROM inventory i WHERE i.product_id = p.id), 0)`
+      )
+      .get() as { count: number }
+
+    // 临期批次（未来 30 天，与 summary 同口径，不含已过期）
+    const todayD = new Date()
+    const fmt = (d: Date): string =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const limitD = new Date(todayD)
+    limitD.setDate(limitD.getDate() + 30)
+    const expiringAgg = db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM product_batch
+         WHERE expire_date IS NOT NULL AND expire_date >= @today AND expire_date <= @limit`
+      )
+      .get({ today: fmt(todayD), limit: fmt(limitD) }) as { count: number }
+
+    // 欠款：应收+应付存在任一非零即计数 1（跳转往来页处理）
+    const ar = arrears.summary()
+    const arrearsCount = (ar.total_receivable > 0.005 ? 1 : 0) + (ar.total_payable > 0.005 ? 1 : 0)
+
+    return [
+      {
+        type: 'stock_warn',
+        count: lowStockCount.count,
+        items: lowStockRows.map((r) => ({ product_name: r.product_name, shortage: r.shortage }))
+      },
+      { type: 'arrears', count: arrearsCount },
+      { type: 'expiring', count: expiringAgg.count }
+    ]
+  }
+
+  return { summary, trend, todayBrief, reminders }
 }
 
 export type DashboardService = ReturnType<typeof createDashboardService>

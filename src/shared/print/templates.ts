@@ -15,6 +15,8 @@ export interface ReceiptPrintData {
   shopName: string
   docNo: string
   date: string
+  /** [2] 业务员（操作员用户名）；存在才显示（S 级功能批次 B） */
+  operator?: string
   items: ReceiptItemPrintRow[]
   total: number
   paymentMethod: string
@@ -30,6 +32,8 @@ export interface A4PrintData {
   warehouseInName?: string
   docNo: string
   date: string
+  /** [2] 业务员（操作员用户名）；存在才显示（S 级功能批次 B） */
+  operator?: string
   items: ReceiptItemPrintRow[]
   stocktakeItems?: Array<{
     name: string
@@ -73,6 +77,8 @@ export interface PrintTemplateOptions {
   showPaymentMethod?: boolean
   /** 显示页脚（小票） */
   showFooter?: boolean
+  /** [2] 显示业务员行（默认 true；data.operator 存在才实际渲染） */
+  showOperator?: boolean
 }
 
 function on(v: boolean | undefined): boolean {
@@ -103,6 +109,10 @@ export function renderReceiptHtml(data: ReceiptPrintData, options?: PrintTemplat
   const remarkLine = on(options?.showRemark) && data.remark ? `<div class="line">备注：${esc(data.remark)}</div>` : ''
   const shopHeader = on(options?.showShopHeader) ? `<h1>${esc(data.shopName)}</h1>\n` : ''
   const footerLine = on(options?.showFooter) ? `<div class="footer">${esc(data.footer)}</div>` : ''
+  // [2] 业务员行：开关默认开（on 语义 = 非 false 即开），且 doc.operator 存在才渲染
+  const operatorLine = on(options?.showOperator) && data.operator?.trim()
+    ? `<div class="meta">业务员：${esc(data.operator.trim())}</div>`
+    : ''
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -125,6 +135,7 @@ export function renderReceiptHtml(data: ReceiptPrintData, options?: PrintTemplat
 <body>
 ${shopHeader}<div class="meta">单号：${esc(data.docNo)}</div>
 <div class="meta">日期：${esc(data.date)}</div>
+${operatorLine}
 <hr>
 <table>
 ${rows}
@@ -155,6 +166,10 @@ export function renderA4Html(data: A4PrintData, options?: PrintTemplateOptions):
     ? ['账面数量', '实盘数量', '差异']
     : options?.showAmountColumn === false ? ['数量'] : ['数量', '单价', '金额']
   const remarkLine = on(options?.showRemark) && data.remark ? `<div class="remark">备注：${esc(data.remark)}</div>` : ''
+  // [2] 业务员行：开关默认开（on 语义 = 非 false 即开），且 doc.operator 存在才渲染
+  const operatorSpan = on(options?.showOperator) && data.operator?.trim()
+    ? `<span>业务员：${esc(data.operator.trim())}</span>`
+    : ''
   const fundTables = data.settlement && `<table>
 <thead><tr><th>结算账户</th><th>资金方向</th><th class="r">金额</th></tr></thead>
 <tbody>${data.settlement.funds.map((row) => `<tr><td>${esc(row.account)}</td><td>${row.direction === 'in' ? '流入' : '流出'}</td><td class="r">${fmt(row.amount)}</td></tr>`).join('')}</tbody>
@@ -192,6 +207,7 @@ ${on(options?.showShopHeader) ? `<div class="shop">${esc(data.shopName)}</div>` 
   ${data.warehouseInName ? `<span>调入仓库：${esc(data.warehouseInName)}</span>` : ''}
   <span>单号：${esc(data.docNo)}</span>
   <span>日期：${esc(data.date)}</span>
+  ${operatorSpan}
 </div>
 ${fundTables ?? `<table>
 <thead>

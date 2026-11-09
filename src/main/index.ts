@@ -39,6 +39,7 @@ import { createDocCopyService } from './services/doc/copy.service'
 import { createReversalService } from './services/doc/reversal.service'
 import { createPaymentService } from './services/payment/payment.service'
 import { createArrearsService } from './services/stats/arrears.service'
+import { createStatementService } from './services/stats/statement.service'
 import { createDashboardService } from './services/stats/dashboard.service'
 import { createReportService } from './services/stats/report.service'
 import { createTransferService } from './services/transfer/transfer.service'
@@ -738,14 +739,26 @@ function initialize(): void {
 
   const arrearsSvc = getArrearsService()
   const reportSvc = createReportService(getDb())
+  // P1 功能 #1：客商对账单 + 账龄分析（复用 report.arrears 权限键）
+  const statementSvc = createStatementService(getDb())
   registerIpc({
+    // P1 功能 #1：客商对账单明细 + 账龄分析
+    'stats:statement': (_evt, payload) =>
+      statementSvc.statement(payload as never),
+    'stats:partnerAging': (_evt, payload) =>
+      statementSvc.aging(payload as never),
     'stats:receivables': () => arrearsSvc.receivables(),
     'stats:payables': () => arrearsSvc.payables(),
     'stats:summary': () => arrearsSvc.summary(),
     'stats:aging': (_evt, payload) => arrearsSvc.aging((payload as { asOf?: string } | undefined)?.asOf),
     'stats:report': (_evt, payload) => reportSvc.query(payload as never),
     'stats:operatorPerformance': (_evt, payload) =>
-      reportSvc.operatorPerformance(payload as never)
+      reportSvc.operatorPerformance(payload as never),
+    // [10] 科目资金汇总（S 级功能批次 B）
+    'stats:fundSummaryByCategory': (_evt, payload) =>
+      reportSvc.fundSummaryByCategory(
+        (payload ?? {}) as { date_from?: string; date_to?: string }
+      )
   })
 
   const dashboardSvc = getDashboardService()
@@ -759,7 +772,14 @@ function initialize(): void {
     'dashboard:trend': (_evt, payload) => {
       const { days } = (payload ?? {}) as { days?: number }
       return dashboardSvc.trend(Number(days) || 7)
-    }
+    },
+    // [5] 日报速览（S 级功能批次 B）
+    'dashboard:todayBrief': (_evt, payload) =>
+      dashboardSvc.todayBrief(
+        String((payload as { date?: string } | undefined)?.date ?? new Date().toISOString().slice(0, 10))
+      ),
+    // [6] 首页待办提醒聚合（S 级功能批次 B）
+    'dashboard:reminders': () => dashboardSvc.reminders()
   })
 
   const transferSvc = getTransferService()

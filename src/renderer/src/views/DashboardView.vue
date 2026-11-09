@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { dashboardApi, type DashboardSummary, type DashboardTrendRow } from '../api/dashboard'
+import { useRouter } from 'vue-router'
+import { dashboardApi, type DashboardSummary, type DashboardTrendRow, type ReminderItem, type TodayBrief } from '../api/dashboard'
+
+const $router = useRouter()
 
 const summary = ref<DashboardSummary | null>(null)
 const trend = ref<DashboardTrendRow[]>([])
 const loading = ref(false)
 const errMsg = ref('')
+// [5] 日报速览（S 级功能批次 B）
+const brief = ref<TodayBrief | null>(null)
+// [6] 待办提醒（S 级功能批次 B）
+const reminders = ref<ReminderItem[]>([])
 
 const fmtMoney = (n: number): string =>
   n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -24,9 +31,18 @@ async function load(): Promise<void> {
   loading.value = true
   errMsg.value = ''
   try {
-    const [s, t] = await Promise.all([dashboardApi.summary(), dashboardApi.trend(7)])
+    const [s, t, b, rs] = await Promise.all([
+      dashboardApi.summary(),
+      dashboardApi.trend(7),
+      // [5] 日报速览
+      dashboardApi.todayBrief(),
+      // [6] 待办提醒
+      dashboardApi.reminders()
+    ])
     summary.value = s
     trend.value = t
+    brief.value = b
+    reminders.value = rs
   } catch (e) {
     errMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -41,6 +57,17 @@ function barHeight(amount: number): string {
 
 function barTitle(r: DashboardTrendRow): string {
   return `${r.date}：${fmtMoney(r.amount)} 元`
+}
+
+// [6] 提醒类型 → 文案与跳转路由
+const reminderMeta: Record<ReminderItem['type'], { label: string; route: string }> = {
+  stock_warn: { label: '库存预警', route: '/inventory/warning' },
+  arrears: { label: '往来欠款', route: '/stats/arrears' },
+  expiring: { label: '批次临期', route: '/product/batches' }
+}
+
+function goReminder(type: ReminderItem['type']): void {
+  void $router.push(reminderMeta[type].route)
 }
 
 onMounted(load)
@@ -59,6 +86,44 @@ onMounted(load)
           </div>
         </template>
       </div>
+
+      <!-- [5] 今日速览四格卡片（S 级功能批次 B） -->
+      <div v-if="brief" class="card-row brief-row">
+        <div class="stat-card card-blue">
+          <div class="stat-label">昨日库存量</div>
+          <div class="stat-value">{{ brief.yesterday_stock_qty }}</div>
+        </div>
+        <div class="stat-card card-green">
+          <div class="stat-label">今日销售量</div>
+          <div class="stat-value">{{ brief.today_sale_qty }}</div>
+        </div>
+        <div class="stat-card card-orange">
+          <div class="stat-label">今日入库量</div>
+          <div class="stat-value">{{ brief.today_in_qty }}</div>
+        </div>
+        <div class="stat-card card-red">
+          <div class="stat-label">当前库存量</div>
+          <div class="stat-value">{{ brief.today_stock_qty }}</div>
+        </div>
+      </div>
+
+      <!-- [6] 待办提醒卡片（S 级功能批次 B） -->
+      <el-card v-if="reminders.length > 0" class="section reminder-card" shadow="never">
+        <template #header>待办提醒</template>
+        <div class="reminder-row">
+          <div
+            v-for="r in reminders"
+            :key="r.type"
+            class="reminder-item"
+            :class="{ 'reminder-none': r.count === 0 }"
+            @click="goReminder(r.type)"
+          >
+            <div class="reminder-label">{{ reminderMeta[r.type].label }}</div>
+            <div class="reminder-count">{{ r.count }}</div>
+            <div class="reminder-go">点击处理 →</div>
+          </div>
+        </div>
+      </el-card>
 
       <el-card class="section" shadow="never">
         <template #header>近7天销售趋势（销售 + 零售）</template>
@@ -186,5 +251,44 @@ onMounted(load)
 .doc-nums b {
   color: #12685E;
   font-size: 18px;
+}
+/* [5] 今日速览：四格等分 */
+.brief-row .stat-card {
+  flex: 1 1 0;
+  text-align: center;
+}
+/* [6] 待办提醒 */
+.reminder-row {
+  display: flex;
+  gap: 12px;
+}
+.reminder-item {
+  flex: 1;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.reminder-item:hover {
+  border-color: #12685E;
+  box-shadow: 0 2px 8px rgba(18, 104, 94, 0.15);
+}
+.reminder-none {
+  opacity: 0.55;
+}
+.reminder-label {
+  font-size: 13px;
+  color: #666;
+}
+.reminder-count {
+  font-size: 24px;
+  font-weight: 700;
+  color: #12685E;
+  margin: 4px 0;
+}
+.reminder-go {
+  font-size: 12px;
+  color: #999;
 }
 </style>

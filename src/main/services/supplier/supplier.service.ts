@@ -5,6 +5,16 @@ import type { Supplier, SupplierQuery } from '../../../shared/types/supplier'
 
 export type DB = Database
 
+/** [4][8] 邮箱简单格式校验：非空时须含 @，且 @ 两侧非空（宽松校验，避免过度限制） */
+function assertEmail(v: string | undefined | null): void {
+  const email = v?.trim() ?? ''
+  if (!email) return
+  const at = email.indexOf('@')
+  if (at <= 0 || at === email.length - 1 || email.includes(' ')) {
+    throw new BizError('VALIDATION', '邮箱格式不正确')
+  }
+}
+
 interface SupplierRow {
   id: number
   code: string
@@ -13,6 +23,9 @@ interface SupplierRow {
   phone: string | null
   address: string | null
   opening_payable: number
+  prepaid: number
+  email: string | null
+  category: string
   remark: string | null
   disabled: number
 }
@@ -33,6 +46,9 @@ function toEntity(row: SupplierRow): Supplier {
     phone: row.phone ?? undefined,
     address: row.address ?? undefined,
     opening_payable: row.opening_payable,
+    prepaid: row.prepaid,
+    email: row.email ?? undefined,
+    category: row.category ?? '',
     remark: row.remark ?? undefined,
     disabled: row.disabled === 1
   }
@@ -40,8 +56,8 @@ function toEntity(row: SupplierRow): Supplier {
 
 export function createSupplierService(db: DB) {
   const insertSupplier = db.prepare(`
-    INSERT INTO supplier (code, name, contact, phone, address, opening_payable, remark)
-    VALUES (@code, @name, @contact, @phone, @address, @opening_payable, @remark)
+    INSERT INTO supplier (code, name, contact, phone, address, opening_payable, email, category, remark)
+    VALUES (@code, @name, @contact, @phone, @address, @opening_payable, @email, @category, @remark)
   `)
 
   function assertCodeFree(code: string, excludeId?: number): void {
@@ -65,6 +81,8 @@ export function createSupplierService(db: DB) {
     create(s: Omit<Supplier, 'id'>): number {
       const code = requireText(s.code, '编码')
       const name = requireText(s.name, '名称')
+      // [4] 邮箱简单格式校验
+      assertEmail(s.email)
       let id = 0
       db.transaction(() => {
         assertCodeFree(code)
@@ -76,6 +94,8 @@ export function createSupplierService(db: DB) {
             phone: s.phone ?? null,
             address: s.address ?? null,
             opening_payable: s.opening_payable ?? 0,
+            email: s.email?.trim() ? s.email.trim() : null,
+            category: s.category?.trim() ?? '',
             remark: s.remark ?? null
           }).lastInsertRowid
         )
@@ -89,6 +109,8 @@ export function createSupplierService(db: DB) {
           | { id: number }
           | undefined
         if (!existing) throw new BizError('NOT_FOUND', '供应商不存在')
+        // [4] 邮箱简单格式校验
+        assertEmail(s.email)
 
         const cols: string[] = []
         const vals: Record<string, unknown> = {}
@@ -108,6 +130,11 @@ export function createSupplierService(db: DB) {
         if (s.opening_payable !== undefined)
           cols.push('opening_payable = @opening_payable'),
             (vals['opening_payable'] = s.opening_payable)
+        // ── S 级功能批次 B：[4] 邮箱、[8] 分类 ──
+        if (s.email !== undefined)
+          cols.push('email = @email'), (vals['email'] = s.email?.trim() ? s.email.trim() : null)
+        if (s.category !== undefined)
+          cols.push('category = @category'), (vals['category'] = s.category?.trim() ?? '')
         if (s.remark !== undefined) cols.push('remark = @remark'), (vals['remark'] = s.remark)
         if (cols.length > 0) {
           cols.push("updated_at = datetime('now','localtime')")
@@ -144,6 +171,11 @@ export function createSupplierService(db: DB) {
       if (q.keyword) {
         where.push('(code LIKE @kw OR name LIKE @kw OR phone LIKE @kw)')
         params['kw'] = `%${q.keyword}%`
+      }
+      // [8] 分类筛选（精确匹配，'' 表示未分类）
+      if (q.category !== undefined && q.category !== '') {
+        where.push('category = @category')
+        params['category'] = q.category
       }
       const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
       const total = Number(

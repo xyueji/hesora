@@ -1,5 +1,5 @@
 import { call } from './call'
-import type { AgingResult, ArrearsRow, ArrearsSummary } from '../../../shared/types/stats'
+import type { AgingResult, ArrearsRow, ArrearsSummary, StatementResult, PartnerAgingResult } from '../../../shared/types/stats'
 import type { ReportPage, ReportQuery } from '../../../shared/types/report'
 
 export { type ArrearsRow, type ArrearsSummary, type AgingResult, type AgingRow } from '../../../shared/types/stats'
@@ -33,4 +33,27 @@ export interface OperatorPerformanceRow {
 export const operatorPerformanceApi = {
   query: (query: OperatorPerformanceQuery) =>
     call<OperatorPerformanceRow[]>('stats:operatorPerformance', query)
+}
+
+/** [10] 科目资金汇总行（S 级功能批次 B） */
+export interface FundSummaryCategoryRow {
+  category_id: number
+  category_name: string
+  category_kind: string | null
+  income: number
+  expense: number
+  net: number
+}
+
+export const fundSummaryByCategoryApi = {
+  query: (query: { date_from?: string; date_to?: string }) =>
+    call<FundSummaryCategoryRow[]>('stats:fundSummaryByCategory', query)
+}
+
+// ── P1 功能 #1：客商对账单明细 + 账龄分析 ──
+export const statementApi = {
+  statement: (query: { partner_id: number; partner_type: 'customer' | 'supplier'; date_from?: string; date_to?: string }) =>
+    call<StatementResult>('stats:statement', query),
+  aging: (query: { partner_type: 'customer' | 'supplier'; as_of?: string }) =>
+    call<PartnerAgingResult>('stats:partnerAging', query)
 }

@@ -4,6 +4,7 @@ import type { DocItemRow, DocPageResult, DocQuery, DocRow } from '../../../share
 import { createDocService, type DocService } from '../doc/doc.service'
 import { createInventoryService } from '../inventory/inventory.service'
 import type { RetailCreateInput, RetailHeldCart, RetailItemInput, RetailQuery } from '../../../shared/types/retail'
+import type { SaleCreateInput } from '../../../shared/types/sale'
 
 export type DB = Database
 
@@ -127,6 +128,8 @@ export function createRetailService(db: DB) {
     let doc: DocRow | undefined
     db.transaction(() => {
       const warehouseId = validate(input)
+      // P1 功能 #2 预存款抵扣校验（写单前，失败整体回滚）
+      const prepaidAmount = validatePrepaid(input)
       if (input.held_id !== undefined) {
         if (operatorId === undefined) throw new BizError('VALIDATION', '结算挂单需要登录')
         discardHeld(operatorId, input.held_id)
@@ -191,8 +194,50 @@ export function createRetailService(db: DB) {
           input.remark ?? null
         )
       }
+      // P1 功能 #2：预存款抵扣过账（同一事务）
+      if (prepaidAmount > 0 && doc) {
+        applyPrepaid(doc.id, doc.date ?? '', Number(input.customer_id), prepaidAmount, input.remark)
+      }
     }).immediate()
     return doc as DocRow
+  }
+
+  /** P1 功能 #2：预存款抵扣校验（散客不可用；金额 >0 两位小数；不超余额）。返回校验后的金额。 */
+  function validatePrepaid(input: RetailCreateInput | SaleCreateInput): number {
+    const amount = input.prepaid_amount !== undefined ? Number(input.prepaid_amount) : 0
+    if (amount === 0) return 0
+    if (!(amount > 0) || Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-7) {
+      throw new BizError('VALIDATION', '预存款抵扣金额必须大于0且最多保留两位小数')
+    }
+    if (input.customer_id === undefined || input.customer_id === null) {
+      throw new BizError('VALIDATION', '散客不可使用预存款，请先选择客户')
+    }
+    const cus = db.prepare('SELECT prepaid FROM customer WHERE id = ?').get(Number(input.customer_id)) as
+      | { prepaid: number }
+      | undefined
+    if (!cus) throw new BizError('NOT_FOUND', `客户不存在：${input.customer_id}`)
+    if (cus.prepaid < amount) {
+      throw new BizError('PREPAID_INSUFFICIENT', `预存款不足：当前余额 ${cus.prepaid.toFixed(2)} 元，需抵扣 ${amount.toFixed(2)} 元`)
+    }
+    return amount
+  }
+
+  /** P1 功能 #2：预存款抵扣过账（扣 prepaid + fund_flow 'in' 带 partner_id）。 */
+  function applyPrepaid(docId: number, date: string, customerId: number, amount: number, remark: string | undefined): void {
+    if (amount <= 0) return
+    db.prepare('UPDATE doc SET prepaid_amount = ? WHERE id = ?').run(amount, docId)
+    db.prepare('UPDATE customer SET prepaid = prepaid - ? WHERE id = ?').run(amount, customerId)
+    const acct = db.prepare(`
+      SELECT f.account_id FROM fund_flow f JOIN doc d ON d.id = f.doc_id
+      WHERE d.partner_id = ? AND d.type = 'receipt' AND d.charge_type = 'prepaid'
+      ORDER BY f.id DESC LIMIT 1
+    `).pluck().get(customerId) as number | undefined
+    const accountId = acct ?? (db.prepare('SELECT id FROM fund_account ORDER BY id LIMIT 1').pluck().get() as number | undefined)
+    if (accountId === undefined) throw new BizError('VALIDATION', '未找到资金账户，无法登记预存款抵扣')
+    db.prepare(`
+      INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark, partner_id)
+      VALUES (?, 'retail', ?, ?, 'in', ?, ?, ?)
+    `).run(accountId, docId, amount, date, remark ?? '预存款抵扣', customerId)
   }
 
   function getDetail(id: number): RetailDetail {

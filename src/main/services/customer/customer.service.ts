@@ -5,6 +5,16 @@ import type { Customer, CustomerQuery } from '../../../shared/types/customer'
 
 export type DB = Database
 
+/** [4][8] 邮箱简单格式校验：非空时须含 @，且 @ 两侧非空（宽松校验，避免过度限制） */
+function assertEmail(v: string | undefined | null): void {
+  const email = v?.trim() ?? ''
+  if (!email) return
+  const at = email.indexOf('@')
+  if (at <= 0 || at === email.length - 1 || email.includes(' ')) {
+    throw new BizError('VALIDATION', '邮箱格式不正确')
+  }
+}
+
 interface CustomerRow {
   id: number
   code: string
@@ -14,7 +24,10 @@ interface CustomerRow {
   address: string | null
   price_level: string | null
   opening_receivable: number
+  prepaid: number
   credit_limit: number | null
+  email: string | null
+  category: string
   remark: string | null
   disabled: number
 }
@@ -36,7 +49,10 @@ function toEntity(row: CustomerRow): Customer {
     address: row.address ?? undefined,
     price_level: row.price_level ?? undefined,
     opening_receivable: row.opening_receivable,
+    prepaid: row.prepaid,
     credit_limit: row.credit_limit,
+    email: row.email ?? undefined,
+    category: row.category ?? '',
     remark: row.remark ?? undefined,
     disabled: row.disabled === 1
   }
@@ -44,8 +60,8 @@ function toEntity(row: CustomerRow): Customer {
 
 export function createCustomerService(db: DB) {
   const insertCustomer = db.prepare(`
-    INSERT INTO customer (code, name, contact, phone, address, price_level, opening_receivable, credit_limit, remark)
-    VALUES (@code, @name, @contact, @phone, @address, @price_level, @opening_receivable, @credit_limit, @remark)
+    INSERT INTO customer (code, name, contact, phone, address, price_level, opening_receivable, credit_limit, email, category, remark)
+    VALUES (@code, @name, @contact, @phone, @address, @price_level, @opening_receivable, @credit_limit, @email, @category, @remark)
   `)
 
   function assertCodeFree(code: string, excludeId?: number): void {
@@ -109,6 +125,8 @@ export function createCustomerService(db: DB) {
     create(c: Omit<Customer, 'id'>): number {
       const code = requireText(c.code, '编码')
       const name = requireText(c.name, '名称')
+      // [4] 邮箱简单格式校验
+      assertEmail(c.email)
       let id = 0
       db.transaction(() => {
         assertCodeFree(code)
@@ -122,6 +140,8 @@ export function createCustomerService(db: DB) {
             price_level: c.price_level ?? null,
             opening_receivable: c.opening_receivable ?? 0,
             credit_limit: c.credit_limit ?? null,
+            email: c.email?.trim() ? c.email.trim() : null,
+            category: c.category?.trim() ?? '',
             remark: c.remark ?? null
           }).lastInsertRowid
         )
@@ -135,6 +155,8 @@ export function createCustomerService(db: DB) {
           | { id: number }
           | undefined
         if (!existing) throw new BizError('NOT_FOUND', '客户不存在')
+        // [4] 邮箱简单格式校验
+        assertEmail(c.email)
 
         const cols: string[] = []
         const vals: Record<string, unknown> = {}
@@ -158,6 +180,11 @@ export function createCustomerService(db: DB) {
             (vals['opening_receivable'] = c.opening_receivable)
         if (c.credit_limit !== undefined)
           cols.push('credit_limit = @credit_limit'), (vals['credit_limit'] = c.credit_limit)
+        // ── S 级功能批次 B：[4] 邮箱、[8] 分类 ──
+        if (c.email !== undefined)
+          cols.push('email = @email'), (vals['email'] = c.email?.trim() ? c.email.trim() : null)
+        if (c.category !== undefined)
+          cols.push('category = @category'), (vals['category'] = c.category?.trim() ?? '')
         if (c.remark !== undefined) cols.push('remark = @remark'), (vals['remark'] = c.remark)
         if (cols.length > 0) {
           cols.push("updated_at = datetime('now','localtime')")
@@ -194,6 +221,11 @@ export function createCustomerService(db: DB) {
       if (q.keyword) {
         where.push('(code LIKE @kw OR name LIKE @kw OR phone LIKE @kw)')
         params['kw'] = `%${q.keyword}%`
+      }
+      // [8] 分类筛选（精确匹配，'' 表示未分类）
+      if (q.category !== undefined && q.category !== '') {
+        where.push('category = @category')
+        params['category'] = q.category
       }
       const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
       const total = Number(

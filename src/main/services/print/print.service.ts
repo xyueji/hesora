@@ -20,6 +20,7 @@ interface DocRowLite {
   account_id: number | null
   total_amount: number
   remark: string | null
+  operator: string | null
 }
 
 interface ItemRow {
@@ -102,6 +103,7 @@ export function createPrintService(db: DB) {
       shopName: shopHeader(),
       docNo: doc.no,
       date: doc.date,
+      operator: doc.operator ?? undefined, // [2] 业务员（存在才显示）
       items: itemsOf(docId),
       total: doc.total_amount,
       paymentMethod,
@@ -133,6 +135,7 @@ export function createPrintService(db: DB) {
       warehouseInName: warehouseName(doc.warehouse_in_id),
       docNo: doc.no,
       date: doc.date,
+      operator: doc.operator ?? undefined, // [2] 业务员（存在才显示）
       items: itemsOf(docId),
       settlement: settlement && {
         funds: settlement.flows.map((row) => ({ account: row.account_name ?? `#${row.account_id}`, direction: row.direction, amount: row.amount })),

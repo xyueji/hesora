@@ -6,11 +6,15 @@ export type PaymentType = 'receipt' | 'payment' | 'other_in' | 'other_out'
 export interface PaymentCreateInput {
   partner_id?: number
   account_id?: number
+  /** [10] 收支科目 id（写入 fund_flow.category_id，S 级功能批次 B） */
+  category_id?: number
   accounts?: { account_id: number; amount: number }[]
   allocations?: { doc_id: number; amount: number }[]
   amount: number
   date?: string
   remark?: string
+  /** P1 功能 #2 预存款：'prepaid' 计入预存款（不核销）；'prepaid_refund' 退预存款（扣减）；缺省 'normal' 直接核销 */
+  charge_type?: 'normal' | 'prepaid' | 'prepaid_refund'
 }
 
 export interface SettlementDocument {

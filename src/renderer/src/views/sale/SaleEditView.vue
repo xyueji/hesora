@@ -43,12 +43,21 @@ const form = reactive({
   date: today(),
   customer_id: null as number | null,
   warehouse_id: null as number | null,
-  remark: ''
+  remark: '',
+  // P1 功能 #2 预存款抵扣金额（≤ 客户预存款余额）
+  prepaid_amount: null as number | null,
+  // ── S 级功能批次 B：[3] 外部订单号、[7] 发票状态、[9] 发货信息 ──
+  external_no: '',
+  invoice_status: 'none' as 'none' | 'invoiced',
+  express_com: '',
+  express_no: '',
+  delivery_status: 'none' as 'none' | 'shipped'
 })
 
 const customerOptions = ref<Customer[]>([])
 const warehouseOptions = ref<Warehouse[]>([])
 const lines = ref<Line[]>([emptyLine()])
+const customerPrepaid = ref(0)
 
 function emptyLine(): Line {
   return { product_id: null, product: null, unit: '', rate: 1, unitOptions: [], batch_no: '', qty: null, price: null, priceManual: false }
@@ -138,7 +147,20 @@ async function applyCustomerPrices(): Promise<void> {
   }
 }
 
-watch(() => form.customer_id, () => void applyCustomerPrices())
+watch(() => form.customer_id, async (id) => {
+  // P1 功能 #2：切换客户时刷新预存款余额展示
+  customerPrepaid.value = 0
+  form.prepaid_amount = null
+  if (id !== null) {
+    try {
+      const c = await customerApi.get(id)
+      customerPrepaid.value = c?.prepaid ?? 0
+    } catch {
+      /* 静默：余额展示失败不阻断录入 */
+    }
+  }
+  void applyCustomerPrices()
+})
 
 function lineAmount(l: Line): number {
   return (l.qty ?? 0) * (l.price ?? 0)
@@ -203,6 +225,13 @@ async function save(): Promise<void> {
       warehouse_id: form.warehouse_id,
       date: form.date || undefined,
       remark: form.remark || undefined,
+      prepaid_amount: form.prepaid_amount && form.prepaid_amount > 0 ? form.prepaid_amount : undefined,
+      // ── S 级功能批次 B：[3][7][9] ──
+      external_no: form.external_no.trim() || undefined,
+      invoice_status: form.invoice_status,
+      express_com: form.express_com.trim() || undefined,
+      express_no: form.express_no.trim() || undefined,
+      delivery_status: form.delivery_status,
       items
     })
     ElMessage.success(`保存成功：${doc.no}`)
@@ -278,6 +307,18 @@ useDocumentScanner({ onProduct: fillScanned })
             />
           </el-select>
         </el-form-item>
+        <el-form-item v-if="form.customer_id !== null" label="预存款">
+          <span class="prepaid-balance">余额 ¥{{ customerPrepaid.toFixed(2) }}</span>
+          <el-input-number
+            v-model="form.prepaid_amount"
+            :min="0"
+            :max="Math.min(customerPrepaid, totalAmount)"
+            :precision="2"
+            :controls="false"
+            placeholder="使用预存款"
+            style="width: 140px; margin-left: 10px"
+          />
+        </el-form-item>
         <el-form-item label="仓库" required>
           <el-select v-model="form.warehouse_id" placeholder="选择仓库" style="width: 180px">
             <el-option v-for="w in warehouseOptions" :key="w.id" :label="w.name" :value="w.id as number" />
@@ -289,7 +330,38 @@ useDocumentScanner({ onProduct: fillScanned })
         <el-form-item label="备注">
           <el-input v-model="form.remark" placeholder="备注" style="width: 260px" />
         </el-form-item>
+        <!-- [3] 外部订单号（S 级功能批次 B） -->
+        <el-form-item label="外部单号">
+          <el-input v-model="form.external_no" placeholder="电商平台订单号等" style="width: 200px" />
+        </el-form-item>
+        <!-- [7] 发票状态（S 级功能批次 B） -->
+        <el-form-item label="发票">
+          <el-select v-model="form.invoice_status" style="width: 120px">
+            <el-option label="未开票" value="none" />
+            <el-option label="已开票" value="invoiced" />
+          </el-select>
+        </el-form-item>
       </el-form>
+
+      <!-- [9] 发货信息折叠区（S 级功能批次 B） -->
+      <el-collapse class="express-collapse">
+        <el-collapse-item title="发货信息">
+          <el-form label-width="90px" inline>
+            <el-form-item label="快递公司">
+              <el-input v-model="form.express_com" placeholder="如：顺丰" style="width: 160px" />
+            </el-form-item>
+            <el-form-item label="快递单号">
+              <el-input v-model="form.express_no" placeholder="快递单号" style="width: 200px" />
+            </el-form-item>
+            <el-form-item label="发货状态">
+              <el-select v-model="form.delivery_status" style="width: 120px">
+                <el-option label="未发货" value="none" />
+                <el-option label="已发货" value="shipped" />
+              </el-select>
+            </el-form-item>
+          </el-form>
+        </el-collapse-item>
+      </el-collapse>
 
       <el-table :data="lines" stripe class="table" empty-text="点击下方按钮添加商品">
         <el-table-column label="商品" min-width="220">
@@ -368,6 +440,10 @@ useDocumentScanner({ onProduct: fillScanned })
 </template>
 
 <style scoped>
+/* [9] 发货信息折叠区（S 级功能批次 B） */
+.express-collapse {
+  margin-bottom: 16px;
+}
 .sale-edit .header {
   display: flex;
   justify-content: space-between;

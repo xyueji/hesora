@@ -23,6 +23,12 @@ const productNames = ref<Record<number, string>>({})
 const customerOptions = ref<Customer[]>([])
 
 const filterCustomerId = ref<number | null>(null)
+// ── S 级功能批次 B：[3][7][9] 列表筛选 ──
+const filterInvoiceStatus = ref<'none' | 'invoiced' | ''>('')
+const filterDeliveryStatus = ref<'none' | 'shipped' | ''>('')
+
+const invoiceLabel: Record<string, string> = { none: '未开票', invoiced: '已开票' }
+const deliveryLabel: Record<string, string> = { none: '未发货', shipped: '已发货' }
 
 const detailVisible = ref(false)
 const detail = ref<SaleDetail | null>(null)
@@ -36,7 +42,10 @@ async function load(): Promise<void> {
       keyword: keyword.value || undefined,
       partner_id: filterCustomerId.value ?? undefined,
       date_from: dateRange.value?.[0],
-      date_to: dateRange.value?.[1]
+      date_to: dateRange.value?.[1],
+      // [7][9] 发票/发货状态筛选（S 级功能批次 B）
+      invoice_status: filterInvoiceStatus.value || undefined,
+      delivery_status: filterDeliveryStatus.value || undefined
     })
     list.value = r.items
     total.value = r.total
@@ -168,6 +177,26 @@ async function printA4(): Promise<void> {
           >
             <el-option v-for="c in customerOptions" :key="c.id" :label="c.name" :value="c.id as number" />
           </el-select>
+          <el-select
+            v-model="filterInvoiceStatus"
+            clearable
+            placeholder="发票状态"
+            style="width: 120px"
+            @change="search"
+          >
+            <el-option label="未开票" value="none" />
+            <el-option label="已开票" value="invoiced" />
+          </el-select>
+          <el-select
+            v-model="filterDeliveryStatus"
+            clearable
+            placeholder="发货状态"
+            style="width: 120px"
+            @change="search"
+          >
+            <el-option label="未发货" value="none" />
+            <el-option label="已发货" value="shipped" />
+          </el-select>
           <el-date-picker
             v-model="dateRange"
             type="daterange"
@@ -195,14 +224,26 @@ async function printA4(): Promise<void> {
 
       <el-table v-loading="loading" :data="list" stripe class="table">
         <el-table-column prop="no" label="单号" width="180" />
-        <el-table-column prop="date" label="日期" width="120" />
-        <el-table-column label="客户" min-width="160">
+        <el-table-column prop="date" label="日期" width="110" />
+        <el-table-column label="客户" min-width="140">
           <template #default="{ row }">{{ customerName(row) }}</template>
         </el-table-column>
-        <el-table-column label="总金额" width="120" align="right">
+        <!-- [3] 外部订单号（S 级功能批次 B） -->
+        <el-table-column prop="external_no" label="外部单号" width="140" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.external_no || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="总金额" width="110" align="right">
           <template #default="{ row }">{{ fmt(row.total_amount) }}</template>
         </el-table-column>
-        <el-table-column prop="remark" label="备注" min-width="140" show-overflow-tooltip />
+        <!-- [7] 发票状态列（S 级功能批次 B） -->
+        <el-table-column label="发票" width="90">
+          <template #default="{ row }">{{ invoiceLabel[row.invoice_status as string] ?? '未开票' }}</template>
+        </el-table-column>
+        <!-- [9] 发货状态列（S 级功能批次 B） -->
+        <el-table-column label="发货" width="90">
+          <template #default="{ row }">{{ deliveryLabel[row.delivery_status as string] ?? '未发货' }}</template>
+        </el-table-column>
+        <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
         <el-table-column label="操作" width="90" align="center">
           <template #default="{ row }">
             <el-button link type="primary" @click="viewDetail(row)">查看</el-button>
@@ -227,6 +268,10 @@ async function printA4(): Promise<void> {
           <el-descriptions-item label="日期">{{ detail.doc.date }}</el-descriptions-item>
           <el-descriptions-item label="客户">{{ customerName(detail.doc) }}</el-descriptions-item>
           <el-descriptions-item label="总金额">{{ fmt(detail.doc.total_amount) }}</el-descriptions-item>
+          <!-- [3][7][9] 详情展示（S 级功能批次 B） -->
+          <el-descriptions-item label="外部单号">{{ detail.doc.external_no || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="发票">{{ invoiceLabel[detail.doc.invoice_status as string] ?? '未开票' }}</el-descriptions-item>
+          <el-descriptions-item label="发货">{{ deliveryLabel[detail.doc.delivery_status as string] ?? '未发货' }}<template v-if="detail.doc.express_com || detail.doc.express_no">（{{ detail.doc.express_com || '—' }} {{ detail.doc.express_no || '' }}）</template></el-descriptions-item>
           <el-descriptions-item label="备注" :span="2">{{ detail.doc.remark || '—' }}</el-descriptions-item>
         </el-descriptions>
         <el-table :data="detail.items" stripe size="small">

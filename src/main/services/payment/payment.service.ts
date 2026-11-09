@@ -30,8 +30,8 @@ function toFlowRow(row: FlowDbRow): FundFlowRow {
 export function createPaymentService(db: DB) {
   const docService: DocService = createDocService(db)
   const insertFlow = db.prepare(`
-    INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark)
-    VALUES (@account_id, @doc_type, @doc_id, @amount, @direction, @date, @remark)
+    INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark, category_id)
+    VALUES (@account_id, @doc_type, @doc_id, @amount, @direction, @date, @remark, @category_id)
   `)
 
   function cents(amount: number): number {
@@ -95,6 +95,11 @@ export function createPaymentService(db: DB) {
         throw new BizError('VALIDATION', '结算账户金额合计必须等于单据金额')
       }
       const partner = input.partner_id
+      // P1 功能 #2 预存款：charge_type 仅对收付款类单据有效
+      const chargeType = input.charge_type ?? 'normal'
+      const prepaidMode = chargeType === 'prepaid' || chargeType === 'prepaid_refund'
+      if (prepaidMode && !trade) throw new BizError('VALIDATION', '预存款模式仅适用于收付款单')
+      if (prepaidMode && partner == null) throw new BizError('VALIDATION', '预存款收付款必须选择客户或供应商')
       if (partner != null) {
         if (!trade) throw new BizError('VALIDATION', '其他收支不计入往来余额')
         const table = type === 'receipt' ? 'customer' : 'supplier'
@@ -102,14 +107,28 @@ export function createPaymentService(db: DB) {
           throw new BizError('NOT_FOUND', type === 'receipt' ? '客户不存在' : '供应商不存在')
         }
       }
+      // [10] 科目：可选 category_id，须为存在的 income_category（S 级功能批次 B）
+      const categoryId = input.category_id
+      if (categoryId != null) {
+        if (!Number.isInteger(categoryId) || !db.prepare('SELECT 1 FROM income_category WHERE id = ?').get(categoryId)) {
+          throw new BizError('NOT_FOUND', '收支科目不存在')
+        }
+      }
       const doc = docService.create({
         type, date: input.date, partner_id: partner,
         account_id: legs.length === 1 ? legs[0]?.id : undefined,
         remark: input.remark, items: []
       })
+      if (prepaidMode) {
+        // docService.create 不写 charge_type，这里落列（默认 'normal'）
+        db.prepare('UPDATE doc SET charge_type = ? WHERE id = ?').run(chargeType, doc.id)
+      }
       const targets = new Set<number>()
       let allocated = 0
       const insertAllocation = db.prepare('INSERT INTO payment_allocation (payment_id, target_doc_id, amount) VALUES (?, ?, ?)')
+      if (prepaidMode && allocations.length > 0) {
+        throw new BizError('VALIDATION', '预存款收付款不参与核销')
+      }
       for (const row of allocations) {
         if (!trade || !partner) throw new BizError('VALIDATION', '核销前请选择客户或供应商')
         if (!row || !Number.isInteger(row.doc_id) || targets.has(row.doc_id)) throw new BizError('VALIDATION', '核销单据无效或重复')
@@ -124,10 +143,22 @@ export function createPaymentService(db: DB) {
         insertAllocation.run(doc.id, row.doc_id, amount / 100)
       }
       db.prepare('UPDATE doc SET total_amount = ? WHERE id = ?').run(total / 100, doc.id)
+      // P1 功能 #2 预存款过账：计入/退回预存款，更新 partner.prepaid，不写核销
+      if (prepaidMode && partner != null) {
+        const table = type === 'receipt' ? 'customer' : 'supplier'
+        const delta = chargeType === 'prepaid' ? total / 100 : -(total / 100)
+        const row = db.prepare(`SELECT prepaid FROM ${table} WHERE id = ?`).get(partner) as { prepaid: number } | undefined
+        const current = row?.prepaid ?? 0
+        if (delta < 0 && current + delta < 0) {
+          throw new BizError('PREPAID_INSUFFICIENT', `预存款不足：当前余额 ${current.toFixed(2)} 元，无法退回 ${(-delta).toFixed(2)} 元`)
+        }
+        db.prepare(`UPDATE ${table} SET prepaid = prepaid + ? WHERE id = ?`).run(delta, partner)
+      }
       for (const leg of legs) {
         insertFlow.run({
           account_id: leg.id, doc_type: type, doc_id: doc.id, amount: leg.cents / 100,
-          direction, date: doc.date, remark: input.remark ?? null
+          direction, date: doc.date, remark: input.remark ?? null,
+          category_id: categoryId ?? null // [10] 资金流水关联收支科目
         })
       }
       return { ...doc, total_amount: total / 100 }

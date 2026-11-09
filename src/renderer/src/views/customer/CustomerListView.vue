@@ -15,6 +15,8 @@ function openDetail(row: Customer): void {
 }
 
 const keyword = ref('')
+// [8] 分类筛选（S 级功能批次 B）
+const filterCategory = ref('')
 const loading = ref(false)
 const list = ref<Customer[]>([])
 const total = ref(0)
@@ -41,7 +43,8 @@ async function load(): Promise<void> {
     const r = await customerApi.query({
       page: page.value,
       pageSize: pageSize.value,
-      keyword: keyword.value || undefined
+      keyword: keyword.value || undefined,
+      category: filterCategory.value || undefined // [8] S 级功能批次 B
     })
     list.value = r.list
     total.value = r.total
@@ -82,6 +85,19 @@ onActivated(load)
       <div class="toolbar">
         <h3 class="title">客户档案</h3>
         <div class="actions">
+          <el-select
+            v-model="filterCategory"
+            clearable
+            filterable
+            allow-create
+            placeholder="按分类筛选"
+            style="width: 130px"
+            @change="search"
+          >
+            <el-option label="普通" value="普通" />
+            <el-option label="批发" value="批发" />
+            <el-option label="VIP" value="VIP" />
+          </el-select>
           <el-input
             v-model="keyword"
             placeholder="搜索编码 / 名称 / 电话"
@@ -106,8 +122,15 @@ onActivated(load)
         <el-table-column prop="phone" label="电话" width="130" />
         <el-table-column prop="address" label="地址" min-width="140" show-overflow-tooltip />
         <el-table-column prop="price_level" label="价格等级" width="100" />
+        <!-- [8] 分类列（S 级功能批次 B） -->
+        <el-table-column prop="category" label="分类" width="90">
+          <template #default="{ row }">{{ row.category || '—' }}</template>
+        </el-table-column>
         <el-table-column label="期初应收" width="110" align="right">
           <template #default="{ row }">{{ fmt(row.opening_receivable) }}</template>
+        </el-table-column>
+        <el-table-column label="预存款" width="110" align="right">
+          <template #default="{ row }"><span class="prepaid">{{ fmt(row.prepaid ?? 0) }}</span></template>
         </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">

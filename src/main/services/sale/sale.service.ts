@@ -163,6 +163,23 @@ export function createSaleService(db: DB) {
     }
     let doc: DocRow | undefined
     db.transaction(() => {
+      // P1 功能 #2 预存款抵扣校验：需客户、金额合法且不超余额；散客不可用
+      const prepaidAmount = input.prepaid_amount !== undefined ? Number(input.prepaid_amount) : 0
+      if (prepaidAmount !== 0) {
+        if (!(prepaidAmount > 0) || Math.abs(prepaidAmount * 100 - Math.round(prepaidAmount * 100)) > 1e-7) {
+          throw new BizError('VALIDATION', '预存款抵扣金额必须大于0且最多保留两位小数')
+        }
+        if (input.customer_id === undefined || input.customer_id === null) {
+          throw new BizError('VALIDATION', '散客不可使用预存款，请先选择客户')
+        }
+        const cus = db.prepare('SELECT prepaid FROM customer WHERE id = ?').get(Number(input.customer_id)) as
+          | { prepaid: number }
+          | undefined
+        if (!cus) throw new BizError('NOT_FOUND', `客户不存在：${input.customer_id}`)
+        if (cus.prepaid < prepaidAmount) {
+          throw new BizError('PREPAID_INSUFFICIENT', `预存款不足：当前余额 ${cus.prepaid.toFixed(2)} 元，需抵扣 ${prepaidAmount.toFixed(2)} 元`)
+        }
+      }
       // 组合商品销售拆解校验（BOM/子件 tracking 约束）放在写单前，失败整体回滚
       const explodes = explodeCombos(input.items)
       doc = docService.create({
@@ -172,6 +189,12 @@ export function createSaleService(db: DB) {
         partner_id: input.customer_id,
         warehouse_id: warehouseId,
         remark: input.remark,
+        // ── S 级功能批次 B ──
+        external_no: input.external_no,
+        invoice_status: input.invoice_status,
+        express_com: input.express_com,
+        express_no: input.express_no,
+        delivery_status: input.delivery_status,
         items: input.items.map((it) => ({
           product_id: it.product_id,
           warehouse_id: warehouseId,
@@ -208,6 +231,25 @@ export function createSaleService(db: DB) {
         changes.push(...buildComboChanges(e, warehouseId, doc?.id ?? 0, docItemIds, doc?.date))
       }
       inventoryService.applyChanges(changes)
+      // P1 功能 #2：预存款抵扣过账——doc.prepaid_amount 落列、扣减客户预存款、
+      // 写 fund_flow（doc_type sale，direction 'in'，带 partner_id）。同一事务保证原子性。
+      if (prepaidAmount > 0 && doc) {
+        db.prepare('UPDATE doc SET prepaid_amount = ? WHERE id = ?').run(prepaidAmount, doc.id)
+        db.prepare('UPDATE customer SET prepaid = prepaid - ? WHERE id = ?').run(prepaidAmount, Number(input.customer_id))
+        // fund_flow.account_id NOT NULL：预存款抵扣不新增现金，记账账户取客户
+        // 计入预存款时收款的账户（最近一笔 prepaid 收款流水），兜底取第一个账户
+        const acct = db.prepare(`
+          SELECT f.account_id FROM fund_flow f JOIN doc d ON d.id = f.doc_id
+          WHERE d.partner_id = ? AND d.type = 'receipt' AND d.charge_type = 'prepaid'
+          ORDER BY f.id DESC LIMIT 1
+        `).pluck().get(Number(input.customer_id)) as number | undefined
+        const accountId2 = acct ?? (db.prepare('SELECT id FROM fund_account ORDER BY id LIMIT 1').pluck().get() as number | undefined)
+        if (accountId2 === undefined) throw new BizError('VALIDATION', '未找到资金账户，无法登记预存款抵扣')
+        db.prepare(`
+          INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark, partner_id)
+          VALUES (?, 'sale', ?, ?, 'in', ?, ?, ?)
+        `).run(accountId2, doc.id, prepaidAmount, doc.date, input.remark ?? '预存款抵扣', Number(input.customer_id))
+      }
     })()
     return doc as DocRow
   }
@@ -251,6 +293,9 @@ export function createSaleService(db: DB) {
         account_id: accountId ?? undefined,
         source_doc_id: input.source_doc_id,
         remark: input.remark,
+        // ── S 级功能批次 B ──
+        external_no: input.external_no,
+        invoice_status: input.invoice_status,
         items: input.items.map((it) => ({
           product_id: it.product_id,
           warehouse_id: warehouseId,
@@ -324,6 +369,9 @@ export function createSaleService(db: DB) {
       date_to: q.date_to,
       keyword: q.keyword,
       partner_id: q.partner_id,
+      // ── S 级功能批次 B ──
+      invoice_status: q.invoice_status,
+      delivery_status: q.delivery_status,
       page: q.page,
       pageSize: q.pageSize
     }

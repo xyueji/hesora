@@ -396,4 +396,18 @@ describe('stock-report.service adjustPrices', () => {
     const rows = ctx.db.prepare('SELECT * FROM price_adjust_log').all()
     expect(rows).toHaveLength(0)
   })
+
+  // ── S 级功能批次 B [1] 库存金额列口径锁定：amount = qty × 当前 moving_cost ──
+  it('[1] stock_value = qty * current moving_cost (amount column, cost口径)', () => {
+    ctx.inv.applyChanges([
+      { product_id: ctx.coke, warehouse_id: ctx.whId, change_qty: 10, unit_cost: 2 },
+      { product_id: ctx.coke, warehouse_id: ctx.whId, change_qty: 10, unit_cost: 4 }, // 移动加权 10@2+10@4 → 3
+      { product_id: ctx.sprite, warehouse_id: ctx.whId, batch_no: 'B1', change_qty: 4, unit_cost: 3 }
+    ])
+    const r = svc.statisticsDetail({ page: 1, pageSize: 20 })
+    const coke = r.items.find((i) => i.warehouse_id === ctx.whId && i.product_id === ctx.coke)!
+    expect(coke.qty).toBe(20)
+    expect(coke.moving_cost).toBeCloseTo(3)
+    expect(coke.amount).toBeCloseTo(60) // 20 × 3 = 60（当前移动加权成本口径）
+  })
 })
