@@ -4,17 +4,20 @@ import { openDb, type DB } from './db'
 import { resolveDatabasePath } from './db/location'
 import { ensureProfileDir, resolveProfilePath } from './db/profile'
 import { seedDemoData, resetDemoData } from './db/seed'
-import { isTrialExpiredWrite } from '../shared/license'
+import { isTrialExpiredWrite, hasFeature } from '../shared/license'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
 import { buildAllHandlers, canViewDocument, type HandlerDeps } from './ipc/handlers'
 import { PERMISSION_MAP } from './permissions-map'
-import { can, getCurrentUser, installUserLookup } from './auth'
+import { can, getCurrentUser, installUserLookup, canFor } from './auth'
 import { createIdempotencyStore } from './host/idempotency'
 import { createUserService } from './services/user/user.service'
 import { createDesktopLicenseService } from './license'
 import { applyPendingRestore } from './services/backup/backup.service'
 import { createAuditService } from './services/audit/audit.service'
 import { BizError } from '../shared/result'
+
+// v1.3 Task 5: LAN 主机服务退出关闭引用（initialize 内 IIFE 赋值，window-all-closed 消费）。
+let hostServerRef: { close(): Promise<void> } | null = null
 import { createDocService } from './services/doc/doc.service'
 import { createPrintIpc } from './print'
 import { createCsvIpc } from './csv'
@@ -219,6 +222,68 @@ function initialize(): void {
     }
   }, IDEMPOTENCY_CLEANUP_INTERVAL_MS)
   idemCleanupTimer.unref?.()
+
+  // ── v1.3 Task 5: LAN 协作主机服务懒加载接线 ──
+  // 设备 secret 内存表（重启即空 → 设备重新配对，v1.3 简化裁定；T6 持久化议题）。
+  const deviceSecrets = new Map<string, string>()
+  const deviceSecretLookup = (deviceId: string): string | null => deviceSecrets.get(deviceId) ?? null
+
+
+  // 双条件才启动：①授权含 lan_collaboration feature ②用户已开启 host_lan_enabled（默认 off）。
+  // fastify 等重依赖只在满足条件时动态 import——无 feature 时零开销（T10 验收点）。
+  type HostServerHandleLike = { port: number; close(): Promise<void>; listen(): Promise<number> }
+  let hostServer: HostServerHandleLike | null = null
+  const licenseCodeRow = getDb().prepare("SELECT value FROM app_setting WHERE key='license.code'").pluck().get() as
+    | string
+    | undefined
+  // verifyFormat 是 licenseSvc 的公开方法（parseCode 的包装），返回 payload|null。
+  const licensePayload = licenseCodeRow ? licenseSvc.verifyFormat(licenseCodeRow) : null
+  const lanEnabledRow = getDb().prepare("SELECT value FROM app_setting WHERE key='host_lan_enabled'").pluck().get() as
+    | string
+    | undefined
+  if (hasFeature(licensePayload, 'lan_collaboration') && lanEnabledRow === '1') {
+    // initialize() 同步——异步启动放进 IIFE，失败只记日志不阻断主进程。
+    void (async () => {
+      try {
+      // 动态 import：fastify/ws/@peculiar/x509 均在此懒加载。
+      const { ensureHostCertificate } = await import('./host/cert')
+      const { createHostServer } = await import('./host/server')
+      const { createGateway } = await import('./host/gateway')
+      const { createPairingService } = await import('./host/pairing')
+      const { createHostAuthService } = await import('./host/auth')
+      const cert = await ensureHostCertificate(join(app.getPath('userData'), 'host-cert'))
+      const handlers = new Map(buildAllHandlers(handlerDeps).map((h) => [h.channel, h]))
+      const gw = createGateway({ getDb, handlers: handlers as never })
+      const pairing = createPairingService(getDb() as never)
+      const hostAuth = createHostAuthService(getDb() as never)
+      hostServer = await createHostServer({
+        getDb,
+        handlers: handlers as never,
+        pairing,
+        hostAuth,
+        gateway: gw,
+        canFor: (userId, key) => canFor(userId, key),
+        tls: { keyPem: cert.keyPem, certPem: cert.certPem },
+        port: 18650,
+        getDeviceSecret: deviceSecretLookup,
+        log: (level, msg) => console.log(`[host:${level}] ${msg}`)
+      })
+      await hostServer.listen().catch((e: unknown) => {
+        console.error('[host] listen failed:', e)
+        hostServer = null
+      })
+      // 配对确认：host 侧需要物理确认——UI 弹窗属 T8，本任务 console/通知占位。
+      // T8 接管点：轮询 pairing 待确认请求或事件推送，弹窗确认后调
+      // pairing.confirmPairing(code) → deviceSecrets.set(deviceId, secret.toString('hex'))。
+      console.log('[host] LAN 协作主机已启动（配对确认 UI 待 T8 接入）')
+        hostServerRef = hostServer
+      } catch (e) {
+        // 主机服务启动失败不阻断主进程业务（本机单机模式仍完整可用）。
+        console.error('[host] LAN host server init failed:', e)
+        hostServer = null
+      }
+    })()
+  }
   registerIpc({
     'backup:now': () => backupIpc.backupNow(),
     'backup:pickDir': () => backupIpc.pickDir(),
@@ -255,6 +320,10 @@ function initialize(): void {
 }
 
 app.on('window-all-closed', () => {
+  // v1.3 Task 5: 退出时关闭 LAN 主机服务（若已启动）。
+  if (hostServerRef) {
+    hostServerRef.close().catch(() => {})
+  }
   if (process.platform !== 'darwin') {
     app.quit()
   }

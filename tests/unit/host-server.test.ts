@@ -1,0 +1,246 @@
+import { rmSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { createHash, randomBytes } from 'node:crypto'
+import { openMemDb } from '../helpers/mem-db'
+import { createHostServer } from '../../src/main/host/server'
+import { createGateway } from '../../src/main/host/gateway'
+import { createHostAuthService } from '../../src/main/host/auth'
+import { createPairingService } from '../../src/main/host/pairing'
+import { PERMISSION_MAP } from '../../src/main/permissions-map'
+import { createSaleService } from "../../src/main/services/sale/sale.service"
+import type { IpcHandler } from '../../src/shared/result'
+import type { DB } from '../../src/main/db'
+
+function sha256hex(s: string): string {
+  return createHash('sha256').update(s).digest('hex')
+}
+
+const SECRET_HEX = 'aa'.repeat(32)
+
+let fxCaptured: { adminId: number; cashierId: number } = { adminId: 1, cashierId: 2 }
+
+interface Fixture {
+  app: Awaited<ReturnType<typeof createHostServer>>
+  db: ReturnType<typeof openMemDb>
+  hostAuth: ReturnType<typeof createHostAuthService>
+  setNow: (n: number) => void
+  getNow: () => number
+  adminId: number
+  cashierId: number
+}
+
+let fx: Fixture
+const cleanups: string[] = []
+
+async function setupFixture(handlerOverrides: Record<string, IpcHandler> = {}): Promise<Fixture> {
+  const db = openMemDb()
+  let now = 1_800_000_000_000
+  const clock = () => now
+  const hostAuth = createHostAuthService(db as unknown as import('better-sqlite3').Database, { clock })
+  const pairing = createPairingService(db as unknown as import('better-sqlite3').Database, { clock })
+  const handlers = new Map(Object.entries(handlerOverrides).map(([channel, handler]) => [channel, { channel, handler }]))
+  const gw = createGateway({ getDb: () => db as unknown as DB, handlers })
+  fxCaptured = { adminId: 0, cashierId: 0 }
+  const canFor = (userId: number, key: string): boolean => {
+    // 测试用内存 RBAC：user 1=admin 全权，user 2=cashier 仅 inventory.view
+    if (userId === fxCaptured.adminId) return true
+    return userId === fxCaptured.cashierId && key === 'inventory.view'
+  }
+  const app = await createHostServer({
+    getDb: () => db as unknown as DB,
+    handlers,
+    pairing,
+    hostAuth,
+    gateway: gw,
+    canFor: canFor as never,
+    getDeviceSecret: (id) => (id === 'dev-1' ? SECRET_HEX : null),
+    log: () => {}
+  })
+  // 造已配对设备 + 会话
+  db.prepare('INSERT INTO host_devices (device_id, device_name, secret_hash, paired_at) VALUES (?,?,?,?)').run(
+    'dev-1', 'd1', SECRET_HEX, new Date(now).toISOString()
+  )
+  db.prepare('INSERT INTO "user" (username, password_hash, role) VALUES (?,?,?)').run('admin', 'x'.repeat(20), 'admin')
+  db.prepare('INSERT INTO "user" (username, password_hash, role) VALUES (?,?,?)').run('cashier', 'x'.repeat(20), 'cashier')
+  const adminId = (db.prepare('SELECT id FROM "user" WHERE username=?').get('admin') as { id: number }).id
+  const cashierId = (db.prepare('SELECT id FROM "user" WHERE username=?').get('cashier') as { id: number }).id
+  fxCaptured = { adminId, cashierId }
+  hostAuth.createSession('dev-1', adminId)
+  return { app, db, hostAuth, setNow: (n: number) => { now = n }, getNow: () => now, adminId, cashierId }
+}
+
+function rpcHeaders(app: Fixture, body: string, over: Partial<{
+  deviceId: string; ts: number; nonce: string; sig: string; token: string; requestId: string
+}> = {}): Record<string, string> {
+  const ts = over.ts ?? Math.floor(app.getNow() / 1000)
+  const nonce = over.nonce ?? randomBytes(16).toString('hex')
+  const bodySha = sha256hex(body)
+  const sig = over.sig ?? app.hostAuth.signPayload(SECRET_HEX, over.deviceId ?? 'dev-1', ts, nonce, bodySha)
+  const h: Record<string, string> = {
+    'x-device-id': over.deviceId ?? 'dev-1',
+    'x-ts': String(ts),
+    'x-nonce': nonce,
+    'x-sig': sig,
+    'x-request-id': over.requestId ?? 'req-1',
+    'content-type': 'application/json'
+  }
+  if (over.token !== null) h['x-session-token'] = over.token ?? tokenOf(app)
+  return h
+}
+
+let cachedToken: string | null = null
+function tokenOf(app: Fixture): string {
+  if (!cachedToken) cachedToken = app.hostAuth.createSession('dev-1', 1).token
+  return cachedToken
+}
+
+beforeEach(async () => {
+  cachedToken = null
+  fx = await setupFixture({
+    'product:query': (_e, p) => ({ got: p }),
+    'doc:reverse': () => ({ reversed: true })
+  })
+})
+afterEach(async () => {
+  await fx.app.close()
+  for (const d of cleanups) rmSync(d, { recursive: true, force: true })
+  cleanups.length = 0
+})
+
+describe('host server /rpc', () => {
+  it('valid HMAC headers + valid session → Result ok', async () => {
+    const body = JSON.stringify({ requestId: 'r1', channel: 'product:query', payload: { q: 'x' } })
+    const res = await fx.app.inject({ method: 'POST', url: '/rpc/product:query', payload: body, headers: rpcHeaders(fx, body) })
+    expect(res.statusCode).toBe(200)
+    const json = res.json()
+    expect(json.ok).toBe(true)
+    expect(json.data).toEqual({ got: { q: 'x' } })
+  })
+
+  it('missing/invalid session token → E_AUTH_FAILED', async () => {
+    const body = JSON.stringify({ requestId: 'r1', channel: 'product:query', payload: null })
+    const res1 = await fx.app.inject({ method: 'POST', url: '/rpc/product:query', payload: body, headers: rpcHeaders(fx, body, { token: '' }) })
+    expect(res1.json().code).toBe('E_AUTH_FAILED')
+    const res2 = await fx.app.inject({ method: 'POST', url: '/rpc/product:query', payload: body, headers: rpcHeaders(fx, body, { token: 'bogus-token' }) })
+    expect(res2.json().code).toBe('E_AUTH_FAILED')
+  })
+
+  it('bad signature → E_AUTH_FAILED; replayed nonce → E_REPLAY; skewed ts → E_CLOCK_SKEW', async () => {
+    const body = JSON.stringify({ requestId: 'r1', channel: 'product:query', payload: null })
+    const bad = await fx.app.inject({ method: 'POST', url: '/rpc/product:query', payload: body, headers: rpcHeaders(fx, body, { sig: '0'.repeat(64) }) })
+    expect(bad.json().code).toBe('E_AUTH_FAILED')
+
+    const replayBody = JSON.stringify({ requestId: 'r2', channel: 'product:query', payload: null })
+    const replayNonce = randomBytes(16).toString('hex') // 重放=同 nonce 同 sig 同 body
+    const okRes = await fx.app.inject({ method: 'POST', url: '/rpc/product:query', payload: replayBody, headers: rpcHeaders(fx, replayBody, { nonce: replayNonce }) })
+    expect(okRes.json().ok).toBe(true)
+    const replay = await fx.app.inject({ method: 'POST', url: '/rpc/product:query', payload: replayBody, headers: rpcHeaders(fx, replayBody, { nonce: replayNonce }) })
+    expect(replay.json().code).toBe('E_REPLAY')
+
+    const skewTs = Math.floor(fx.getNow() / 1000) - 121
+    const skewBody = JSON.stringify({ requestId: 'r3', channel: 'product:query', payload: null })
+    const skew = await fx.app.inject({ method: 'POST', url: '/rpc/product:query', payload: skewBody, headers: rpcHeaders(fx, skewBody, { ts: skewTs }) })
+    expect(skew.json().code).toBe('E_CLOCK_SKEW')
+  })
+
+  it('LOCAL channel → E_LOCAL_ONLY; backup: → E_HOST_ONLY; unknown → NOT_FOUND (404 semantic via Result code)', async () => {
+    for (const [channel, code] of [['license:check', 'E_LOCAL_ONLY'], ['auth:login', 'E_LOCAL_ONLY'], ['backup:now', 'E_HOST_ONLY'], ['sync:now', 'E_HOST_ONLY'], ['nope:thing', 'NOT_FOUND']] as const) {
+      const body = JSON.stringify({ requestId: 'r-' + channel, channel, payload: null })
+      const res = await fx.app.inject({ method: 'POST', url: `/rpc/${channel}`, payload: body, headers: rpcHeaders(fx, body) })
+      expect(res.json().code).toBe(code)
+    }
+  })
+
+  it('RBAC precheck: PERMISSION_MAP key + canFor false → NO_PERMISSION (cashier cannot doc:reverse)', async () => {
+    expect(PERMISSION_MAP['doc:reverse']).toBe('doc.reverse')
+    const cashierToken = fx.hostAuth.createSession('dev-1', fx.cashierId).token
+    const body = JSON.stringify({ requestId: 'r-rbac', channel: 'doc:reverse', payload: { id: 1 } })
+    const res = await fx.app.inject({ method: 'POST', url: '/rpc/doc:reverse', payload: body, headers: rpcHeaders(fx, body, { token: cashierToken }) })
+    expect(res.json().code).toBe('NO_PERMISSION')
+  })
+
+  it('RBAC pass-through: channel without PERMISSION_MAP key is allowed (no key → no precheck)', async () => {
+    const cashierToken = fx.hostAuth.createSession('dev-1', fx.cashierId).token
+    const body = JSON.stringify({ requestId: 'r-nk', channel: 'unmapped:channel', payload: null })
+    const res = await fx.app.inject({ method: 'POST', url: '/rpc/unmapped:channel', payload: body, headers: rpcHeaders(fx, body, { token: cashierToken }) })
+    expect(res.json().code).toBe('NOT_FOUND') // gateway 里未知通道 NOT_FOUND，而不是 NO_PERMISSION —— 证明未做前置拦截
+  })
+
+  it('idempotency: 100 replays same X-Request-Id → same result, stock moves once (real saleService)', async () => {
+    const db = openMemDb()
+    db.prepare("INSERT INTO warehouse (id, code, name) VALUES (1, 'W', 'w')").run()
+    db.prepare("INSERT INTO product (id, code, name, retail_price, trade_price, purchase_price, base_unit) VALUES (1, 'P1', 'p', 1, 1, 1, '件')").run()
+    db.prepare("INSERT INTO inventory (product_id, warehouse_id, batch_no, qty, moving_cost) VALUES (1, 1, '', 1, 1)").run()
+    const saleSvc = createSaleService(db as unknown as DB)
+    let now = 1_800_000_000_000
+    const hostAuth = createHostAuthService(db as unknown as import('better-sqlite3').Database, { clock: () => now })
+    const pairing = createPairingService(db as unknown as import('better-sqlite3').Database, { clock: () => now })
+    const handlers = new Map([['sale:create', { channel: 'sale:create', handler: ((_e: unknown, p: unknown) => saleSvc.create(p as never)) as IpcHandler }]])
+    const gw = createGateway({ getDb: () => db as unknown as DB, handlers })
+    const app = await createHostServer({
+      getDb: () => db as unknown as DB, handlers, pairing, hostAuth, gateway: gw,
+      canFor: () => true, getDeviceSecret: (id) => (id === 'dev-1' ? SECRET_HEX : null), log: () => {}
+    })
+    db.prepare('INSERT INTO host_devices (device_id, device_name, secret_hash, paired_at) VALUES (?,?,?,?)').run(
+      'dev-1', 'd1', SECRET_HEX, new Date(now).toISOString()
+    )
+    db.prepare("INSERT INTO \"user\" (id, username, password_hash, role) VALUES (1, 'admin', ?, 'admin')").run('x'.repeat(20))
+    const { token } = hostAuth.createSession('dev-1', 1)
+    const payload = { warehouse_id: 1, items: [{ product_id: 1, qty: 1, price: 1 }] }
+    const body = JSON.stringify({ requestId: 'sale-1', channel: 'sale:create', payload })
+    const hdrs: Record<string, string> = {
+      'x-device-id': 'dev-1', 'x-ts': String(Math.floor(now / 1000)),
+      'x-nonce': '',
+      'x-sig': '',
+      'x-session-token': token,
+      'content-type': 'application/json'
+    }
+    const nonce = randomBytes(16).toString('hex')
+    hdrs['x-nonce'] = nonce
+    hdrs['x-sig'] = hostAuth.signPayload(SECRET_HEX, 'dev-1', Math.floor(now / 1000), nonce, sha256hex(body))
+    const first = await app.inject({ method: 'POST', url: '/rpc/sale:create', payload: body, headers: hdrs })
+    expect(first.json().ok).toBe(true)
+    for (let i = 0; i < 100; i++) {
+      // 重试语义：新 nonce（HMAC 防重放按 nonce 拦截），相同 X-Request-Id → 网关幂等返回同一结果
+      const retryNonce = randomBytes(16).toString('hex')
+      hdrs['x-nonce'] = retryNonce
+      hdrs['x-sig'] = hostAuth.signPayload(SECRET_HEX, 'dev-1', Math.floor(now / 1000), retryNonce, sha256hex(body))
+      const r = await app.inject({ method: 'POST', url: '/rpc/sale:create', payload: body, headers: hdrs })
+      expect(r.json()).toEqual(first.json())
+    }
+    const qty = db.prepare('SELECT qty FROM inventory WHERE product_id=1 AND warehouse_id=1').get() as { qty: number }
+    expect(qty.qty).toBe(0)
+    await app.close()
+  })
+
+  it('/pair/start rate limit: 11th request within a minute → 429 RATE_LIMIT', async () => {
+    let last
+    for (let i = 0; i < 11; i++) {
+      last = await fx.app.inject({ method: 'POST', url: '/pair/start', payload: { deviceName: `dev-${i}` }, remoteAddress: '10.0.0.9' })
+    }
+    expect(last!.statusCode).toBe(429)
+    expect(last!.json().code).toBe('RATE_LIMIT')
+  })
+
+  it('/pair/start valid code path: startPairing → confirm (host side) → returns pending semantics', async () => {
+    // 占位：confirmPairing 的 UI 弹窗属 T8；此处验证端点本身工作并返回可确认的形态
+    const res = await fx.app.inject({ method: 'POST', url: '/pair/start', payload: { deviceName: 'front-counter' }, remoteAddress: '10.0.0.2' })
+    expect(res.statusCode).toBe(200)
+    const json = res.json()
+    expect(json.ok).toBe(true)
+    expect(json.data.pairingCode).toMatch(/^\d{6}$/)
+  })
+})
+
+describe('host server misc', () => {
+  it('GET /health/live → {alive:true} without auth', async () => {
+    const res = await fx.app.inject({ method: 'GET', url: '/health/live' })
+    expect(res.json()).toEqual({ alive: true })
+  })
+
+  it('exposes onConnection hook for T6 (WS hub mount point)', async () => {
+    const conns: unknown[] = []
+    fx.app.onConnection((ws) => { conns.push(ws) })
+    expect(typeof fx.app.onConnection).toBe('function')
+  })
+})
