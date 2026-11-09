@@ -23,6 +23,7 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@noble/hashes": "^2.4.0",
     "better-sqlite3": "^11.7.0"
   },
   "devDependencies": {
