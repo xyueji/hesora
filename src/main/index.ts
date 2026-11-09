@@ -6,16 +6,14 @@ import { ensureProfileDir, resolveProfilePath } from './db/profile'
 import { seedDemoData, resetDemoData } from './db/seed'
 import { isTrialExpiredWrite } from '../shared/license'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
-import { buildAllHandlers, type HandlerDeps } from './ipc/handlers'
+import { buildAllHandlers, canViewDocument, type HandlerDeps } from './ipc/handlers'
 import { PERMISSION_MAP } from './permissions-map'
 import { can, getCurrentUser } from './auth'
 import { createDesktopLicenseService } from './license'
 import { applyPendingRestore } from './services/backup/backup.service'
 import { createAuditService } from './services/audit/audit.service'
 import { BizError } from '../shared/result'
-import type { PermissionKey } from '../shared/permissions'
 import { createDocService } from './services/doc/doc.service'
-import type { DocType } from '../shared/types/doc'
 import { createPrintIpc } from './print'
 import { createCsvIpc } from './csv'
 import { createBackupIpc } from './backup'
@@ -154,18 +152,10 @@ function initialize(): void {
     registerIpc({ [channel]: handler })
   }
 
-  // print:a4pdf 权限判定（与 handlers.ts 中 documentPermissions 同源，print 组留本地故保留一份最小拷贝）
-  const documentPermissions: Record<DocType, PermissionKey> = {
-    purchase: 'doc.purchase', purchase_return: 'doc.purchase', sale: 'doc.sale', sale_return: 'doc.sale',
-    retail: 'doc.retail', transfer: 'inventory.adjust', stocktake: 'inventory.adjust',
-    assemble: 'inventory.assemble', disassemble: 'inventory.assemble', receipt: 'doc.payment',
-    payment: 'doc.payment', other_in: 'doc.payment', other_out: 'doc.payment',
-    internal_use: 'inventory.adjust'
-  }
-  const docSvc = createDocService(getDb())
+  // print:a4pdf 权限判定：复用 handlers.ts 导出的 canViewDocument（单一事实来源）
   function assertDocumentVisible(id: number): void {
-    const doc = docSvc.getById(id)
-    if (!doc || !can(documentPermissions[doc.type])) throw new BizError('NO_PERMISSION', '当前操作员没有权限查看此单据')
+    const doc = createDocService(getDb()).getById(id)
+    if (!doc || !canViewDocument(doc.type)) throw new BizError('NO_PERMISSION', '当前操作员没有权限查看此单据')
   }
 
   // P3：打印（print:receipt/print:a4pdf 依赖 BrowserWindow/dialog，留本地）
