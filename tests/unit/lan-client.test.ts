@@ -76,13 +76,16 @@ describe('lan-client', () => {
     expect(client.connected()).toBe(true)
 
     // 用同一函数重算签名比对——证明客户端头与主机验签（signPayloadHex）一致
-    const ts = Number(received['x-host-ts'])
-    const nonce = String(received['x-host-nonce'])
-    const device = String(received['x-host-device'])
+    // 头名对齐 T5 server.ts §5.4：x-ts/x-nonce/x-device-id/x-sig/x-session-token/x-request-id
+    const ts = Number(received['x-ts'])
+    const nonce = String(received['x-nonce'])
+    const device = String(received['x-device-id'])
     const expected = signPayloadHex(secret, device, ts, nonce, createHash('sha256').update(rawBody).digest('hex'))
-    expect(received['x-host-sig']).toBe(expected)
-    expect(received['authorization']).toBe('Bearer tok-1')
-    expect(JSON.parse(rawBody).channel).toBe('sale:create')
+    expect(received['x-sig']).toBe(expected)
+    expect(received['x-session-token']).toBe('tok-1')
+    const bodyObj = JSON.parse(rawBody) as { requestId: string; channel: string }
+    expect(received['x-request-id']).toBe(bodyObj.requestId)
+    expect(bodyObj.channel).toBe('sale:create')
 
     await new Promise<void>((r) => srv.close(() => r()))
   })

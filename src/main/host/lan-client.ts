@@ -18,7 +18,7 @@ export interface LanClientDeps {
   getSecretHex: () => string | null
   /** pairing 时保存的主机证书指纹（sha256(DER).hex，小写）——pinning 基准 */
   getFingerprintHex: () => string | null
-  /** pairing 成功后获得的会话 token（放 Authorization 头） */
+  /** pairing 成功后获得的会话 token（放 x-session-token 头，spec §5.4 / T5 server.ts） */
   getToken: () => string | null
   /** 本机 deviceId（pairing 时主机分配/协商） */
   getDeviceId: () => string
@@ -26,7 +26,7 @@ export interface LanClientDeps {
 }
 
 export interface LanClient {
-  invoke(channel: string, payload: unknown): Promise<Result>
+  invoke(channel: string, payload: unknown, opts?: { requestId?: string }): Promise<Result>
   connected(): boolean
   setConnected(connected: boolean): void
 }
@@ -47,11 +47,12 @@ export function createLanClient(deps: LanClientDeps): LanClient {
     }
   }
 
-  function rawInvoke(baseUrl: string, channel: string, payload: unknown): Promise<Result> {
+  function rawInvoke(baseUrl: string, channel: string, payload: unknown, explicitRequestId?: string): Promise<Result> {
     const secretHex = deps.getSecretHex()
     if (!secretHex) return Promise.resolve(fail('E_NOT_PAIRED', '尚未与主机配对'))
 
-    const body = JSON.stringify({ requestId: randomBytes(16).toString('hex'), channel, payload })
+    const requestId = explicitRequestId ?? randomBytes(16).toString('hex')
+    const body = JSON.stringify({ requestId, channel, payload })
     const ts = Math.floor(Date.now() / 1000)
     const nonce = randomBytes(32).toString('hex')
     const sig = signPayloadHex(secretHex, deps.getDeviceId(), ts, nonce, bodySha256hex(body))
@@ -63,11 +64,12 @@ export function createLanClient(deps: LanClientDeps): LanClient {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-host-ts': String(ts),
-        'x-host-nonce': nonce,
-        'x-host-device': deps.getDeviceId(),
-        'x-host-sig': sig,
-        ...(token ? { authorization: `Bearer ${token}` } : {})
+        'x-ts': String(ts),
+        'x-nonce': nonce,
+        'x-device-id': deps.getDeviceId(),
+        'x-sig': sig,
+        'x-request-id': requestId,
+        ...(token ? { 'x-session-token': token } : {})
       },
       timeout: TIMEOUT_MS
     }
@@ -129,10 +131,10 @@ export function createLanClient(deps: LanClientDeps): LanClient {
   }
 
   return {
-    async invoke(channel, payload): Promise<Result> {
+    async invoke(channel, payload, opts): Promise<Result> {
       const baseUrl = deps.getBaseUrl()
       if (!baseUrl) return fail('E_NOT_PAIRED', '尚未与主机配对')
-      return rawInvoke(baseUrl, channel, payload)
+      return rawInvoke(baseUrl, channel, payload, opts?.requestId)
     },
     connected: () => connected,
     setConnected
