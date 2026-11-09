@@ -4,6 +4,11 @@ import { ElMessage } from 'element-plus'
 import { settingApi } from '../../api/setting'
 import { call } from '../../api/call'
 import type { AuditEntry } from '../../../../main/services/audit/audit.service'
+import { DOC_NO_PREFIX, DOC_TYPE_LABELS, type DocType } from '../../../../shared/types/doc'
+
+// P2：单据编号前缀（存 app_setting 'doc.no_prefix' JSON：{类型: 前缀}）
+const docPrefixes = reactive<Record<DocType, string>>({ ...DOC_NO_PREFIX })
+const prefixLabels = DOC_TYPE_LABELS
 
 const loading = ref(false)
 const saving = ref(false)
@@ -71,6 +76,21 @@ onMounted(async () => {
         form[key] = v
       }
     }
+    // 读单号前缀配置（JSON，容错：非法 JSON 用默认）
+    const raw = all['doc.no_prefix']
+    if (raw) {
+      try {
+        const parsed: unknown = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const obj = parsed as Record<string, unknown>
+          for (const t of Object.keys(DOC_NO_PREFIX) as DocType[]) {
+            if (typeof obj[t] === 'string' && (obj[t] as string).trim()) docPrefixes[t] = (obj[t] as string).trim()
+          }
+        }
+      } catch {
+        /* 非法配置回退默认 */
+      }
+    }
   } catch (e) {
     ElMessage.error((e as Error).message || '加载设置失败')
   } finally {
@@ -88,6 +108,7 @@ async function save() {
     await settingApi.set('print.receipt_width', form['print.receipt_width'])
     await settingApi.set('print.receipt_footer', form['print.receipt_footer'])
     await settingApi.set('guide.show', form['guide.show'] ? '1' : '0')
+    await settingApi.set('doc.no_prefix', JSON.stringify(docPrefixes))
     ElMessage.success('设置已保存')
   } catch (e) {
     ElMessage.error((e as Error).message || '保存失败')
@@ -129,6 +150,12 @@ async function save() {
         <el-divider content-position="left">显示开关</el-divider>
         <el-form-item label="新手引导">
           <el-checkbox v-model="form['guide.show']">是否显示新手引导</el-checkbox>
+        </el-form-item>
+        <el-divider content-position="left">单据编号前缀</el-divider>
+        <el-form-item v-for="(label, t) in prefixLabels" :key="t" :label="label">
+          <el-input v-model="docPrefixes[t]" maxlength="8" style="width: 200px">
+            <template #append>{{ t }}</template>
+          </el-input>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="saving" @click="save">保存</el-button>

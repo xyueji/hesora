@@ -16,6 +16,7 @@ import { BizError } from '../shared/result'
 import { isPermissionKey, type PermissionKey, type RoleInput } from '../shared/permissions'
 import { WORKFLOW_KINDS, type FulfillmentRequest, type WorkflowKind } from '../shared/types/workflow'
 import { createProductService } from './services/product/product.service'
+import { createProductAttributeService } from './services/product/product-attribute.service'
 import { createPriceLevelService } from './services/product/price-level.service'
 import { createCustomerPriceService } from './services/product/customer-price.service'
 import { createShelfLifeService } from './services/product/shelf-life.service'
@@ -42,6 +43,8 @@ import { createArrearsService } from './services/stats/arrears.service'
 import { createStatementService } from './services/stats/statement.service'
 import { createDashboardService } from './services/stats/dashboard.service'
 import { createReportService } from './services/stats/report.service'
+import { createMonthlyService } from './services/stats/monthly.service'
+import { createAttachmentService } from './services/attachment/attachment.service'
 import { createTransferService } from './services/transfer/transfer.service'
 import { createStocktakeService } from './services/stocktake/stocktake.service'
 import { createAssembleService } from './services/assemble/assemble.service'
@@ -437,6 +440,24 @@ function initialize(): void {
       customerPriceSvc.changeLog((payload ?? {}) as never)
   })
 
+  // P2：商品自定义属性字典
+  const productAttrSvc = createProductAttributeService(getDb())
+  registerIpc({
+    'productAttribute:list': () => productAttrSvc.list(),
+    'productAttribute:create': (_evt, payload) =>
+      productAttrSvc.create(payload as { name: string; options?: string | string[] }),
+    'productAttribute:update': (_evt, payload) => {
+      const { id, name, options } = payload as { id: number; name?: string; options?: string | string[] }
+      return productAttrSvc.update(Number(id), { name, options })
+    },
+    'productAttribute:remove': (_evt, payload) => {
+      const id = Number(payload)
+      productAttrSvc.remove(id)
+      audit('productAttribute:remove', `属性 #${id}`)
+      return true
+    }
+  })
+
   const customerSvc = getCustomerService()
   registerIpc({
     'customer:create': (_evt, payload) => customerSvc.create(payload as never),
@@ -488,7 +509,11 @@ function initialize(): void {
       const { accountId, page } = payload as { accountId: number; page: number }
       return ledger.entries(accountId, page)
     },
-    'ledger:transfer': (_evt, payload) => ledger.transfer(payload as FundTransferInput, reviewerId()),
+    'ledger:transfer': (_evt, payload) => {
+      const fund = ledger.transfer(payload as FundTransferInput, reviewerId())
+      auditSvc.record('ledger:transfer', operator(), '资金账户转账', undefined, JSON.stringify(payload))
+      return fund
+    },
     'fund:create': (_evt, payload) => fundSvc.create(payload as never),
     'fund:update': (_evt, payload) => {
       const { id, p } = payload as { id: number; p: Record<string, unknown> }
@@ -594,9 +619,13 @@ function initialize(): void {
       const { condition, min_stock } = payload as { condition: never; min_stock: number }
       return stockReportSvc.setWarningsByCondition(condition, Number(min_stock))
     },
+    'stock:purchaseSuggestions': (_evt, payload) =>
+      stockReportSvc.purchaseSuggestions((payload ?? {}) as { warehouse_id?: number }),
     'stock:adjustPrices': (_evt, payload) => {
       const { items, operator } = payload as { items: never[]; operator?: string }
-      return stockReportSvc.adjustPrices(items, operator)
+      const r = stockReportSvc.adjustPrices(items, operator)
+      auditSvc.record('stock:adjustPrices', operator ?? getCurrentUser()?.username, `批量改价 ${r.updated} 项`, undefined, JSON.stringify({ updated: r.updated, products: r.products }))
+      return r
     }
   })
 
@@ -662,6 +691,19 @@ function initialize(): void {
     }
   })
 
+  // P2：直过账单据补审核（管理标记，不回滚账务）
+  registerIpc({
+    'doc:review': (_evt, payload) => {
+      const { docId, reviewer } = payload as { docId: number; reviewer?: string }
+      const id = Number(docId)
+      assertDocumentVisible(id)
+      const user = getCurrentUser()
+      const reviewed = docSvc.review(id, { reviewer: reviewer ?? user?.username ?? '' })
+      auditSvc.record('doc.review', reviewer ?? user?.username, `补审核单据 ${reviewed.no}`, undefined, JSON.stringify({ id }))
+      return reviewed
+    }
+  })
+
   const purchaseSvc = getPurchaseService()
   registerIpc({
     'purchase:create': (_evt, payload) => {
@@ -719,7 +761,9 @@ function initialize(): void {
     },
     'payment:create': (_evt, payload) => {
       const { type, p } = payload as { type: unknown; p: PaymentCreateInput }
-      return paymentSvc.createOne(paymentType(type), p)
+      const created = paymentSvc.createOne(paymentType(type), p)
+      auditSvc.record('payment:create', operator(), `收款付款单 ${String(type)}`, undefined, JSON.stringify({ id: created.id, no: created.no }))
+      return created
     },
     'payment:query': (_evt, payload) => {
       const { type, q } = payload as { type: unknown; q: Omit<DocQuery, 'type'> }
@@ -739,6 +783,8 @@ function initialize(): void {
 
   const arrearsSvc = getArrearsService()
   const reportSvc = createReportService(getDb())
+  // M 级功能：月度库存汇总
+  const monthlySvc = createMonthlyService(getDb())
   // P1 功能 #1：客商对账单 + 账龄分析（复用 report.arrears 权限键）
   const statementSvc = createStatementService(getDb())
   registerIpc({
@@ -758,7 +804,27 @@ function initialize(): void {
     'stats:fundSummaryByCategory': (_evt, payload) =>
       reportSvc.fundSummaryByCategory(
         (payload ?? {}) as { date_from?: string; date_to?: string }
-      )
+      ),
+    // M 级功能：月度库存汇总表（复用 report.business 权限键）
+    'stats:monthlyStock': (_evt, payload) => monthlySvc.monthlyStockSummary((payload ?? {}) as never)
+  })
+
+  // M 级功能：单据图片附件（离线拍照留证）。attachmentsDir 由 main 注入，服务层不 import electron。
+  const attachmentSvc = createAttachmentService(
+    getDb(),
+    join(app.getPath('userData'), 'attachments')
+  )
+  registerIpc({
+    'attachment:save': (_evt, payload) =>
+      attachmentSvc.save(
+        (payload ?? {}) as { doc_id: number; file_name: string; data: string; created_by?: number }
+      ),
+    'attachment:list': (_evt, payload) =>
+      attachmentSvc.listByDoc(Number((payload as { doc_id: number } | undefined)?.doc_id)),
+    'attachment:remove': (_evt, payload) =>
+      attachmentSvc.remove(Number((payload as { id: number } | undefined)?.id)),
+    'attachment:read': (_evt, payload) =>
+      attachmentSvc.read(Number((payload as { id: number } | undefined)?.id))
   })
 
   const dashboardSvc = getDashboardService()
@@ -784,7 +850,11 @@ function initialize(): void {
 
   const transferSvc = getTransferService()
   registerIpc({
-    'transfer:create': (_evt, payload) => transferSvc.create(payload as never),
+    'transfer:create': (_evt, payload) => {
+      const doc = transferSvc.create(payload as never)
+      auditSvc.record('transfer:create', operator(), `库存调拨 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
+      return doc
+    },
     'transfer:getDetail': (_evt, payload) => transferSvc.getDetail(Number(payload)),
     'transfer:query': (_evt, payload) => transferSvc.query(payload as never)
   })
@@ -795,7 +865,21 @@ function initialize(): void {
       const { warehouse_id, keyword } = payload as { warehouse_id: number; keyword?: string }
       return stocktakeSvc.getSheet(Number(warehouse_id), keyword)
     },
-    'stocktake:create': (_evt, payload) => stocktakeSvc.create(payload as never),
+    'stocktake:create': (_evt, payload) => {
+      const doc = stocktakeSvc.create(payload as never)
+      auditSvc.record('stocktake:create', operator(), `盘点过账 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
+      return doc
+    },
+    'stocktake:review': (_evt, payload) => {
+      const { docId, review_by, review_remark } = payload as { docId: number; review_by?: string; review_remark?: string }
+      const user = getCurrentUser()
+      const reviewed = stocktakeSvc.review(Number(docId), {
+        review_by: review_by ?? user?.username ?? '',
+        review_remark
+      })
+      auditSvc.record('stocktake:review', review_by ?? user?.username, `盘点复盘 ${reviewed.no}`, undefined, JSON.stringify({ id: reviewed.id }))
+      return reviewed
+    },
     'stocktake:getDetail': (_evt, payload) => stocktakeSvc.getDetail(Number(payload)),
     'stocktake:query': (_evt, payload) => stocktakeSvc.query(payload as never),
     'stocktake:importSheet': (_evt, payload) => {

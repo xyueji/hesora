@@ -48,11 +48,24 @@ export interface Product {
   shelf_life_warn_days?: number
   /** 价格等级列表（整体读写） */
   price_levels?: PriceLevel[]
+  /** P2：自定义属性 {attr_id: value} 映射（整体读写） */
+  attributes?: Record<string, string>
+}
+
+/** P2：属性字典行（如 颜色 → 红/蓝） */
+export interface ProductAttribute {
+  id: number
+  name: string
+  /** 可选值 JSON 数组字符串 */
+  options: string
+  created_at?: string
 }
 
 export interface ProductQuery extends PageQuery {
   category?: string
   kind?: ProductKind
+  /** P2：按属性值筛选（attr_id → 期望值，多值 AND） */
+  attr_filters?: Record<string, string>
 }
 
 /** 保质期设置 */

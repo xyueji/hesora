@@ -57,3 +57,22 @@ export const statementApi = {
   aging: (query: { partner_type: 'customer' | 'supplier'; as_of?: string }) =>
     call<PartnerAgingResult>('stats:partnerAging', query)
 }
+
+// ── M 级功能：月度库存汇总 ──
+export interface MonthlyStockRow {
+  /** 1-12 月；0 为全年合计行 */
+  month: number
+  opening_qty: number
+  opening_amount: number
+  in_qty: number
+  in_amount: number
+  out_qty: number
+  out_amount: number
+  ending_qty: number
+  ending_amount: number
+}
+
+export const monthlyStockApi = {
+  query: (query: { year: number; warehouse_id?: number; product_id?: number }) =>
+    call<MonthlyStockRow[]>('stats:monthlyStock', query)
+}

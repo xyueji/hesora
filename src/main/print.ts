@@ -8,19 +8,21 @@ import { createPrintService } from './services/print/print.service'
 import { createPrintTemplateService } from './services/print/template.service'
 import { renderA4Html, renderReceiptHtml, type PrintTemplateOptions } from '../shared/print/templates'
 
-/** 读默认模板的开关；无模板或 content 无效时回退 undefined（= 现状硬编码行为）。 */
-function templateOptionsOf(db: Database, kind: 'receipt' | 'a4'): PrintTemplateOptions | undefined {
+/** 读默认模板的开关与绑定设备；无模板或 content 无效时回退 undefined（= 现状硬编码行为）。 */
+function templateOptionsOf(db: Database, kind: 'receipt' | 'a4'): { options?: PrintTemplateOptions; deviceName?: string | null } {
   try {
     const tpl = createPrintTemplateService(db).getDefault(kind)
-    if (!tpl) return undefined
+    if (!tpl) return {}
     const parsed: unknown = JSON.parse(tpl.content)
-    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as PrintTemplateOptions
-    }
+    const options =
+      parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as PrintTemplateOptions)
+        : undefined
+    return { options, deviceName: tpl.device_name ?? null }
   } catch {
     /* 回退现状行为 */
   }
-  return undefined
+  return {}
 }
 
 export function createPrintIpc(db: Database) {
@@ -45,13 +47,16 @@ export function createPrintIpc(db: Database) {
   }
 
   async function printReceipt(docId: number, deviceName?: string, widthMm?: 58 | 80): Promise<boolean> {
-    const html = renderReceiptHtml(printService.receiptData(docId, widthMm), templateOptionsOf(db, 'receipt'))
+    const { options, deviceName: boundDevice } = templateOptionsOf(db, 'receipt')
+    const html = renderReceiptHtml(printService.receiptData(docId, widthMm), options)
+    // 设备优先级：调用方显式指定 > 模板绑定设备
+    const targetDevice = deviceName?.trim() ? deviceName.trim() : boundDevice ?? undefined
     await withHiddenWindow(html, (wc) => new Promise<void>((resolve, reject) => {
       wc.print({
         silent: true,
         printBackground: true,
         margins: { marginType: 'none' },
-        ...(deviceName ? { deviceName } : {})
+        ...(targetDevice ? { deviceName: targetDevice } : {})
       }, (success, reason) => {
         if (success) resolve()
         else reject(new BizError('PRINT_FAILED', reason ? `小票打印失败：${reason}` : '小票打印失败，请检查打印机连接和纸张'))
@@ -61,7 +66,7 @@ export function createPrintIpc(db: Database) {
   }
 
   async function printA4Pdf(docId: number): Promise<string> {
-    const html = renderA4Html(printService.a4Data(docId), templateOptionsOf(db, 'a4'))
+    const html = renderA4Html(printService.a4Data(docId), templateOptionsOf(db, 'a4').options)
     const pdf = await withHiddenWindow(html, (wc) =>
       wc.printToPDF({ printBackground: true, pageSize: 'A4' })
     )

@@ -7,6 +7,8 @@ export const docApi = {
   getDetail: (id: number) => call<DocDetailWithItems>('doc:detail', id),
   /** 红冲已过账单据，返回负向镜像单 */
   reverse: (docId: number, operator?: string) => call<DocRow>('doc:reverse', { docId, operator }),
+  /** P2：直过账单据补审核（管理标记） */
+  review: (docId: number, reviewer?: string) => call<DocRow>('doc:review', { docId, reviewer }),
   /** 查某单的红冲单 */
   reversals: (docId: number) => call<DocRow[]>('doc:reversals', docId)
 }

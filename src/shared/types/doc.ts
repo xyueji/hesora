@@ -93,6 +93,16 @@ export interface DocRow {
   express_no?: string | null
   /** [9] 发货状态：'none' 未发货 | 'shipped' 已发货 */
   delivery_status?: DeliveryStatus
+  /** 审核人用户名；NULL 表示未审核（单据审核功能） */
+  reviewed_by?: string | null
+  /** 审核时间；NULL 表示未审核 */
+  reviewed_at?: string | null
+  /** 盘点复盘人（仅 stocktake 单型使用）；NULL 表示未复盘 */
+  review_by?: string | null
+  /** 盘点复盘时间 */
+  review_at?: string | null
+  /** 盘点复盘备注 */
+  review_remark?: string | null
   total_amount: number
   remark: string | null
   status: 'done'

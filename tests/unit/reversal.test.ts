@@ -13,6 +13,7 @@ import { createSerialService } from '../../src/main/services/inventory/serial.se
 import { createPaymentService } from '../../src/main/services/payment/payment.service'
 import { createFundService } from '../../src/main/services/fund/fund.service'
 import { createTransferService } from '../../src/main/services/transfer/transfer.service'
+import { createStocktakeService } from '../../src/main/services/stocktake/stocktake.service'
 import { createDocCopyService } from '../../src/main/services/doc/copy.service'
 import type { DB } from '../../src/main/services/doc/doc.service'
 import { BizError } from '../../src/shared/result'
@@ -358,4 +359,33 @@ it('其他入库红冲：负向镜像单（docService.create 不动库存，仅�
   const items = docService.getItems(rev.id)
   expect(items[0]?.qty).toBe(-5)
   expect(items[0]?.amount).toBe(-10)
+})
+
+// P2 #8：盘点红冲 = 反向调整（盘盈入库的红冲出库、盘亏出库的红冲入库，恢复成本）
+it('stocktake 红冲：反向调整恢复库存与成本', () => {
+  const stocktakeService = createStocktakeService(ctx.db)
+  const { purchaseService, reversalService, docService, productId, whId, inventoryService } = ctx
+  purchaseService.create({
+    warehouse_id: whId,
+    items: [{ product_id: productId, unit: '罐', rate: 1, qty: 100, price: 2 }]
+  })
+  const before = ctx.inv()
+  // 盘亏 30 → 库存 70
+  const doc = stocktakeService.create({
+    warehouse_id: whId,
+    items: [{ product_id: productId, actual_qty: 70 }]
+  })
+  expect(doc.type).toBe('stocktake')
+  expect(ctx.inv().qty).toBeCloseTo(70)
+  const rev = reversalService.reverse(doc.id, 'tester')
+  expect(rev.type).toBe('stocktake')
+  expect(rev.reversal_of).toBe(doc.id)
+  // 红冲后库存回到 100，成本不变
+  const after = ctx.inv()
+  expect(after.qty).toBeCloseTo(100)
+  expect(after.moving_cost).toBeCloseTo(before.moving_cost)
+  // 红冲单明细为反向数量
+  const items = docService.getItems(rev.id)
+  expect(items[0]?.qty).toBeCloseTo(-30)
+  void inventoryService
 })

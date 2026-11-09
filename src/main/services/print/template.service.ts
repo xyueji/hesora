@@ -12,6 +12,8 @@ export interface TemplateInput {
   name: string
   kind: TemplateKind
   content: string
+  /** 绑定打印机设备名（可选；打印时优先使用该设备） */
+  device_name?: string | null
 }
 
 export interface TemplateRow extends TemplateInput {
@@ -53,14 +55,23 @@ export function createPrintTemplateService(db: DB) {
     kind: string
     content: string
     is_default: number
+    device_name?: string | null
   }): TemplateRow {
-    return { id: r.id, name: r.name, kind: parseKind(r.kind), content: r.content, is_default: r.is_default }
+    return {
+      id: r.id,
+      name: r.name,
+      kind: parseKind(r.kind),
+      content: r.content,
+      is_default: r.is_default,
+      device_name: r.device_name ?? null
+    }
   }
 
   function save(input: TemplateInput): number {
     const name = typeof input.name === 'string' && input.name.trim() !== '' ? input.name.trim() : (() => { throw new BizError('VALIDATION', '模板名称不能为空') })()
     const kind = parseKind(input.kind)
     const content = parseContent(input.content)
+    const deviceName = typeof input.device_name === 'string' && input.device_name.trim() !== '' ? input.device_name.trim() : null
     return db.transaction(() => {
       if (input.id !== undefined) {
         const existing = db.prepare('SELECT id FROM print_template WHERE id = ?').get(Number(input.id)) as
@@ -68,12 +79,12 @@ export function createPrintTemplateService(db: DB) {
           | undefined
         if (!existing) throw new BizError('NOT_FOUND', `模板不存在：${input.id}`)
         assertNameFree(name, Number(input.id))
-        db.prepare('UPDATE print_template SET name = ?, kind = ?, content = ? WHERE id = ?').run(name, kind, content, Number(input.id))
+        db.prepare('UPDATE print_template SET name = ?, kind = ?, content = ?, device_name = ? WHERE id = ?').run(name, kind, content, deviceName, Number(input.id))
         return Number(input.id)
       }
       assertNameFree(name)
       return Number(
-        db.prepare('INSERT INTO print_template (name, kind, content) VALUES (?, ?, ?)').run(name, kind, content).lastInsertRowid
+        db.prepare('INSERT INTO print_template (name, kind, content, device_name) VALUES (?, ?, ?, ?)').run(name, kind, content, deviceName).lastInsertRowid
       )
     })()
   }

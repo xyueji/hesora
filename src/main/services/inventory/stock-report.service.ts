@@ -19,7 +19,9 @@ import type {
   StockFlowRow,
   WarningPage,
   WarningQuery,
-  WarningRow
+  WarningRow,
+  PurchaseSuggestion,
+  PurchaseSuggestionQuery
 } from '../../../shared/types/stock-report'
 
 export type DB = Database
@@ -628,6 +630,41 @@ export function createStockReportService(db: DB) {
     return { updated: logs.length, products: touched.size, logs }
   }
 
+  /** P2：采购建议清单——min_stock>0 且现库存<min_stock 的商品，建议采购量 = min - current。 */
+  function purchaseSuggestions(query: PurchaseSuggestionQuery = {}): PurchaseSuggestion[] {
+    if (query.warehouse_id !== undefined && !Number.isInteger(Number(query.warehouse_id))) {
+      throw new BizError('VALIDATION', '仓库参数无效')
+    }
+    const stockSql = `
+      SELECT product_id, SUM(qty) AS qty
+      FROM inventory
+      ${query.warehouse_id !== undefined ? 'WHERE warehouse_id = @warehouse_id' : ''}
+      GROUP BY product_id
+    `
+    const rows = db
+      .prepare(
+        `SELECT p.id AS product_id, p.code, p.name, COALESCE(p.spec, '') AS spec, p.base_unit,
+           COALESCE(p.min_stock, 0) AS min_stock, COALESCE(s.qty, 0) AS current_qty
+         FROM product p
+         LEFT JOIN (${stockSql}) s ON s.product_id = p.id
+         WHERE p.disabled = 0 AND p.min_stock > 0 AND COALESCE(s.qty, 0) < p.min_stock
+         ORDER BY p.code`
+      )
+      .all({ ...(query.warehouse_id !== undefined ? { warehouse_id: Number(query.warehouse_id) } : {}) }) as Array<{
+      product_id: number
+      code: string
+      name: string
+      spec: string
+      base_unit: string
+      min_stock: number
+      current_qty: number
+    }>
+    return rows.map((r) => ({
+      ...r,
+      suggest_qty: r.min_stock - r.current_qty
+    }))
+  }
+
   return {
     statisticsDetail,
     costChanges,
@@ -635,7 +672,8 @@ export function createStockReportService(db: DB) {
     warnings,
     setWarning,
     setWarningsByCondition,
-    adjustPrices
+    adjustPrices,
+    purchaseSuggestions
   }
 }
 

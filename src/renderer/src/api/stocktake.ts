@@ -25,5 +25,8 @@ export const stocktakeApi = {
     call<{ date: string; rows: StocktakeImportRow[]; errors: Array<{ row: number; message: string }> }>(
       'stocktake:importSheet',
       { csv_text, warehouse_id, date }
-    )
+    ),
+  /** P2：盘点复盘（幂等，取最新） */
+  review: (docId: number, reviewBy: string, reviewRemark?: string) =>
+    call<DocRow>('stocktake:review', { docId, review_by: reviewBy, review_remark: reviewRemark })
 }

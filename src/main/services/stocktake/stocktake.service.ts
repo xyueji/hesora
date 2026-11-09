@@ -171,6 +171,28 @@ export function createStocktakeService(db: DB) {
     return { doc, items: docService.getItems(id) }
   }
 
+  /**
+   * 盘点复盘（P2）：仅 done 状态可复盘；幂等可重复复盘取最新。
+   * 不回滚账务，仅记录复盘人与备注。
+   */
+  function review(id: number, input: { review_by: string; review_remark?: string }): DocRow {
+    const reviewer = typeof input?.review_by === 'string' ? input.review_by.trim() : ''
+    if (!reviewer) throw new BizError('VALIDATION', '复盘人不能为空')
+    const doc = db.prepare(`SELECT id, status FROM doc WHERE id = ? AND type = 'stocktake'`).get(id) as
+      | { id: number; status: string }
+      | undefined
+    if (!doc) throw new BizError('NOT_FOUND', `盘点单不存在：${id}`)
+    if (doc.status !== 'done') throw new BizError('VALIDATION', '仅已过账盘点单可复盘')
+    const remark = typeof input.review_remark === 'string' && input.review_remark.trim() !== '' ? input.review_remark.trim() : null
+    db.prepare('UPDATE doc SET review_by = ?, review_at = ?, review_remark = ? WHERE id = ?').run(
+      reviewer,
+      new Date().toISOString(),
+      remark,
+      id
+    )
+    return docService.getById(id) as DocRow
+  }
+
   function query(q: StocktakeQuery): DocPageResult {
     const inner: DocQuery = {
       type: 'stocktake',
@@ -255,7 +277,7 @@ export function createStocktakeService(db: DB) {
     return { date, rows, errors }
   }
 
-  return { getSheet, create, getDetail, query, importSheet }
+  return { getSheet, create, getDetail, review, query, importSheet }
 }
 
 export type StocktakeService = ReturnType<typeof createStocktakeService>

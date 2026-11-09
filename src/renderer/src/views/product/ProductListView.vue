@@ -3,10 +3,11 @@ import { onActivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { productApi } from '../../api/product'
+import { productAttributeApi } from '../../api/product-attribute'
 import { csvApi, readCsvFile } from '../../api/csv'
 import { hasPermission } from '../../stores/auth'
 import type { ImportResult, ProductPreview } from '../../api/csv'
-import type { Product } from '../../../../shared/types/product'
+import type { Product, ProductAttribute } from '../../../../shared/types/product'
 
 const router = useRouter()
 
@@ -16,6 +17,45 @@ const list = ref<Product[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
+// ── P2：按自定义属性筛选 ──
+const attrDict = ref<ProductAttribute[]>([])
+const attrFilters = ref<Record<string, string>>({})
+const filterAttrId = ref<number | null>(null)
+const filterAttrValue = ref('')
+
+function filterAttrOptions(): string[] {
+  const a = attrDict.value.find((x) => x.id === filterAttrId.value)
+  if (!a) return []
+  try {
+    const v = JSON.parse(a.options) as unknown
+    return Array.isArray(v) ? (v as string[]) : []
+  } catch {
+    return []
+  }
+}
+
+function addAttrFilter(): void {
+  if (filterAttrId.value === null || filterAttrValue.value.trim() === '') return
+  attrFilters.value = { ...attrFilters.value, [String(filterAttrId.value)]: filterAttrValue.value.trim() }
+  filterAttrId.value = null
+  filterAttrValue.value = ''
+  search()
+}
+
+function removeAttrFilter(key: string): void {
+  const next = { ...attrFilters.value }
+  delete next[key]
+  attrFilters.value = next
+  search()
+}
+
+async function loadAttrDict(): Promise<void> {
+  try {
+    attrDict.value = await productAttributeApi.list()
+  } catch {
+    attrDict.value = []
+  }
+}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -23,7 +63,8 @@ async function load(): Promise<void> {
     const r = await productApi.query({
       page: page.value,
       pageSize: pageSize.value,
-      keyword: keyword.value || undefined
+      keyword: keyword.value || undefined,
+      attr_filters: Object.keys(attrFilters.value).length > 0 ? attrFilters.value : undefined
     })
     list.value = r.list
     total.value = r.total
@@ -119,7 +160,10 @@ async function confirmImport(): Promise<void> {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  void loadAttrDict()
+})
 onActivated(load)
 </script>
 
@@ -141,6 +185,30 @@ onActivated(load)
               <el-button @click="search">搜索</el-button>
             </template>
           </el-input>
+          <el-select v-model="filterAttrId" filterable clearable placeholder="按属性筛选" style="width: 140px">
+            <el-option v-for="a in attrDict" :key="a.id" :label="a.name" :value="a.id ?? 0" />
+          </el-select>
+          <el-select
+            v-if="filterAttrOptions().length > 0"
+            v-model="filterAttrValue"
+            filterable
+            allow-create
+            clearable
+            placeholder="属性值"
+            style="width: 120px"
+            @change="addAttrFilter"
+          >
+            <el-option v-for="opt in filterAttrOptions()" :key="opt" :label="opt" :value="opt" />
+          </el-select>
+          <el-input v-else v-model="filterAttrValue" placeholder="属性值" clearable style="width: 120px" @keyup.enter="addAttrFilter" @clear="addAttrFilter" />
+          <el-tag
+            v-for="(val, key) in attrFilters"
+            :key="key"
+            closable
+            size="small"
+            style="margin-right: 4px"
+            @close="removeAttrFilter(String(key))"
+          >{{ attrDict.find((a) => String(a.id) === String(key))?.name ?? key }}: {{ val }}</el-tag>
           <el-button v-if="hasPermission('data.import')" :loading="importing" @click="pickImport">导入 CSV</el-button>
           <el-button v-if="hasPermission('data.import') && hasPermission('data.export')" :loading="exporting" @click="doExport('product-template')">下载模板</el-button>
           <el-button v-if="hasPermission('data.export')" :loading="exporting" @click="doExport()">导出 CSV</el-button>

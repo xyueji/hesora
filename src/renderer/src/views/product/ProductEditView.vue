@@ -3,7 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { productApi } from '../../api/product'
-import type { Product, ProductUnit, TrackingType, ProductKind } from '../../../../shared/types/product'
+import { productAttributeApi } from '../../api/product-attribute'
+import type { Product, ProductUnit, TrackingType, ProductKind, ProductAttribute } from '../../../../shared/types/product'
 
 const route = useRoute()
 const router = useRouter()
@@ -36,6 +37,43 @@ const unitRows = ref<ProductUnit[]>([])
 const barcodes = ref<string[]>([])
 const newBarcode = ref('')
 const saving = ref(false)
+
+// ── P2：商品自定义属性（{attr_id: value} 映射）──
+const attrDict = ref<ProductAttribute[]>([])
+interface AttrLine { attr_id: number | null; value: string }
+const attrLines = ref<AttrLine[]>([])
+
+function addAttrLine(): void {
+  attrLines.value.push({ attr_id: null, value: '' })
+}
+function removeAttrLine(i: number): void {
+  attrLines.value.splice(i, 1)
+}
+function attrOptions(attrId: number | null): string[] {
+  const a = attrDict.value.find((x) => x.id === attrId)
+  if (!a) return []
+  try {
+    const v = JSON.parse(a.options) as unknown
+    return Array.isArray(v) ? (v as string[]) : []
+  } catch {
+    return []
+  }
+}
+function collectAttributes(): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of attrLines.value) {
+    if (line.attr_id !== null && line.value.trim() !== '') out[String(line.attr_id)] = line.value.trim()
+  }
+  return out
+}
+
+async function loadAttrDict(): Promise<void> {
+  try {
+    attrDict.value = await productAttributeApi.list()
+  } catch {
+    attrDict.value = []
+  }
+}
 
 const trackingOptions: { value: TrackingType; label: string }[] = [
   { value: 'none', label: '不追踪' },
@@ -115,6 +153,11 @@ async function load(): Promise<void> {
     unitRows.value = p.units ? [...p.units] : []
     barcodes.value = p.barcodes ? [...p.barcodes] : []
     bomRows.value = (p.bom ?? []).map((b) => ({ product_id: b.product_id, product: null, qty: b.qty }))
+    // 属性行：从 {attr_id: value} 还原
+    attrLines.value = Object.entries(p.attributes ?? {}).map(([k, v]) => ({
+      attr_id: Number(k) || null,
+      value: String(v)
+    }))
     for (const row of bomRows.value) {
       try {
         if (row.product_id !== null) row.product = await productApi.get(row.product_id)
@@ -154,6 +197,7 @@ async function save(): Promise<void> {
         ? bomRows.value.map((r) => ({ product_id: r.product_id as number, qty: r.qty as number }))
         : []
     }
+    payload.attributes = collectAttributes()
     if (isEdit.value) await productApi.update(id.value!, payload)
     else await productApi.create(payload)
     ElMessage.success('保存成功')
@@ -165,7 +209,10 @@ async function save(): Promise<void> {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  void loadAttrDict()
+})
 </script>
 
 <template>
@@ -319,6 +366,27 @@ onMounted(load)
           <el-button class="mt" size="small" @click="addBomRow">添加子件</el-button>
         </template>
 
+        <div class="section-title">自定义属性</div>
+        <div v-for="(line, i) in attrLines" :key="i" class="attr-line">
+          <el-select v-model="line.attr_id" filterable placeholder="选择属性" style="width: 180px" clearable>
+            <el-option v-for="a in attrDict" :key="a.id" :label="a.name" :value="a.id ?? 0" />
+          </el-select>
+          <el-select
+            v-if="attrOptions(line.attr_id).length > 0"
+            v-model="line.value"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="选择或输入属性值"
+            style="width: 200px"
+          >
+            <el-option v-for="opt in attrOptions(line.attr_id)" :key="opt" :label="opt" :value="opt" />
+          </el-select>
+          <el-input v-else v-model="line.value" placeholder="属性值" style="width: 200px" clearable />
+          <el-button link type="danger" @click="removeAttrLine(i)">删除</el-button>
+        </div>
+        <el-button link type="primary" @click="addAttrLine">+ 添加属性</el-button>
+
         <div class="section-title">备注</div>
         <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="备注" />
       </el-form>
@@ -369,5 +437,11 @@ onMounted(load)
 }
 .barcode-input {
   width: 220px;
+}
+.attr-line {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
 }
 </style>

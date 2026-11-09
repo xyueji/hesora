@@ -38,6 +38,8 @@ const groups: MenuGroup[] = [
       { path: '/product/formulas', label: '配方档案', perm: 'product.view' },
       { path: '/customer/list', label: '客户', perm: 'customer.view' },
       { path: '/customer/price', label: '客户专属价', perm: 'customer.view' },
+      { path: '/customer/price-by-product', label: '商品专属价', perm: 'product.view' },
+      { path: '/product/attributes', label: '商品属性', perm: 'product.view' },
       { path: '/supplier/list', label: '供应商', perm: 'supplier.view' },
       { path: '/warehouse/list', label: '仓库', perm: 'warehouse.view' }
     ]
@@ -50,7 +52,8 @@ const groups: MenuGroup[] = [
       { path: '/purchase/edit', label: '开进货单', perm: 'doc.purchase' },
       { path: '/purchase/list', label: '进货单列表', perm: 'doc.purchase' },
       { path: '/purchase/return-edit', label: '开采购退货单', perm: 'doc.return' },
-      { path: '/purchase/return-list', label: '采购退货单列表', perm: 'doc.return' }
+      { path: '/purchase/return-list', label: '采购退货单列表', perm: 'doc.return' },
+      { path: '/purchase/suggestion', label: '采购建议', perm: 'inventory.report' }
     ]
   },
   {
@@ -117,6 +120,7 @@ const groups: MenuGroup[] = [
     items: [
       { path: '/stats/business', label: '经营报表', perm: 'report.business' },
       { path: '/stats/operator', label: '员工业绩', perm: 'report.business' },
+      { path: '/stats/monthly', label: '月度库存汇总', perm: 'report.business' },
       { path: '/stats/statement', label: '客商对账单', perm: 'report.arrears' },
       { path: '/stats/aging', label: '账龄分析', perm: 'report.arrears' },
       { path: '/doc/search', label: '单据查询', perm: 'report.docSearch' }

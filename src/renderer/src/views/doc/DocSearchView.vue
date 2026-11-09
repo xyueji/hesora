@@ -4,6 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { docApi } from '../../api/doc'
 import { printApi } from '../../api/print'
 import { productApi } from '../../api/product'
+import { attachmentApi, type AttachmentRow } from '../../api/attachment'
+import { hasPermission } from '../../stores/auth'
 import type { DocItemRow, DocRow, DocType } from '../../../../shared/types/doc'
 import { DOC_A4_PRINTABLE, DOC_TYPE_LABELS } from '../../../../shared/types/doc'
 
@@ -75,6 +77,7 @@ async function viewDetail(row: DocRow): Promise<void> {
     detailItems.value = d.items
     detailVisible.value = true
     detailReversal.value = null
+    void loadAttachments(row.id)
     void docApi.reversals(row.id).then((revs) => {
       detailReversal.value = revs[0] ?? null
     })
@@ -131,6 +134,110 @@ function productName(item: DocItemRow): string {
 
 const printingA4 = ref(false)
 const canPrintA4 = computed(() => detailDoc.value !== null && printable(detailDoc.value))
+
+// ── M 级功能：单据图片附件（离线拍照留证） ──
+const canAttach = hasPermission('doc.attachment')
+const canReview = hasPermission('doc.viewAll')
+
+// P2：直过账单据补审核（管理标记，不回滚账务）
+const reviewing = ref(false)
+async function reviewDoc(): Promise<void> {
+  const doc = detailDoc.value
+  if (!doc) return
+  try {
+    await ElMessageBox.confirm(
+      `将为单据 ${doc.no} 补充审核标记（不影响已过账的库存/资金），确认？`,
+      '补审核确认',
+      { type: 'info', confirmButtonText: '确认审核', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  reviewing.value = true
+  try {
+    const updated = await docApi.review(doc.id)
+    detailDoc.value = updated
+    ElMessage.success('审核标记已保存')
+    void load()
+  } catch (e) {
+    ElMessage.error(`审核失败：${(e as Error).message}`)
+  } finally {
+    reviewing.value = false
+  }
+}
+const attachments = ref<AttachmentRow[]>([])
+const uploadInput = ref<HTMLInputElement | null>(null)
+const previewVisible = ref(false)
+const previewSrc = ref('')
+const previewName = ref('')
+
+async function loadAttachments(docId: number): Promise<void> {
+  attachments.value = []
+  if (!canAttach) return
+  try {
+    attachments.value = await attachmentApi.listByDoc(docId)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+async function onPickFile(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !detailDoc.value) return
+  if (file.size > 10 * 1024 * 1024) {
+    ElMessage.error('图片过大：请选择 10MB 以内的图片')
+    return
+  }
+  const data = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
+    reader.onerror = () => reject(new Error('读取图片失败'))
+    reader.readAsDataURL(file)
+  })
+  try {
+    await attachmentApi.save({ doc_id: detailDoc.value.id, file_name: file.name, data })
+    ElMessage.success('附件已保存')
+    void loadAttachments(detailDoc.value.id)
+  } catch (e) {
+    ElMessage.error(`保存附件失败：${(e as Error).message}`)
+  }
+}
+
+async function previewAttachment(att: AttachmentRow): Promise<void> {
+  try {
+    const r = await attachmentApi.read(att.id)
+    const mime = att.file_path.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg'
+    previewSrc.value = `data:${mime};base64,${r.data}`
+    previewName.value = r.file_name
+    previewVisible.value = true
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+async function removeAttachment(att: AttachmentRow): Promise<void> {
+  try {
+    await ElMessageBox.confirm(`确定删除附件「${att.file_name}」？此操作不可撤销。`, '删除确认', {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消'
+    })
+  } catch {
+    return
+  }
+  try {
+    await attachmentApi.remove(att.id)
+    ElMessage.success('附件已删除')
+    if (detailDoc.value) void loadAttachments(detailDoc.value.id)
+  } catch (e) {
+    ElMessage.error(`删除附件失败：${(e as Error).message}`)
+  }
+}
+
+function thumbSrc(att: AttachmentRow): string {
+  // 缩略图直接读原图（离线小图足够）；点击再经 read 拉全量预览
+  return `#thumb-${att.id}`
+}
 
 async function printA4(): Promise<void> {
   if (!detailDoc.value) return
@@ -246,6 +353,10 @@ onMounted(() => {
           <el-descriptions-item label="往来单位">{{ detailDoc.partner_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="总金额">{{ fmt(detailDoc.total_amount) }}</el-descriptions-item>
           <el-descriptions-item label="备注">{{ detailDoc.remark || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="审核状态">
+            <el-tag v-if="detailDoc.reviewed_by" type="success" size="small">已审核：{{ detailDoc.reviewed_by }}</el-tag>
+            <el-tag v-else type="info" size="small">未审核</el-tag>
+          </el-descriptions-item>
           <el-descriptions-item label="红冲状态">
             <el-tag v-if="detailReversal" type="danger" size="small">已被红冲：{{ detailReversal.no }}</el-tag>
             <el-tag v-else-if="detailDoc.reversal_of" type="warning" size="small">红冲单</el-tag>
@@ -267,6 +378,31 @@ onMounted(() => {
             <template #default="{ row }">{{ fmt(row.amount) }}</template>
           </el-table-column>
         </el-table>
+
+        <!-- 图片附件区（M 级功能：离线拍照留证） -->
+        <div v-if="canAttach" class="attachments">
+          <div class="att-head">
+            <strong>图片附件</strong>
+            <input ref="uploadInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" style="display: none" @change="onPickFile" />
+            <el-button size="small" type="primary" :disabled="!detailDoc" @click="uploadInput?.click()">上传图片</el-button>
+          </div>
+          <div v-if="attachments.length" class="att-list">
+            <div v-for="att in attachments" :key="att.id" class="att-item">
+              <el-image
+                :src="thumbSrc(att)"
+                :preview-src-list="[thumbSrc(att)]"
+                hide-on-click-modal
+                class="att-thumb"
+                @click="void previewAttachment(att)"
+              >
+                <template #error><div class="att-err">{{ att.file_name }}</div></template>
+              </el-image>
+              <div class="att-meta" :title="att.file_name">{{ att.file_name }}</div>
+              <el-button link type="danger" size="small" @click="removeAttachment(att)">删除</el-button>
+            </div>
+          </div>
+          <el-empty v-else description="暂无图片附件" :image-size="48" />
+        </div>
       </template>
       <template #footer>
         <el-button
@@ -275,9 +411,19 @@ onMounted(() => {
           :loading="reversing"
           @click="reverseDoc"
         >红冲</el-button>
+        <el-button
+          v-if="canReview && detailDoc?.status === 'done' && !detailDoc.reviewed_by"
+          type="primary"
+          :loading="reviewing"
+          @click="reviewDoc"
+        >补审核</el-button>
         <el-button v-if="canPrintA4" :loading="printingA4" @click="printA4">打印 A4</el-button>
         <el-button @click="detailVisible = false">关闭</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="previewVisible" :title="previewName" width="640px" append-to-body>
+      <img v-if="previewSrc" :src="previewSrc" class="preview-img" alt="附件预览" />
     </el-dialog>
   </div>
 </template>
@@ -307,5 +453,47 @@ onMounted(() => {
 }
 .doc-search .desc {
   margin-bottom: 12px;
+}
+.attachments {
+  margin-top: 14px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  padding-top: 12px;
+}
+.att-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.att-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.att-item {
+  width: 96px;
+  text-align: center;
+}
+.att-thumb {
+  width: 96px;
+  height: 72px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+}
+.att-err {
+  font-size: 11px;
+  padding: 8px 4px;
+  color: var(--el-text-color-secondary);
+}
+.att-meta {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 4px 0;
+}
+.preview-img {
+  width: 100%;
+  object-fit: contain;
 }
 </style>

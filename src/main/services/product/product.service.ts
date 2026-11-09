@@ -25,6 +25,7 @@ interface ProductRow {
   disabled: number
   shelf_life_days: number | null
   shelf_life_warn_days: number | null
+  attributes: string | null
 }
 
 interface PriceLevelRow {
@@ -77,8 +78,8 @@ function normalizeShelfDays(value: unknown, field: string): number | null {
 
 export function createProductService(db: DB) {
   const insertProduct = db.prepare(`
-    INSERT INTO product (code, name, spec, category, base_unit, retail_price, trade_price, purchase_price, min_stock, images, remark, tracking_type, kind, shelf_life_days, shelf_life_warn_days)
-    VALUES (@code, @name, @spec, @category, @base_unit, @retail_price, @trade_price, @purchase_price, @min_stock, @images, @remark, @tracking_type, @kind, @shelf_life_days, @shelf_life_warn_days)
+    INSERT INTO product (code, name, spec, category, base_unit, retail_price, trade_price, purchase_price, min_stock, images, remark, tracking_type, kind, shelf_life_days, shelf_life_warn_days, attributes)
+    VALUES (@code, @name, @spec, @category, @base_unit, @retail_price, @trade_price, @purchase_price, @min_stock, @images, @remark, @tracking_type, @kind, @shelf_life_days, @shelf_life_warn_days, @attributes)
   `)
   const insertUnit = db.prepare(
     'INSERT INTO product_unit (product_id, unit, rate, is_base) VALUES (?, ?, ?, 0)'
@@ -171,6 +172,34 @@ export function createProductService(db: DB) {
     }
   }
 
+  /** P2：解析商品自定义属性 JSON；无效或为空时返回 undefined */
+  function parseAttributes(raw: string | null | undefined): Record<string, string> | undefined {
+    if (!raw) return undefined
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const out: Record<string, string> = {}
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof v === 'string') out[k] = v
+        }
+        return out
+      }
+    } catch {
+      /* 忽略脏数据 */
+    }
+    return undefined
+  }
+
+  /** P2：序列化自定义属性；空对象归一为 null */
+  function stringifyAttributes(attrs: Record<string, string> | undefined): string | null {
+    if (attrs === undefined) return undefined as unknown as string | null
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(attrs)) {
+      if (typeof v === 'string' && v.trim() !== '') out[k] = v.trim()
+    }
+    return Object.keys(out).length > 0 ? JSON.stringify(out) : null
+  }
+
   function getById(id: number): Product | null {
     const row = db.prepare('SELECT * FROM product WHERE id = ?').get(id) as
       | ProductRow
@@ -214,7 +243,8 @@ export function createProductService(db: DB) {
       disabled: row.disabled === 1,
       shelf_life_days: row.shelf_life_days ?? undefined,
       shelf_life_warn_days: row.shelf_life_warn_days ?? undefined,
-      price_levels: priceLevels
+      price_levels: priceLevels,
+      attributes: parseAttributes(row.attributes)
     }
   }
 
@@ -242,7 +272,8 @@ export function createProductService(db: DB) {
             tracking_type: p.tracking_type ?? 'none',
             kind: p.kind ?? 'standard',
             shelf_life_days: normalizeShelfDays(p.shelf_life_days, '保质期天数'),
-            shelf_life_warn_days: normalizeShelfDays(p.shelf_life_warn_days, '预警提前天数')
+            shelf_life_warn_days: normalizeShelfDays(p.shelf_life_warn_days, '预警提前天数'),
+            attributes: p.attributes === undefined ? null : stringifyAttributes(p.attributes)
           }).lastInsertRowid
         )
         writeUnits(id, p.units ?? [])
@@ -289,6 +320,10 @@ export function createProductService(db: DB) {
         if (p.shelf_life_days !== undefined) {
           cols.push('shelf_life_days = @shelf_life_days')
           vals['shelf_life_days'] = normalizeShelfDays(p.shelf_life_days, '保质期天数')
+        }
+        if (p.attributes !== undefined) {
+          cols.push('attributes = @attributes')
+          vals['attributes'] = stringifyAttributes(p.attributes)
         }
         if (p.shelf_life_warn_days !== undefined) {
           cols.push('shelf_life_warn_days = @shelf_life_warn_days')
@@ -353,6 +388,16 @@ export function createProductService(db: DB) {
           '(code LIKE @kw OR name LIKE @kw OR id IN (SELECT product_id FROM product_barcode WHERE barcode LIKE @kw))'
         )
         params['kw'] = `%${q.keyword}%`
+      }
+      // P2：按属性值筛选（attr_id → 期望值，AND 语义）
+      if (q.attr_filters) {
+        let i = 0
+        for (const [attrId, value] of Object.entries(q.attr_filters)) {
+          const key = `attr_${i}`
+          where.push(`json_extract(attributes, '$."${attrId}"') = @${key}`)
+          params[key] = value
+          i += 1
+        }
       }
       const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
       const total = Number(

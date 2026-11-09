@@ -287,3 +287,19 @@ export interface AdjustPriceResult {
   products: number
   logs: PriceAdjustLogRow[]
 }
+
+/** P2：采购建议行（min_stock>0 且现库存<min_stock） */
+export interface PurchaseSuggestion {
+  product_id: number
+  code: string
+  name: string
+  spec: string
+  base_unit: string
+  min_stock: number
+  current_qty: number
+  suggest_qty: number
+}
+
+export interface PurchaseSuggestionQuery {
+  warehouse_id?: number
+}

@@ -24,6 +24,48 @@ const productNames = ref<Record<number, string>>({})
 const detailVisible = ref(false)
 const detail = ref<StocktakeDetail | null>(null)
 
+// P2：盘点复盘
+const reviewVisible = ref(false)
+const reviewForm = ref({ review_by: '', review_remark: '' })
+
+function openReview(): void {
+  if (!detail.value) return
+  reviewForm.value = { review_by: '', review_remark: detail.value.doc.review_remark ?? '' }
+  reviewVisible.value = true
+}
+
+async function doReview(): Promise<void> {
+  if (!detail.value) return
+  const by = reviewForm.value.review_by.trim()
+  if (!by) {
+    ElMessage.warning('请填写复盘人')
+    return
+  }
+  try {
+    const doc = await stocktakeApi.review(detail.value.doc.id, by, reviewForm.value.review_remark || undefined)
+    ElMessage.success('复盘已记录')
+    reviewVisible.value = false
+    detail.value = { ...detail.value, doc }
+  } catch (e) {
+    ElMessage.error((e as Error).message || '复盘失败')
+  }
+}
+
+/** 盘点结论：按明细差异符号汇总 */
+function conclusionType(items: Array<{ qty: number }>): 'success' | 'warning' {
+  return items.some((i) => i.qty !== 0) ? 'warning' : 'success'
+}
+
+function stocktakeConclusion(items: Array<{ qty: number }>): string {
+  const gains = items.filter((i) => i.qty > 0).length
+  const losses = items.filter((i) => i.qty < 0).length
+  if (gains === 0 && losses === 0) return '相符'
+  const parts: string[] = []
+  if (gains > 0) parts.push(`盘盈 ${gains} 项`)
+  if (losses > 0) parts.push(`盘亏 ${losses} 项`)
+  return parts.join('、')
+}
+
 // 盘点 CSV 导入
 const importVisible = ref(false)
 const importLoading = ref(false)
@@ -204,7 +246,13 @@ onMounted(() => {
           <el-descriptions-item label="单号">{{ detail.doc.no }}</el-descriptions-item>
           <el-descriptions-item label="日期">{{ detail.doc.date }}</el-descriptions-item>
           <el-descriptions-item label="盘点仓">{{ whName(detail.doc.warehouse_id) }}</el-descriptions-item>
+          <el-descriptions-item label="结论">
+            <el-tag :type="conclusionType(detail.items)">{{ stocktakeConclusion(detail.items) }}</el-tag>
+          </el-descriptions-item>
           <el-descriptions-item label="备注" :span="3">{{ detail.doc.remark || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="复盘人">{{ detail.doc.review_by || '未复盘' }}</el-descriptions-item>
+          <el-descriptions-item label="复盘时间">{{ detail.doc.review_at || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="复盘备注">{{ detail.doc.review_remark || '—' }}</el-descriptions-item>
         </el-descriptions>
         <el-table :data="detail.items" stripe size="small">
           <el-table-column label="商品" min-width="180">
@@ -218,6 +266,25 @@ onMounted(() => {
             </template>
           </el-table-column>
         </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="detailVisible = false">关闭</el-button>
+        <el-button v-if="detail && !detail.doc.review_by" type="primary" @click="openReview">复盘</el-button>
+        <el-button v-else-if="detail && detail.doc.review_by" @click="openReview">重新复盘</el-button>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="reviewVisible" title="盘点复盘" width="420px">
+      <el-form label-width="80px">
+        <el-form-item label="复盘人">
+          <el-input v-model="reviewForm.review_by" placeholder="复盘人姓名" maxlength="40" />
+        </el-form-item>
+        <el-form-item label="复盘备注">
+          <el-input v-model="reviewForm.review_remark" type="textarea" :rows="3" placeholder="复盘结论/备注（可选）" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="reviewVisible = false">取消</el-button>
+        <el-button type="primary" @click="doReview">保存复盘</el-button>
       </template>
     </el-dialog>
     <el-dialog v-model="importVisible" title="导入盘点（CSV）" width="720px">

@@ -11,7 +11,8 @@ import type {
   StockFlowQuery,
   StockFlowResult,
   WarningPage,
-  WarningQuery
+  WarningQuery,
+  PurchaseSuggestion
 } from '../../../shared/types/stock-report'
 
 export const stockReportApi = {
@@ -31,5 +32,8 @@ export const stockReportApi = {
     call<SetWarningsResult>('stock:setWarningsByCondition', { condition, min_stock: minStock }),
   /** 批量调整售价并留痕 */
   adjustPrices: (items: AdjustPriceItem[], operator?: string) =>
-    call<AdjustPriceResult>('stock:adjustPrices', { items, operator })
+    call<AdjustPriceResult>('stock:adjustPrices', { items, operator }),
+  /** P2：采购建议清单（min_stock>0 且现库存不足） */
+  purchaseSuggestions: (warehouseId?: number) =>
+    call<PurchaseSuggestion[]>('stock:purchaseSuggestions', { warehouse_id: warehouseId })
 }

@@ -110,6 +110,12 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   'dashboard:todayBrief': 'report.dashboard',
   'dashboard:reminders': 'report.dashboard',
   'stats:fundSummaryByCategory': 'report.business',
+  // M 级功能：月度库存汇总（经营报表）；单据图片附件（查看/上传/删除）
+  'stats:monthlyStock': 'report.business',
+  'attachment:list': 'doc.attachment',
+  'attachment:read': 'doc.attachment',
+  'attachment:save': 'doc.attachment',
+  'attachment:remove': 'doc.attachment',
   'workflow:list': 'doc.workflow',
   'workflow:save': 'doc.workflow',
   'workflow:approve': 'doc.approve',
@@ -204,5 +210,14 @@ export const PERMISSION_MAP: Record<string, PermissionKey> = {
   // 单据复制（再来一单）
   'doc:copy': 'doc.copy',
   'doc:reverse': 'doc.reverse',
-  'doc:reversals': 'doc.viewAll'
+  'doc:reversals': 'doc.viewAll',
+
+  // ── P2 功能批次（复用既有权限键，不新增） ──
+  'stock:purchaseSuggestions': 'inventory.report',
+  'stocktake:review': 'inventory.adjust',
+  'doc:review': 'doc.viewAll',
+  'productAttribute:list': 'product.view',
+  'productAttribute:create': 'product.edit',
+  'productAttribute:update': 'product.edit',
+  'productAttribute:remove': 'product.edit'
 }

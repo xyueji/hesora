@@ -62,6 +62,12 @@ function toDocRow(row: DocDbRow): DocRow {
     express_com: (row as { express_com?: string | null }).express_com ?? null,
     express_no: (row as { express_no?: string | null }).express_no ?? null,
     delivery_status: ((row as { delivery_status?: string }).delivery_status ?? 'none') as DocRow['delivery_status'],
+    reviewed_by: (row as { reviewed_by?: string | null }).reviewed_by ?? null,
+    reviewed_at: (row as { reviewed_at?: string | null }).reviewed_at ?? null,
+    // ── P2 #3 盘点复盘 ──
+    review_by: (row as { review_by?: string | null }).review_by ?? null,
+    review_at: (row as { review_at?: string | null }).review_at ?? null,
+    review_remark: (row as { review_remark?: string | null }).review_remark ?? null,
     total_amount: row.total_amount,
     remark: row.remark,
     status: row.status as DocRow['status'],
@@ -80,10 +86,25 @@ export function createDocService(db: DB) {
     VALUES (@doc_id, @product_id, @warehouse_id, @batch_no, @unit, @rate, @qty, @price, @amount)
   `)
 
+  // 读取可配置单号前缀（app_setting 键 doc.no_prefix，JSON {type: prefix}），缺省用内置值
+  function readPrefix(type: string): string {
+    const raw = db.prepare('SELECT value FROM app_setting WHERE key = ?').get('doc.no_prefix') as
+      | { value: string }
+      | undefined
+    if (!raw?.value) return DOC_NO_PREFIX[type as keyof typeof DOC_NO_PREFIX]
+    try {
+      const map = JSON.parse(raw.value) as Record<string, string>
+      const p = map[type]
+      return typeof p === 'string' && p.trim() !== '' ? p.trim() : DOC_NO_PREFIX[type as keyof typeof DOC_NO_PREFIX]
+    } catch {
+      return DOC_NO_PREFIX[type as keyof typeof DOC_NO_PREFIX]
+    }
+  }
+
   // 生成单据编号：前缀 + yyyyMMdd + 4位流水。必须在插入事务内调用，避免并发重号。
   function nextDocNo(type: string, date: string): string {
     const compact = date.replace(/-/g, '')
-    const prefix = `${DOC_NO_PREFIX[type as keyof typeof DOC_NO_PREFIX]}${compact}`
+    const prefix = `${readPrefix(type)}${compact}`
     const { last } = db
       .prepare('SELECT MAX(CAST(SUBSTR(no, ?) AS INTEGER)) AS last FROM doc WHERE type = ? AND date = ?')
       .get(prefix.length + 1, type, date) as { last: number | null }
@@ -290,11 +311,30 @@ export function createDocService(db: DB) {
     return { doc, items: getItems(id) }
   }
 
+  /** 直过账单据补审核：仅管理标记（不回滚账务），幂等（重复审核取最新）。 */
+  function review(id: number, input: { reviewer: string }): DocRow {
+    const reviewer = typeof input?.reviewer === 'string' ? input.reviewer.trim() : ''
+    if (!reviewer) throw new BizError('VALIDATION', '审核人不能为空')
+    const doc = db.prepare('SELECT id, status FROM doc WHERE id = ?').get(id) as
+      | { id: number; status: string }
+      | undefined
+    if (!doc) throw new BizError('NOT_FOUND', `单据不存在：${id}`)
+    if (doc.status !== 'done') {
+      throw new BizError('VALIDATION', '仅已过账单据可补审核')
+    }
+    db.prepare(`UPDATE doc SET reviewed_by = ?, reviewed_at = ? WHERE id = ?`).run(
+      reviewer,
+      new Date().toISOString(),
+      id
+    )
+    return getById(id) as DocRow
+  }
+
   function remove(_id: number): void {
     throw new BizError('DOC_DONE', '已完成单据不可删除')
   }
 
-  return { nextDocNo, create, getById, getItems, getDetailWithItems, query, remove }
+  return { nextDocNo, create, getById, getItems, getDetailWithItems, query, review, remove }
 }
 
 export type DocService = ReturnType<typeof createDocService>

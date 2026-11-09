@@ -8,6 +8,8 @@ export interface PrintTemplate {
   kind: 'receipt' | 'a4'
   content: string
   is_default: number
+  /** P2：绑定打印机设备名（打印时优先使用） */
+  device_name?: string | null
 }
 
 export const printApi = {
@@ -20,7 +22,7 @@ export const printApi = {
 
 export const printTemplateApi = {
   list: () => call<PrintTemplate[]>('printTemplate:list'),
-  save: (p: { id?: number; name: string; kind: 'receipt' | 'a4'; content: string }) =>
+  save: (p: { id?: number; name: string; kind: 'receipt' | 'a4'; content: string; device_name?: string | null }) =>
     call<number>('printTemplate:save', p),
   remove: (id: number) => call<void>('printTemplate:remove', id),
   setDefault: (id: number) => call<void>('printTemplate:setDefault', id)

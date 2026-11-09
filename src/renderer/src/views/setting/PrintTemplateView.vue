@@ -28,6 +28,7 @@ const form = reactive({
   id: undefined as number | undefined,
   name: '',
   kind: 'receipt' as 'receipt' | 'a4',
+  device_name: '',
   switches: {
     showShopHeader: true,
     showAmountColumn: true,
@@ -74,6 +75,7 @@ function openCreate(): void {
   form.id = undefined
   form.name = ''
   form.kind = 'receipt'
+  form.device_name = ''
   form.switches = { showShopHeader: true, showAmountColumn: true, showRemark: true, showPaymentMethod: true, showFooter: true }
   editing.value = true
 }
@@ -82,6 +84,7 @@ function openEdit(row: PrintTemplate): void {
   form.id = row.id
   form.name = row.name
   form.kind = row.kind
+  form.device_name = row.device_name ?? ''
   form.switches = parseOptions(row.content)
   editing.value = true
 }
@@ -96,7 +99,13 @@ async function save(): Promise<void> {
   try {
     const content: Record<string, boolean> = {}
     for (const key of switchKeysOf(form.kind)) content[key] = form.switches[key]
-    await printTemplateApi.save({ id: form.id, name: form.name.trim(), kind: form.kind, content: JSON.stringify(content) })
+    await printTemplateApi.save({
+      id: form.id,
+      name: form.name.trim(),
+      kind: form.kind,
+      content: JSON.stringify(content),
+      device_name: form.device_name.trim() || null
+    })
     ElMessage.success('模板已保存')
     editing.value = false
     await load()
@@ -151,6 +160,9 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="绑定打印机" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.device_name || '—' }}</template>
+        </el-table-column>
         <el-table-column label="默认" width="90">
           <template #default="{ row }">
             <el-tag v-if="row.is_default === 1" type="warning" size="small">默认</el-tag>
@@ -176,6 +188,9 @@ onMounted(load)
             <el-radio value="receipt">小票</el-radio>
             <el-radio value="a4">A4 单据</el-radio>
           </el-radio-group>
+        </el-form-item>
+        <el-form-item label="绑定打印机">
+          <el-input v-model="form.device_name" placeholder="打印机名称（留空使用系统默认）" maxlength="120" />
         </el-form-item>
         <el-form-item v-for="f in SWITCH_FIELDS.filter((x) => x.kinds.includes(form.kind))" :key="f.key" :label="f.label">
           <el-switch v-model="form.switches[f.key]" />
