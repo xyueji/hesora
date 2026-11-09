@@ -50,14 +50,14 @@ describe('host auth service', () => {
     const { svc } = setup()
     const bodySha = sha256hex('x')
     const baseSec = Math.floor(1_800_000_000_000 / 1000)
-    const { nonce, sig } = sign(svc, bodySha)
-    expect(svc.verifyRequest('aa'.repeat(32), 'dev-1', baseSec - 121, nonce, bodySha, sig).code).toBe('E_CLOCK_SKEW')
-    const r2 = svc.verifyRequest('aa'.repeat(32), 'dev-1', baseSec + 120, randomBytes(16).toString('hex'), bodySha, svc.signPayload('aa'.repeat(32), 'dev-1', baseSec + 120, randomBytes(16).toString('hex'), bodySha))
-    // 注意：sig 是用相同 ts 算的，此处直接用同 ts 的 sign
-    const nonce2 = randomBytes(16).toString('hex')
-    const sig2 = svc.signPayload('aa'.repeat(32), 'dev-1', baseSec + 120, nonce2, bodySha)
-    expect(svc.verifyRequest('aa'.repeat(32), 'dev-1', baseSec + 120, nonce2, bodySha, sig2).ok).toBe(true)
-    expect(r2.ok).toBe(false) // 上面误算的 r2：nonce/sig 与 ts 不匹配 → E_AUTH_FAILED
+    // 121s 偏差 → 拒
+    const nonceSkew = randomBytes(16).toString('hex')
+    const sigSkew = svc.signPayload('aa'.repeat(32), 'dev-1', baseSec - 121, nonceSkew, bodySha)
+    expect(svc.verifyRequest('aa'.repeat(32), 'dev-1', baseSec - 121, nonceSkew, bodySha, sigSkew).code).toBe('E_CLOCK_SKEW')
+    // 120s 整 → 不 skew，签名校验通过
+    const nonceOk = randomBytes(16).toString('hex')
+    const sigOk = svc.signPayload('aa'.repeat(32), 'dev-1', baseSec + 120, nonceOk, bodySha)
+    expect(svc.verifyRequest('aa'.repeat(32), 'dev-1', baseSec + 120, nonceOk, bodySha, sigOk).ok).toBe(true)
   })
 
   it('same nonce replay → E_REPLAY; fresh nonce after window reuse ok', () => {

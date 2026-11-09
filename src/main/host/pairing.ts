@@ -6,7 +6,6 @@ export interface PairingCodeEntry {
   deviceName: string
   secret: Buffer
   expiresAt: number
-  attempts: number
   confirmed: boolean
 }
 
@@ -33,12 +32,11 @@ function sha256hex(s: string | Buffer): string {
 
 export function createPairingService(
   db: Database,
-  opts?: { clock?: () => number; codeLength?: number; ttlMs?: number; maxAttempts?: number }
+  opts?: { clock?: () => number; codeLength?: number; ttlMs?: number }
 ): PairingService {
   const clock = opts?.clock ?? Date.now
   const codeLength = opts?.codeLength ?? 6
   const ttlMs = opts?.ttlMs ?? 5 * 60_000
-  const maxAttempts = opts?.maxAttempts ?? 5
   const codes = new Map<string, PairingCodeEntry>()
 
   function generateCode(): string {
@@ -61,7 +59,6 @@ export function createPairingService(
         deviceName,
         secret: randomBytes(32),
         expiresAt: now + ttlMs,
-        attempts: 0,
         confirmed: false
       })
       return { code, expiresAt: now + ttlMs }
@@ -76,14 +73,15 @@ export function createPairingService(
         codes.delete(code)
         return null
       }
-      if (entry.attempts >= maxAttempts) {
-        codes.delete(code)
-        return null
-      }
       entry.confirmed = true
       const deviceId = randomUUID()
-      insertDevice(deviceId, entry.deviceName, sha256hex(entry.secret), now)
-      return { deviceId, secret: entry.secret }
+      const secret = entry.secret
+      insertDevice(deviceId, entry.deviceName, sha256hex(secret), now)
+      // secret 交予调用方后立即清零内存副本，Map 中不再持有明文
+      const secretCopy = Buffer.from(secret)
+      secret.fill(0)
+      codes.delete(code)
+      return { deviceId, secret: secretCopy }
     },
 
     completePairing(deviceId: string, secretHex: string, approved: boolean): Result {
@@ -126,7 +124,7 @@ export function createPairingService(
     cleanupExpired(): void {
       const now = clock()
       for (const [code, entry] of codes) {
-        if (now >= entry.expiresAt || entry.attempts >= maxAttempts) codes.delete(code)
+        if (now >= entry.expiresAt) codes.delete(code)
       }
     }
   }

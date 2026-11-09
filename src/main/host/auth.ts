@@ -30,6 +30,12 @@ function safeEqualHex(a: string, b: string): boolean {
   return timingSafeEqual(ba, bb)
 }
 
+/** 纯函数：HMAC-SHA256(secret, "session"+deviceId+ts+nonce+bodySha256).hex —— 供 signPayload/verifyRequest 共用 */
+export function signPayloadHex(secretHex: string, deviceId: string, ts: number, nonce: string, bodySha256hex: string): string {
+  const payload = `session${deviceId}${ts}${nonce}${bodySha256hex}`
+  return createHmac('sha256', Buffer.from(secretHex, 'hex')).update(payload).digest('hex')
+}
+
 export function createHostAuthService(db: Database, opts?: { clock?: () => number }): HostAuthService {
   const clock = opts?.clock ?? Date.now
   // nonce 防重放：nonce → 绝对过期时刻（ts±120s 窗口取更晚者）；过期惰性淘汰
@@ -50,8 +56,7 @@ export function createHostAuthService(db: Database, opts?: { clock?: () => numbe
 
   return {
     signPayload(secretHex: string, deviceId: string, ts: number, nonce: string, bodySha256hex: string): string {
-      const payload = `session${deviceId}${ts}${nonce}${bodySha256hex}`
-      return createHmac('sha256', Buffer.from(secretHex, 'hex')).update(payload).digest('hex')
+      return signPayloadHex(secretHex, deviceId, ts, nonce, bodySha256hex)
     },
 
     verifyRequest(secretHex: string, deviceId: string, ts: number, nonce: string, bodySha256: string, sig: string): Result {
@@ -61,7 +66,7 @@ export function createHostAuthService(db: Database, opts?: { clock?: () => numbe
       if (Math.abs(nowSec - ts) * 1000 > SKEW_MS) {
         return fail('E_CLOCK_SKEW', '请求时钟偏差超过 ±120 秒，请校准系统时间')
       }
-      const expected = this.signPayload(secretHex, deviceId, ts, nonce, bodySha256)
+      const expected = signPayloadHex(secretHex, deviceId, ts, nonce, bodySha256)
       if (!safeEqualHex(sig, expected)) {
         return fail('E_AUTH_FAILED', '请求签名校验失败')
       }

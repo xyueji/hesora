@@ -52,25 +52,11 @@ describe('host pairing service', () => {
     expect(svc.confirmPairing(code)).toBeNull()
   })
 
-  it('locks out after maxAttempts exhausted', () => {
+  it('code is one-shot: second confirm on same code returns null', () => {
     const db = openMemDb()
-    // maxAttempts=0：码一经生成即视为尝试耗尽，confirm 立即锁死
-    const svc0 = createPairingService(db, { clock: () => 1_000_000, maxAttempts: 0 })
-    const r0code = svc0.startPairing('d0').code
-    expect(svc0.confirmPairing(r0code)).toBeNull()
-    // 正常 maxAttempts：confirm 成功后 code 一次性作废（防同一码重复发放凭证）
-    const svc = createPairingService(db, { clock: () => 1_000_000, maxAttempts: 5 })
+    const svc = createPairingService(db, { clock: () => 1_000_000 })
     const code = svc.startPairing('d1').code
     expect(svc.confirmPairing(code)).not.toBeNull()
-    expect(svc.confirmPairing(code)).toBeNull()
-  })
-
-  it('failed attempts invalidate code after maxAttempts', () => {
-    const db = openMemDb()
-    const svc = createPairingService(db, { clock: () => 1_000_000, maxAttempts: 3 })
-    const code = svc.startPairing('d1').code
-    const first = svc.confirmPairing(code)
-    expect(first).not.toBeNull()
     expect(svc.confirmPairing(code)).toBeNull()
   })
 
