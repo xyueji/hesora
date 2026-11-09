@@ -75,7 +75,7 @@ describe('arrears aging', () => {
     doSale(customerId, warehouseId, productId, 200, '2026-09-01')
     doSale(customerId, warehouseId, productId, 300, '2026-10-25')
     createPaymentService(db).createReceipt({
-      partner_id: customerId, account_id: accountId, amount: 250,
+      partner_id: customerId, account_id: accountId, amount: 250, date: '2026-11-08',
       allocations: [
         { doc_id: db.prepare("SELECT id FROM doc WHERE date='2026-09-01' AND type='sale'").pluck().get() as number, amount: 200 },
         { doc_id: db.prepare("SELECT id FROM doc WHERE date='2026-10-25' AND type='sale'").pluck().get() as number, amount: 50 }
