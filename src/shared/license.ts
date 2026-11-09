@@ -5,6 +5,12 @@ export interface LicensePayload {
   issuedAt: string
   expiresAt?: string | null
   machine?: string | null
+  /** v1.3 追加：版本（旧授权码缺省 → standard） */
+  edition?: LicenseEdition
+  /** v1.3 追加：特征位清单（旧授权码缺省 → 空数组） */
+  features?: LicenseFeature[]
+  /** v1.3 追加：局域网协作主机最大接入设备数（缺省/非法 → 1） */
+  maxDevices?: number
 }
 
 export const LICENSE_CODE_PREFIX = 'ZHJS1.'
@@ -77,4 +83,49 @@ export function generateLicenseCode(payload: LicensePayload, privateKeyPem: stri
   const canonical = JSON.stringify(payload)
   const sig = sign(null, Buffer.from(canonical, 'utf8'), privateKeyPem)
   return `${LICENSE_CODE_PREFIX}${b64url(canonical)}.${b64url(sig)}`
+}
+
+// ---------------------------------------------------------------------------
+// v1.3: 授权版本 / 特征位（license edition & features）
+// ---------------------------------------------------------------------------
+
+export type LicenseFeature =
+  | 'lan_collaboration'
+  | 'cloud_backup'
+  | 'multi_warehouse'
+  | 'rbac'
+  | 'device_handoff'
+
+export type LicenseEdition = 'standard' | 'professional'
+
+export interface ResolvedLicense {
+  edition: LicenseEdition
+  features: LicenseFeature[]
+  maxDevices: number
+}
+
+const VALID_EDITIONS: readonly LicenseEdition[] = ['standard', 'professional']
+const VALID_FEATURES: readonly LicenseFeature[] = [
+  'lan_collaboration', 'cloud_backup', 'multi_warehouse', 'rbac', 'device_handoff'
+]
+
+/**
+ * 旧授权码缺省字段 → standard 空特征。所有判定一律走此函数，不直接读 payload。
+ * 注意判空条件是 !p || !p.edition（null/undefined 均归 standard）。
+ */
+export function resolveLicenseFeatures(p: LicensePayload | null | undefined): ResolvedLicense {
+  if (!p || !p.edition || !VALID_EDITIONS.includes(p.edition)) {
+    return { edition: 'standard', features: [], maxDevices: 1 }
+  }
+  const features = Array.isArray(p.features)
+    ? p.features.filter((f): f is LicenseFeature => VALID_FEATURES.includes(f))
+    : []
+  const maxDevices = typeof p.maxDevices === 'number' && Number.isFinite(p.maxDevices) && p.maxDevices >= 1
+    ? p.maxDevices
+    : 1
+  return { edition: p.edition, features, maxDevices }
+}
+
+export function hasFeature(p: LicensePayload | null | undefined, f: LicenseFeature): boolean {
+  return resolveLicenseFeatures(p).features.includes(f)
 }

@@ -25,7 +25,7 @@ export function readPrivateKey() {
   return readFileSync(path, 'utf8')
 }
 
-export function generateCode({ customer, expiresAt = null, machine = null }, privateKey) {
-  const body = Buffer.from(JSON.stringify({ customer, issuedAt: new Date().toISOString(), expiresAt, machine }))
+export function generateCode({ customer, expiresAt = null, machine = null, edition = null, features = null, maxDevices = null }, privateKey) {
+  const body = Buffer.from(JSON.stringify({ customer, issuedAt: new Date().toISOString(), expiresAt, machine, edition, features, maxDevices }))
   return `ZHJS1.${body.toString('base64url')}.${sign(null, body, privateKey).toString('base64url')}`
 }
