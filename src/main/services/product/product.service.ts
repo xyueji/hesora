@@ -7,6 +7,18 @@ import { normalizePriceLevels } from './price-level.service'
 
 export type DB = Database
 
+/** P3：批量修改允许的字段集合（仅价格 / 库存上下限 / 货架号） */
+export type BulkUpdateField =
+  | 'retail_price'
+  | 'trade_price'
+  | 'purchase_price'
+  | 'min_stock'
+  | 'max_stock'
+  | 'shelf_no'
+
+/** P3：批量修改补丁，仅允许 BulkUpdateField 中列出的字段 */
+export type BulkUpdatePatch = Partial<Pick<Product, BulkUpdateField>>
+
 interface ProductRow {
   id: number
   code: string
@@ -18,8 +30,11 @@ interface ProductRow {
   trade_price: number
   purchase_price: number
   min_stock: number | null
+  max_stock: number | null
+  shelf_no: string | null
   images: string | null
   remark: string | null
+  commission_rate: number
   tracking_type: string
   kind: string
   disabled: number
@@ -66,6 +81,16 @@ function parseImages(raw: string | null): string[] {
   return []
 }
 
+/** P3：提成率——允许为空（默认 0），必须是 0~100 的数值 */
+function normalizeCommissionRate(value: unknown): number {
+  if (value === undefined || value === null || value === '') return 0
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0 || n > 100) {
+    throw new BizError('VALIDATION', '提成率必须是 0~100 之间的数值')
+  }
+  return n
+}
+
 /** 保质期天数：允许为空，必须是不小于 0 的整数 */
 function normalizeShelfDays(value: unknown, field: string): number | null {
   if (value === null || value === undefined || value === '') return null
@@ -78,8 +103,8 @@ function normalizeShelfDays(value: unknown, field: string): number | null {
 
 export function createProductService(db: DB) {
   const insertProduct = db.prepare(`
-    INSERT INTO product (code, name, spec, category, base_unit, retail_price, trade_price, purchase_price, min_stock, images, remark, tracking_type, kind, shelf_life_days, shelf_life_warn_days, attributes)
-    VALUES (@code, @name, @spec, @category, @base_unit, @retail_price, @trade_price, @purchase_price, @min_stock, @images, @remark, @tracking_type, @kind, @shelf_life_days, @shelf_life_warn_days, @attributes)
+    INSERT INTO product (code, name, spec, category, base_unit, retail_price, trade_price, purchase_price, min_stock, max_stock, shelf_no, images, remark, commission_rate, tracking_type, kind, shelf_life_days, shelf_life_warn_days, attributes)
+    VALUES (@code, @name, @spec, @category, @base_unit, @retail_price, @trade_price, @purchase_price, @min_stock, @max_stock, @shelf_no, @images, @remark, @commission_rate, @tracking_type, @kind, @shelf_life_days, @shelf_life_warn_days, @attributes)
   `)
   const insertUnit = db.prepare(
     'INSERT INTO product_unit (product_id, unit, rate, is_base) VALUES (?, ?, ?, 0)'
@@ -98,6 +123,41 @@ export function createProductService(db: DB) {
   const selectPriceLevels = db.prepare(
     'SELECT price_level, price FROM product_price WHERE product_id = ? ORDER BY id'
   )
+  const getSettingStmt = db.prepare('SELECT value FROM app_setting WHERE key = ?')
+
+  /** P3：读批号必录开关（product.batch_required，默认关闭） */
+  function batchRequired(): boolean {
+    const row = getSettingStmt.get('product.batch_required') as { value: string } | undefined
+    return row?.value === '1' || row?.value === 'true'
+  }
+
+  /**
+   * P3：批号必录校验。开启开关后，批次追踪类商品（tracking_type='batch'）必须
+   * 提供初始批次信息（batch_no 非空的期初库存行），否则拦截保存。
+   */
+  function assertBatchProvided(p: { tracking_type?: string; initial_batches?: unknown }): void {
+    if (!batchRequired()) return
+    if ((p.tracking_type ?? 'none') !== 'batch') return
+    const batches = p.initial_batches
+    const hasBatch = Array.isArray(batches) && batches.some((b) => {
+      if (b === null || typeof b !== 'object') return false
+      const no = (b as Record<string, unknown>)['batch_no']
+      return typeof no === 'string' && no.trim() !== ''
+    })
+    if (!hasBatch) {
+      throw new BizError('VALIDATION', '已开启批号必录：批次管理类商品必须录入初始批次号后才能保存')
+    }
+  }
+
+  /** P3：商品批量修改允许的安全字段白名单 */
+  const BULK_UPDATE_FIELDS = [
+    'retail_price',
+    'trade_price',
+    'purchase_price',
+    'min_stock',
+    'max_stock',
+    'shelf_no'
+  ] as const
 
   /** 整体替换某商品的价格等级；校验规则与价格等级服务保持一致 */
   function writePriceLevels(productId: number, levels: unknown): void {
@@ -233,8 +293,11 @@ export function createProductService(db: DB) {
       trade_price: row.trade_price,
       purchase_price: row.purchase_price,
       min_stock: row.min_stock,
+      max_stock: row.max_stock,
+      shelf_no: row.shelf_no ?? undefined,
       images: parseImages(row.images),
       remark: row.remark ?? undefined,
+      commission_rate: row.commission_rate,
       tracking_type: row.tracking_type as Product['tracking_type'],
       kind,
       bom,
@@ -253,6 +316,8 @@ export function createProductService(db: DB) {
       const code = requireText(p.code, '编码')
       const name = requireText(p.name, '名称')
       const baseUnit = requireText(p.base_unit, '基本单位')
+      // P3：批号必录开关——批次追踪类商品必须提供初始批次
+      assertBatchProvided(p)
       let id = 0
       db.transaction(() => {
         assertCodeFree(code)
@@ -267,8 +332,11 @@ export function createProductService(db: DB) {
             trade_price: p.trade_price ?? 0,
             purchase_price: p.purchase_price ?? 0,
             min_stock: p.min_stock ?? null,
+            max_stock: p.max_stock ?? null,
+            shelf_no: p.shelf_no ?? null,
             images: p.images === undefined ? null : JSON.stringify(p.images),
             remark: p.remark ?? null,
+            commission_rate: normalizeCommissionRate(p.commission_rate),
             tracking_type: p.tracking_type ?? 'none',
             kind: p.kind ?? 'standard',
             shelf_life_days: normalizeShelfDays(p.shelf_life_days, '保质期天数'),
@@ -287,9 +355,14 @@ export function createProductService(db: DB) {
     update(id: number, p: Partial<Product>): void {
       db.transaction(() => {
         const existing = db
-          .prepare('SELECT id, code FROM product WHERE id = ?')
-          .get(id) as { id: number; code: string } | undefined
+          .prepare('SELECT id, code, tracking_type FROM product WHERE id = ?')
+          .get(id) as { id: number; code: string; tracking_type: string } | undefined
         if (!existing) throw new BizError('NOT_FOUND', '商品不存在')
+
+        // P3：批号必录开关——把商品改为批次追踪时，必须提供初始批次
+        if (p.tracking_type !== undefined && p.tracking_type !== existing.tracking_type) {
+          assertBatchProvided(p)
+        }
 
         const cols: string[] = []
         const vals: Record<string, unknown> = {}
@@ -313,7 +386,10 @@ export function createProductService(db: DB) {
         if (p.trade_price !== undefined) (cols.push('trade_price = @trade_price')), (vals['trade_price'] = p.trade_price)
         if (p.purchase_price !== undefined) (cols.push('purchase_price = @purchase_price')), (vals['purchase_price'] = p.purchase_price)
         if (p.min_stock !== undefined) cols.push('min_stock = @min_stock'), (vals['min_stock'] = p.min_stock)
+        if (p.max_stock !== undefined) cols.push('max_stock = @max_stock'), (vals['max_stock'] = p.max_stock)
+        if (p.shelf_no !== undefined) cols.push('shelf_no = @shelf_no'), (vals['shelf_no'] = p.shelf_no)
         if (p.images !== undefined) cols.push('images = @images'), (vals['images'] = JSON.stringify(p.images))
+        if (p.commission_rate !== undefined) (cols.push('commission_rate = @commission_rate')), (vals['commission_rate'] = normalizeCommissionRate(p.commission_rate))
         if (p.remark !== undefined) cols.push('remark = @remark'), (vals['remark'] = p.remark)
         if (p.tracking_type !== undefined) (cols.push('tracking_type = @tracking_type')), (vals['tracking_type'] = p.tracking_type)
         if (p.kind !== undefined) cols.push('kind = @kind'), (vals['kind'] = p.kind)
@@ -369,6 +445,75 @@ export function createProductService(db: DB) {
       throw new BizError('IN_USE', '主档不允许删除，请停用')
     },
 
+    /**
+     * P3：批量修改商品。仅允许白名单内字段；patch 中出现的字段才更新
+     * （未提供的字段保持原值）。整个操作在一个事务内完成，任一商品
+     * 不存在则整体回滚。
+     */
+    bulkUpdate(ids: number[], patch: BulkUpdatePatch): { updated: number } {
+      if (!Array.isArray(ids) || ids.length === 0) {
+        throw new BizError('VALIDATION', '请选择要修改的商品')
+      }
+      const cleanIds = ids.map((v) => Number(v))
+      if (cleanIds.some((v) => !Number.isInteger(v) || v <= 0)) {
+        throw new BizError('VALIDATION', '商品 ID 无效')
+      }
+      if (patch === null || typeof patch !== 'object') {
+        throw new BizError('VALIDATION', '修改内容无效')
+      }
+      // 逐字段校验后构造 SET 子句；patch 中未提供的字段不会出现在语句里
+      const cols: string[] = []
+      const vals: Record<string, unknown> = {}
+      const numFields: BulkUpdateField[] = [
+        'retail_price',
+        'trade_price',
+        'purchase_price',
+        'min_stock',
+        'max_stock'
+      ]
+      for (const f of BULK_UPDATE_FIELDS) {
+        if (patch[f] === undefined) continue
+        const v = patch[f]
+        if (numFields.includes(f)) {
+          const n = Number(v)
+          if (!Number.isFinite(n) || n < 0) {
+            throw new BizError('VALIDATION', '价格与库存上下限必须是不小于 0 的数字')
+          }
+          cols.push(`${f} = @${f}`)
+          vals[f] = n
+        } else {
+          // shelf_no：文本，允许清空（空串 → null）
+          const s = typeof v === 'string' ? v.trim() : ''
+          cols.push(`${f} = @${f}`)
+          vals[f] = s === '' ? null : s
+        }
+      }
+      if (cols.length === 0) {
+        throw new BizError('VALIDATION', '请至少填写一个要修改的字段')
+      }
+      const stmt = db.prepare(
+        `UPDATE product SET ${cols.join(', ')}, updated_at = datetime('now','localtime')
+         WHERE id = @id AND disabled = 0`
+      )
+      let updated = 0
+      db.transaction(() => {
+        for (const id of cleanIds) {
+          const r = stmt.run({ ...vals, id })
+          updated += r.changes
+        }
+      })()
+      // P3：批量修改写操作日志（action=product.bulk_update，含 ids 与字段摘要）
+      db.prepare(
+        'INSERT INTO platform_log (action, operator, detail, created_at) VALUES (?, ?, ?, ?)'
+      ).run(
+        'product.bulk_update',
+        'system',
+        `批量修改 ${updated} 个商品；ids=[${cleanIds.join(',')}]; 字段=${Object.keys(vals).join(',')}`,
+        new Date().toISOString()
+      )
+      return { updated }
+    },
+
     query(q: ProductQuery): PageResult<Product> {
       const pageSize = Math.min(Math.max(Math.trunc(Number(q.pageSize) || 20), 1), 200)
       const page = Math.max(Math.trunc(Number(q.page) || 1), 1)
@@ -388,6 +533,10 @@ export function createProductService(db: DB) {
           '(code LIKE @kw OR name LIKE @kw OR id IN (SELECT product_id FROM product_barcode WHERE barcode LIKE @kw))'
         )
         params['kw'] = `%${q.keyword}%`
+      }
+      if (q.shelf_no) {
+        where.push('shelf_no LIKE @shelf_no')
+        params['shelf_no'] = `%${q.shelf_no}%`
       }
       // P2：按属性值筛选（attr_id → 期望值，AND 语义）
       if (q.attr_filters) {
@@ -414,6 +563,42 @@ export function createProductService(db: DB) {
         .map((r) => getById(r.id))
         .filter((p): p is Product => p !== null)
       return { list, total }
+    },
+
+    /**
+     * S 级：商品成本映射——用于开单时"售价低于成本"提醒（仅提示，不阻断）。
+     * 口径：inventory.moving_cost 的加权平均成本（权重为正库存数量，跨仓库/批次汇总），
+     * 无库存的商品返回 0（无成本基准，不提醒）。售价 < 成本时渲染层给出黄色警示。
+     */
+    costMap(productIds?: number[]): Record<number, number> {
+      const map: Record<number, number> = {}
+      if (productIds !== undefined) {
+        const ids = productIds.map((v) => Math.trunc(Number(v))).filter((v) => Number.isInteger(v) && v > 0)
+        if (ids.length === 0) return map
+        const placeholders = ids.map(() => '?').join(',')
+        const rows = db
+          .prepare(
+            `SELECT product_id, SUM(qty * moving_cost) / NULLIF(SUM(qty), 0) AS cost
+             FROM inventory
+             WHERE qty > 0 AND product_id IN (${placeholders})
+             GROUP BY product_id`
+          )
+          .all(...ids) as Array<{ product_id: number; cost: number | null }>
+        for (const r of rows) {
+          map[r.product_id] = r.cost === null ? 0 : Number(r.cost)
+        }
+        return map
+      }
+      const rows = db
+        .prepare(
+          `SELECT product_id, SUM(qty * moving_cost) / NULLIF(SUM(qty), 0) AS cost
+           FROM inventory WHERE qty > 0 GROUP BY product_id`
+        )
+        .all() as Array<{ product_id: number; cost: number | null }>
+      for (const r of rows) {
+        map[r.product_id] = r.cost === null ? 0 : Number(r.cost)
+      }
+      return map
     }
   }
 }

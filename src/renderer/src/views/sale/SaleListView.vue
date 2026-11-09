@@ -129,8 +129,15 @@ async function viewDetail(row: DocRow): Promise<void> {
   }
 }
 
-function productName(item: DocItemRow): string {
-  return productNames.value[item.product_id] ?? `#${item.product_id}`
+// P3：提成 = 数量 × 售价 × 提成率% / 100（按明细行）
+function commissionOf(item: DocItemRow): number {
+  return item.qty * item.price * (item.commission_rate ?? 0) / 100
+}
+function totalCommission(items: DocItemRow[]): number {
+  return items.reduce((s, it) => s + commissionOf(it), 0)
+}
+
+function productName(item: DocItemRow): string {  return productNames.value[item.product_id] ?? `#${item.product_id}`
 }
 
 function customerName(row: DocRow): string {
@@ -284,10 +291,19 @@ async function printA4(): Promise<void> {
           <el-table-column label="售价" width="90" align="right">
             <template #default="{ row }">{{ fmt(row.price) }}</template>
           </el-table-column>
+          <el-table-column label="提成率%" width="90" align="right">
+            <template #default="{ row }">{{ fmt(row.commission_rate ?? 0) }}</template>
+          </el-table-column>
+          <el-table-column label="提成" width="100" align="right">
+            <template #default="{ row }">{{ commissionOf(row).toFixed(2) }}</template>
+          </el-table-column>
           <el-table-column label="金额" width="110" align="right">
             <template #default="{ row }">{{ fmt(row.amount) }}</template>
           </el-table-column>
         </el-table>
+        <div v-if="detail?.doc.type === 'sale'" class="commission-total">
+          提成合计：¥{{ totalCommission(detail.items).toFixed(2) }}
+        </div>
       </template>
       <template #footer>
         <el-button :loading="printingA4" @click="printA4">打印 (A4)</el-button>
@@ -323,5 +339,11 @@ async function printA4(): Promise<void> {
 }
 .sale-list .desc {
   margin-bottom: 12px;
+}
+.commission-total {
+  text-align: right;
+  padding: 8px 4px 0;
+  font-weight: 600;
+  color: var(--el-color-primary);
 }
 </style>

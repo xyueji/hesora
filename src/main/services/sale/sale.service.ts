@@ -4,6 +4,7 @@ import type { DocItemRow, DocPageResult, DocQuery, DocRow } from '../../../share
 import { createDocService, type DocService } from '../doc/doc.service'
 import { createInventoryService } from '../inventory/inventory.service'
 import { resolvePrice } from '../product/customer-price.service'
+import { applyRounding, readRoundingSetting } from './rounding.service'
 import type { InventoryChange } from '../../../shared/types/inventory'
 
 import type { SaleCreateInput, SaleQuery, SaleReturnInput, SaleItemInput } from '../../../shared/types/sale'
@@ -163,6 +164,16 @@ export function createSaleService(db: DB) {
     }
     let doc: DocRow | undefined
     db.transaction(() => {
+      // 让利闭环：整单立减校验（≥0、两位小数、< 商品合计）
+      const preferentialInput = input.preferential_amount !== undefined && input.preferential_amount !== null
+        ? Number(input.preferential_amount) : 0
+      if (preferentialInput < 0 || Math.abs(preferentialInput * 100 - Math.round(preferentialInput * 100)) > 1e-7) {
+        throw new BizError('VALIDATION', '整单优惠金额必须不小于0且最多保留两位小数')
+      }
+      const grossOfInput = input.items.reduce((sum, it) => sum + Number(it.qty) * Number(it.price ?? 0), 0)
+      if (preferentialInput > 0 && preferentialInput >= grossOfInput) {
+        throw new BizError('VALIDATION', `整单优惠金额（${preferentialInput.toFixed(2)} 元）必须小于商品合计（${grossOfInput.toFixed(2)} 元）`)
+      }
       // P1 功能 #2 预存款抵扣校验：需客户、金额合法且不超余额；散客不可用
       const prepaidAmount = input.prepaid_amount !== undefined ? Number(input.prepaid_amount) : 0
       if (prepaidAmount !== 0) {
@@ -202,7 +213,8 @@ export function createSaleService(db: DB) {
           unit: it.unit,
           rate: it.rate,
           qty: it.qty,
-          price: resolveItemPrice(input.customer_id, it)
+          price: resolveItemPrice(input.customer_id, it),
+          commission_rate: it.commission_rate
         }))
       })
       const docItems = docService.getItems(doc.id)
@@ -249,6 +261,19 @@ export function createSaleService(db: DB) {
           INSERT INTO fund_flow (account_id, doc_type, doc_id, amount, direction, date, remark, partner_id)
           VALUES (?, 'sale', ?, ?, 'in', ?, ?, ?)
         `).run(accountId2, doc.id, prepaidAmount, doc.date, input.remark ?? '预存款抵扣', Number(input.customer_id))
+      }
+      // 让利闭环：整单优惠 = 立减 + 开单抹零差额，落 doc.preferential_amount，
+      // total_amount = 商品合计（折扣后）− 优惠；只影响应收/实收，不入库存成本（上段已按原价出库）。
+      if (doc) {
+        const rounding = readRoundingSetting(db)
+        const gross = docItems.reduce((sum, it) => sum + Number(it.amount), 0)
+        const rounded = applyRounding(rounding, gross)
+        const preferential = Number((preferentialInput + rounded.preferential).toFixed(2))
+        const netTotal = Number((gross - preferential).toFixed(2))
+        if (preferential > 0 && netTotal !== Number(doc.total_amount)) {
+          db.prepare('UPDATE doc SET preferential_amount = ?, total_amount = ? WHERE id = ?').run(preferential, netTotal, doc.id)
+          doc = { ...doc, preferential_amount: preferential, total_amount: netTotal }
+        }
       }
     })()
     return doc as DocRow
@@ -303,7 +328,8 @@ export function createSaleService(db: DB) {
           unit: it.unit,
           rate: it.rate,
           qty: it.qty,
-          price: resolveItemPrice(input.customer_id, it)
+          price: resolveItemPrice(input.customer_id, it),
+          commission_rate: it.commission_rate
         }))
       })
       const docItems = docService.getItems(doc.id)

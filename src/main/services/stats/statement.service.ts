@@ -53,7 +53,7 @@ export function createStatementService(db: DB) {
     const settleType = isCustomer ? 'receipt' : 'payment'
     const rows = db.prepare(`
       SELECT d.id, d.no, d.type, d.date, d.total_amount, d.remark,
-        COALESCE((SELECT SUM(a.amount) FROM payment_allocation a JOIN doc p ON p.id = a.payment_id
+        COALESCE((SELECT SUM(a.amount + a.preferential) FROM payment_allocation a JOIN doc p ON p.id = a.payment_id
           WHERE a.target_doc_id = d.id AND p.status = 'done'), 0) AS allocated
       FROM doc d
       WHERE d.partner_id = @pid AND d.status = 'done'
@@ -140,7 +140,7 @@ export function createStatementService(db: DB) {
         p.${openingCol} AS opening,
         d.id AS doc_id, d.date AS doc_date, d.type,
         CASE WHEN d.type = @returnType THEN -d.total_amount ELSE d.total_amount END AS amount,
-        COALESCE((SELECT SUM(a.amount) FROM payment_allocation a JOIN doc pp ON pp.id = a.payment_id
+        COALESCE((SELECT SUM(a.amount + a.preferential) FROM payment_allocation a JOIN doc pp ON pp.id = a.payment_id
           WHERE a.target_doc_id = d.id AND pp.status = 'done'), 0) AS allocated
       FROM ${table} p
       JOIN doc d ON d.partner_id = p.id AND p.disabled = 0

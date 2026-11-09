@@ -9,7 +9,7 @@ export interface PaymentCreateInput {
   /** [10] 收支科目 id（写入 fund_flow.category_id，S 级功能批次 B） */
   category_id?: number
   accounts?: { account_id: number; amount: number }[]
-  allocations?: { doc_id: number; amount: number }[]
+  allocations?: { doc_id: number; amount: number; /** 本次核销让利金额（核销金额+优惠=本次销账金额），缺省 0 */ preferential?: number }[]
   amount: number
   date?: string
   remark?: string
@@ -44,5 +44,5 @@ export interface PaymentDetail {
   doc: DocRow
   flow: FundFlowRow | null
   flows: FundFlowRow[]
-  allocations: { doc_id: number; no: string; amount: number }[]
+  allocations: { doc_id: number; no: string; amount: number; preferential?: number }[]
 }

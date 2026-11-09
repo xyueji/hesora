@@ -89,8 +89,8 @@ export function createCsvIpc(db: Database) {
     return r.filePath
   }
 
-  function importProducts(fileContent: string): ImportResult {
-    return importService.importProducts(String(fileContent))
+  function importProducts(fileContent: string, mode: 'skip' | 'update' = 'update'): ImportResult {
+    return importService.importProducts(String(fileContent), mode)
   }
 
   function importOpeningStock(fileContent: string, warehouseId: number): ImportResult {

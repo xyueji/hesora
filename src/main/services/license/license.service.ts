@@ -1,11 +1,15 @@
 import type { Database } from 'better-sqlite3'
 import { randomUUID, verify } from 'node:crypto'
 import { BizError } from '../../../shared/result'
-import { LICENSE_CODE_PREFIX, TRIAL_DAYS, type LicensePayload } from '../../../shared/license'
+import { LICENSE_CODE_PREFIX, TRIAL_DAYS, TRIAL_TOTAL_DAYS, type LicensePayload, type TrialPhase } from '../../../shared/license'
 
 export interface LicenseStatus {
   mode: 'trial' | 'licensed'
+  /** 新试用策略的阶段：trial(1-7天) → extended(8-14天，延期一次) → expired(只读)；激活后 activated。 */
+  phase: TrialPhase
   daysLeft?: number
+  /** 已使用一次 7 天延期（落盘标记 license.trial_extended=1）。 */
+  extended?: boolean
   activatedAt?: string
   customer?: string
   onlineAvailable?: boolean
@@ -82,11 +86,40 @@ export function createLicenseService(db: Database, publicKeyPem = '', options: L
     const { effectiveTime, start, rollbacks } = observeClock()
     const payload = verifyFormat(get('code') ?? '')
     if (payload && !invalidReason(payload, effectiveTime)) {
-      return { mode: 'licensed', activatedAt: get('activated_at'), customer: payload.customer }
+      return { mode: 'licensed', phase: 'activated', activatedAt: get('activated_at'), customer: payload.customer }
     }
     const elapsed = Math.max(0, Math.floor((effectiveTime - start) / DAY_MS))
-    const daysLeft = rollbacks >= ROLLBACK_LIMIT || !Number.isFinite(start) ? 0 : Math.max(0, TRIAL_DAYS - elapsed)
-    return { mode: 'trial', daysLeft, onlineAvailable: Boolean(options.activationUrl && publicKeyPem) }
+    if (rollbacks >= ROLLBACK_LIMIT || !Number.isFinite(start)) {
+      return { mode: 'trial', phase: 'expired', daysLeft: 0, extended: get('trial_extended') === '1' }
+    }
+    const extended = get('trial_extended') === '1'
+    // 试用状态机：7 天全功能试用 + 一次 7 天延期（trial_extended=1），总 14 天；15 天起只读。
+    const totalDays = extended ? TRIAL_TOTAL_DAYS : TRIAL_DAYS
+    const daysLeft = Math.max(0, totalDays - elapsed)
+    const phase: TrialPhase = daysLeft > 0 ? (extended ? 'extended' : 'trial') : 'expired'
+    return { mode: 'trial', phase, daysLeft, extended }
+  }
+
+  /**
+   * 本地一键延期：延长试用至第 14 天。仅一次，落盘 license.trial_extended=1。
+   * 过期后（<14 天）允许补延期；激活后与超过 14 天拒绝。
+   */
+  function extendTrial(): void {
+    const { effectiveTime, start, rollbacks } = observeClock()
+    if (rollbacks >= ROLLBACK_LIMIT) throw new BizError('TRIAL_ALREADY_EXTENDED', '试用状态异常，无法申请延期')
+    if (get('trial_extended') === '1') throw new BizError('TRIAL_ALREADY_EXTENDED', '已经申请过延期，无法再次延期')
+    const payload = verifyFormat(get('code') ?? '')
+    if (payload && !invalidReason(payload, effectiveTime)) {
+      throw new BizError('TRIAL_ALREADY_EXTENDED', '软件已激活，无需申请延期')
+    }
+    const elapsed = Number.isFinite(start) ? Math.floor((effectiveTime - start) / DAY_MS) : Number.MAX_SAFE_INTEGER
+    if (elapsed >= TRIAL_TOTAL_DAYS) {
+      throw new BizError('TRIAL_ALREADY_EXTENDED', `试用已超过 ${TRIAL_TOTAL_DAYS} 天，无法申请延期，请购买激活`)
+    }
+    db.transaction(() => {
+      set('trial_extended', '1')
+      set('trial_extended_at', new Date(effectiveTime).toISOString())
+    })()
   }
 
   function activate(code: string): LicensePayload {
@@ -133,7 +166,7 @@ export function createLicenseService(db: Database, publicKeyPem = '', options: L
     return activate(token)
   }
 
-  return { verifyFormat, getStatus, activate, activateOnline }
+  return { verifyFormat, getStatus, activate, activateOnline, extendTrial }
 }
 
 export type LicenseService = ReturnType<typeof createLicenseService>

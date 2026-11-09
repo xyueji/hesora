@@ -32,7 +32,13 @@ export interface Product {
   trade_price: number
   purchase_price: number
   min_stock?: number | null
+  /** P3：安全库存上限（NULL/未设置表示不预警超储） */
+  max_stock?: number | null
+  /** P3：货架号 */
+  shelf_no?: string
   images?: string[]
+  /** P3：提成率（%，默认 0） */
+  commission_rate?: number
   remark?: string
   tracking_type: TrackingType
   /** 商品类型：standard 标准商品 / combo 组合商品 */
@@ -50,6 +56,8 @@ export interface Product {
   price_levels?: PriceLevel[]
   /** P2：自定义属性 {attr_id: value} 映射（整体读写） */
   attributes?: Record<string, string>
+  /** P3：新建时的初始批次（仅批次追踪商品；开启批号必录后必须至少一条带 batch_no） */
+  initial_batches?: { batch_no: string; production_date?: string; expire_date?: string }[]
 }
 
 /** P2：属性字典行（如 颜色 → 红/蓝） */
@@ -64,6 +72,8 @@ export interface ProductAttribute {
 export interface ProductQuery extends PageQuery {
   category?: string
   kind?: ProductKind
+  /** P3：货架号模糊筛选 */
+  shelf_no?: string
   /** P2：按属性值筛选（attr_id → 期望值，多值 AND） */
   attr_filters?: Record<string, string>
 }

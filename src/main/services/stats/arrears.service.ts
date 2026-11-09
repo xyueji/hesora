@@ -36,13 +36,24 @@ export function createArrearsService(db: DB) {
           OR (f.doc_type = @returnType AND f.direction = @refundDirection AND f.account_id = d.account_id)
         )
         GROUP BY d.partner_id
+      ),
+      -- 让利闭环：核销优惠（payment_allocation.preferential）不产生资金流水，
+      -- 但同样减少往来余额，须并入结算口径（红冲删除 allocation 行，直接 SUM 即为有效优惠）
+      preferential AS (
+        SELECT d.partner_id, SUM(a.preferential) AS amount
+        FROM payment_allocation a
+        JOIN doc pay ON pay.id = a.payment_id AND pay.status = 'done'
+        JOIN doc d ON d.id = a.target_doc_id
+        WHERE d.status = 'done'
+        GROUP BY d.partner_id
       )
       SELECT p.id AS partner_id, p.name AS partner_name, p.${opening} AS opening,
         COALESCE(t.amount, 0) AS amount, COALESCE(s.amount, 0) AS settled,
-        p.${opening} + COALESCE(t.amount, 0) - COALESCE(s.amount, 0) AS balance
+        p.${opening} + COALESCE(t.amount, 0) - COALESCE(s.amount, 0) - COALESCE(pf.amount, 0) AS balance
       FROM ${partner} p
       LEFT JOIN traded t ON t.partner_id = p.id
       LEFT JOIN settled s ON s.partner_id = p.id
+      LEFT JOIN preferential pf ON pf.partner_id = p.id
       WHERE p.disabled = 0
       ORDER BY balance DESC, partner_id
     `).all({ returnType, direction, refundDirection }) as ArrearsRow[]
@@ -106,6 +117,18 @@ export function createArrearsService(db: DB) {
       `).all({ returnType, direction: customer ? 'in' : 'out', refundDirection: customer ? 'out' : 'in', asOf }) as
         { partner_id: number; amount: number }[]
       for (const s of settleRows) settledByPartner.set(s.partner_id, s.amount)
+      // 让利闭环：核销优惠（不产生流水）按收款单日期并入 credit 参与 FIFO 抵扣
+      const prefRows = db.prepare(`
+        SELECT d.partner_id, SUM(a.preferential) AS amount
+        FROM payment_allocation a
+        JOIN doc pay ON pay.id = a.payment_id AND pay.status = 'done'
+        JOIN doc d ON d.id = a.target_doc_id
+        WHERE d.status = 'done' AND pay.date <= @asOf
+        GROUP BY d.partner_id
+      `).all({ asOf }) as { partner_id: number; amount: number }[]
+      for (const s of prefRows) {
+        settledByPartner.set(s.partner_id, (settledByPartner.get(s.partner_id) ?? 0) + s.amount)
+      }
 
       // 结算总额按 partner 汇总后 FIFO 抵扣交易单（按 date,id 升序）
       const tradeByPartner = new Map<number, { date: string; amount: number }[]>()

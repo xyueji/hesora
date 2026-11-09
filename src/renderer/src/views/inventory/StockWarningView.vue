@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { stockReportApi } from '../../api/stock-report'
 import { warehouseApi } from '../../api/warehouse'
-import type { WarningRow } from '../../../../shared/types/stock-report'
+import type { UnsoldRow, WarningRow } from '../../../../shared/types/stock-report'
 
 const keyword = ref('')
 const warehouseId = ref<number | undefined>(undefined)
@@ -79,8 +79,31 @@ function summaryMethod(): string[] {
   ]
 }
 
-function openSingle(row: WarningRow): void {
-  singleRow.value = row
+// ── S 级：滞销商品（有库存但近 N 天无销售出库）──
+const activeTab = ref('warning')
+const unsoldDays = ref(30)
+const unsoldLoading = ref(false)
+const unsoldItems = ref<UnsoldRow[]>([])
+
+async function loadUnsold(): Promise<void> {
+  unsoldLoading.value = true
+  try {
+    unsoldItems.value = await stockReportApi.unsold({
+      days: unsoldDays.value,
+      warehouse_id: warehouseId.value
+    })
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  } finally {
+    unsoldLoading.value = false
+  }
+}
+
+function searchUnsold(): void {
+  void loadUnsold()
+}
+
+function openSingle(row: WarningRow): void {  singleRow.value = row
   singleMinStock.value = row.min_stock
   singleVisible.value = true
 }
@@ -141,12 +164,15 @@ onMounted(async () => {
     ElMessage.error((e as Error).message)
   }
   await load()
+  void loadUnsold()
 })
 </script>
 
 <template>
   <div class="stock-warning">
     <el-card shadow="never">
+      <el-tabs v-model="activeTab">
+        <el-tab-pane label="库存预警" name="warning">
       <div class="toolbar">
         <h3 class="title">库存预警</h3>
         <div class="filters">
@@ -186,11 +212,15 @@ onMounted(async () => {
         <el-table-column prop="spec" label="规格" min-width="100" />
         <el-table-column prop="base_unit" label="单位" width="70" />
         <el-table-column prop="qty" label="当前库存" align="right" width="100" />
-        <el-table-column prop="min_stock" label="预警值" align="right" width="90" />
+        <el-table-column prop="min_stock" label="预警值(下限)" align="right" width="110" />
+        <el-table-column label="上限" align="right" width="90">
+          <template #default="{ row }">{{ row.max_stock ?? '—' }}</template>
+        </el-table-column>
         <el-table-column prop="diff" label="差额" align="right" width="90" />
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
             <el-tag v-if="row.status === '缺货'" type="danger" size="small">缺货</el-tag>
+            <el-tag v-else-if="row.status === '超储'" type="danger" effect="plain" size="small">超储</el-tag>
             <el-tag v-else type="warning" size="small">{{ row.status }}</el-tag>
           </template>
         </el-table-column>
@@ -212,6 +242,37 @@ onMounted(async () => {
           @size-change="search"
         />
       </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="滞销商品" name="unsold">
+          <div class="toolbar">
+            <div class="filters">
+              <span class="unit">近</span>
+              <el-input-number v-model="unsoldDays" :min="1" :max="3650" :step="10" @change="searchUnsold" />
+              <span class="unit">天无销售出库</span>
+              <el-button type="primary" @click="searchUnsold">查询</el-button>
+            </div>
+          </div>
+          <el-table
+            :data="unsoldItems"
+            v-loading="unsoldLoading"
+            border
+            empty-text="没有符合条件的滞销商品"
+          >
+            <el-table-column prop="code" label="商品编码" min-width="110" />
+            <el-table-column prop="name" label="商品名称" min-width="140" />
+            <el-table-column prop="spec" label="规格" min-width="100" />
+            <el-table-column prop="base_unit" label="单位" width="70" />
+            <el-table-column prop="qty" label="当前库存" align="right" width="100" />
+            <el-table-column label="状态" width="100">
+              <template #default>
+                <el-tag type="warning" size="small">滞销</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+          <p class="dlg-tip">口径：有库存（数量 &gt; 0）但近 N 天内无销售/零售出库记录的商品。</p>
+        </el-tab-pane>
+      </el-tabs>
     </el-card>
 
     <el-dialog v-model="singleVisible" title="设置预警值" width="360px">

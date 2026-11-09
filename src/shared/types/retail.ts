@@ -31,6 +31,8 @@ export interface RetailCreateInput {
   operator?: string
   /** P1 功能 #2 预存款抵扣：从 customer.prepaid 扣减的金额（需 ≤ 预存款余额；散客不可用） */
   prepaid_amount?: number
+  /** 让利闭环：整单优惠（立减）金额，≥0 且 < 折后商品合计；与 discount 并存时 netTotal = Σ(amount)*discount − preferential */
+  preferential?: number
   items: RetailItemInput[]
 }
 

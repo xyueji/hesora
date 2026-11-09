@@ -3,6 +3,7 @@ import { BizError } from '../../../shared/result'
 import type { DocItemRow, DocPageResult, DocQuery, DocRow } from '../../../shared/types/doc'
 import { createDocService, type DocService } from '../doc/doc.service'
 import { createInventoryService } from '../inventory/inventory.service'
+import { applyRounding, readRoundingSetting } from '../sale/rounding.service'
 import type { RetailCreateInput, RetailHeldCart, RetailItemInput, RetailQuery } from '../../../shared/types/retail'
 import type { SaleCreateInput } from '../../../shared/types/sale'
 
@@ -174,10 +175,23 @@ export function createRetailService(db: DB) {
       // 整单折扣：total_amount = Σ(amount) * discount，四舍五入两位；明细金额保持原价。
       const discount = input.discount === undefined || input.discount === null ? 1 : Number(input.discount)
       const grossTotal = docItems.reduce((sum, it) => sum + Number(it.amount), 0)
-      const netTotal = Number((grossTotal * discount).toFixed(2))
-      if (netTotal !== Number(doc?.total_amount)) {
-        db.prepare('UPDATE doc SET total_amount = ? WHERE id = ?').run(netTotal, doc?.id ?? 0)
-        doc = { ...(doc as DocRow), total_amount: netTotal }
+      let netTotal = Number((grossTotal * discount).toFixed(2))
+      // 让利闭环：整单优惠（立减）+ 开单抹零差额，同销售单口径——
+      // netTotal = Σ(amount)*discount − preferential，落 doc.preferential_amount；明细金额保持原价。
+      const preferentialInput = input.preferential !== undefined && input.preferential !== null
+        ? Number(input.preferential) : 0
+      if (preferentialInput < 0 || Math.abs(preferentialInput * 100 - Math.round(preferentialInput * 100)) > 1e-7) {
+        throw new BizError('VALIDATION', '整单优惠金额必须不小于0且最多保留两位小数')
+      }
+      if (preferentialInput > 0 && preferentialInput >= netTotal) {
+        throw new BizError('VALIDATION', `整单优惠金额（${preferentialInput.toFixed(2)} 元）必须小于折后商品合计（${netTotal.toFixed(2)} 元）`)
+      }
+      const rounded = applyRounding(readRoundingSetting(db), netTotal)
+      const preferential = Number((preferentialInput + rounded.preferential).toFixed(2))
+      netTotal = Number((netTotal - preferential).toFixed(2))
+      if (preferential > 0 || netTotal !== Number(doc?.total_amount)) {
+        db.prepare('UPDATE doc SET preferential_amount = ?, total_amount = ? WHERE id = ?').run(preferential, netTotal, doc?.id ?? 0)
+        doc = { ...(doc as DocRow), preferential_amount: preferential, total_amount: netTotal }
       }
       // 收款腿：payments 优先（每腿一条流水）；否则单一 account_id 写一条全额流水（向后兼容）。
       const legs = paymentLegsOf(input)

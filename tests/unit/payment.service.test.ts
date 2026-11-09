@@ -113,7 +113,7 @@ describe('payment.service', () => {
     })
     const detail = ctx.paymentService.getReceiptDetail(receipt.id)
     expect(detail.flows.map((row) => row.amount)).toEqual([20, 40])
-    expect(detail.allocations).toEqual([{ doc_id: sale.id, no: sale.no, amount: 55 }])
+    expect(detail.allocations).toEqual([{ doc_id: sale.id, no: sale.no, amount: 55, preferential: 0 }])
     expect(ctx.paymentService.openDocuments('receipt', ctx.customerId)[0]).toMatchObject({ id: sale.id, remaining: 45 })
     expect(createArrearsService(ctx.db).receivables()[0]).toMatchObject({ settled: 60, balance: 40 })
     expect(() => ctx.paymentService.createReceipt({ partner_id: ctx.customerId, account_id: bank, amount: 46, allocations: [{ doc_id: sale.id, amount: 46 }] })).toThrow(/待核销/)

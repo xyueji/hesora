@@ -54,6 +54,9 @@ export function createPaymentService(db: DB) {
             SELECT SUM(a.amount) FROM payment_allocation a JOIN doc p ON p.id = a.payment_id
             WHERE a.target_doc_id = d.id AND p.status = 'done'
           ), 0) - COALESCE((
+            SELECT SUM(a.preferential) FROM payment_allocation a JOIN doc p ON p.id = a.payment_id
+            WHERE a.target_doc_id = d.id AND p.status = 'done'
+          ), 0) - COALESCE((
             SELECT SUM(r.total_amount - COALESCE((
               SELECT SUM(f.amount) FROM fund_flow f WHERE f.doc_id = r.id AND f.doc_type = r.type
                 AND f.direction = @refundDirection AND f.account_id = r.account_id
@@ -125,7 +128,21 @@ export function createPaymentService(db: DB) {
       }
       const targets = new Set<number>()
       let allocated = 0
-      const insertAllocation = db.prepare('INSERT INTO payment_allocation (payment_id, target_doc_id, amount) VALUES (?, ?, ?)')
+      // 让利闭环：销账合计（含优惠）上限 = 实收金额 + 各单未核销余额（允许全优惠清账）
+      let settledTotal = 0
+      const allocatedTotal = (() => {
+        if (!trade || !partner) return 0
+        const row = db.prepare(
+          `SELECT COALESCE(SUM(d.total_amount - IFNULL((
+             SELECT SUM(a.amount + a.preferential) FROM payment_allocation a
+             JOIN doc p ON p.id = a.payment_id WHERE a.target_doc_id = d.id AND p.status = 'done'
+           ), 0)), 0) AS remaining
+           FROM doc d WHERE d.partner_id = ? AND d.type IN ('sale','purchase','retail','purchase_return','sale_return') AND d.status = 'done'`
+        ).get(partner) as { remaining: number }
+        return Math.max(0, Math.round((row?.remaining ?? 0) * 100))
+      })()
+      // 让利闭环：核销行可带优惠金额（allocation.amount + preferential = 本次销账金额）
+      const insertAllocation = db.prepare('INSERT INTO payment_allocation (payment_id, target_doc_id, amount, preferential) VALUES (?, ?, ?, ?)')
       if (prepaidMode && allocations.length > 0) {
         throw new BizError('VALIDATION', '预存款收付款不参与核销')
       }
@@ -134,13 +151,23 @@ export function createPaymentService(db: DB) {
         if (!row || !Number.isInteger(row.doc_id) || targets.has(row.doc_id)) throw new BizError('VALIDATION', '核销单据无效或重复')
         const outstanding = openDocuments(type, partner, row.doc_id)[0]
         const amount = cents(row.amount)
-        if (!outstanding || outstanding.date > doc.date || amount > cents(outstanding.remaining)) {
-          throw new BizError('VALIDATION', '待核销单据不属于此往来单位、晚于收付款日期或核销金额超出余额')
+        // 让利闭环：本次销账金额 = 核销金额 + 优惠金额，允许优惠部分核销（不必精确等额）
+        const preferential = row.preferential !== undefined && row.preferential !== null ? cents(row.preferential) : 0
+        const settle = amount + preferential
+        if (!outstanding || outstanding.date > doc.date || settle > cents(outstanding.remaining)) {
+          throw new BizError('VALIDATION', '待核销单据不属于此往来单位、晚于收付款日期或核销金额（含优惠）超出余额')
         }
+        if (settle === amount && amount === 0) throw new BizError('VALIDATION', '核销金额必须大于0')
         targets.add(row.doc_id)
+        // 让利闭环：优惠部分不占用实收现金，仅实收金额合计受单据金额约束；
+        // 销账合计（含优惠）则允许超出单据金额直至覆盖未核销余额
         allocated += amount
         if (allocated > total) throw new BizError('VALIDATION', '核销金额合计不能超过单据金额')
-        insertAllocation.run(doc.id, row.doc_id, amount / 100)
+        settledTotal += settle
+        if (settledTotal > allocatedTotal + total) {
+          throw new BizError('VALIDATION', '核销金额（含优惠）超出单据金额与待核销余额')
+        }
+        insertAllocation.run(doc.id, row.doc_id, amount / 100, preferential / 100)
       }
       db.prepare('UPDATE doc SET total_amount = ? WHERE id = ?').run(total / 100, doc.id)
       // P1 功能 #2 预存款过账：计入/退回预存款，更新 partner.prepaid，不写核销
@@ -184,7 +211,7 @@ export function createPaymentService(db: DB) {
       LEFT JOIN fund_account a ON a.id = f.account_id WHERE f.doc_id = ? AND f.doc_type = ? ORDER BY f.id`)
       .all(id, type) as FlowDbRow[]).map(toFlowRow)
     const allocations = db.prepare(`
-      SELECT a.target_doc_id AS doc_id, d.no, a.amount FROM payment_allocation a
+      SELECT a.target_doc_id AS doc_id, d.no, a.amount, a.preferential FROM payment_allocation a
       JOIN doc d ON d.id = a.target_doc_id WHERE a.payment_id = ? ORDER BY d.date, d.id
     `).all(id) as PaymentDetail['allocations']
     return { doc, flow: flows[0] ?? null, flows, allocations }

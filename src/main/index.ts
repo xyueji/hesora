@@ -3,7 +3,8 @@ import { join } from 'path'
 import { openDb, type DB } from './db'
 import { resolveDatabasePath } from './db/location'
 import { ensureProfileDir, resolveProfilePath } from './db/profile'
-import { seedDemoData } from './db/seed'
+import { seedDemoData, resetDemoData } from './db/seed'
+import { isTrialExpiredWrite } from '../shared/license'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
 import { PERMISSION_MAP } from './permissions-map'
 import { setCurrentUser, getCurrentUser, can } from './auth'
@@ -45,6 +46,9 @@ import { createDashboardService } from './services/stats/dashboard.service'
 import { createReportService } from './services/stats/report.service'
 import { createMonthlyService } from './services/stats/monthly.service'
 import { createAttachmentService } from './services/attachment/attachment.service'
+import { createInternalUseService } from './services/inventory/internal-use.service'
+import { createFlowCategoryService } from './services/setting/flow-category.service'
+import { createProductImageService } from './services/product/product-image.service'
 import { createTransferService } from './services/transfer/transfer.service'
 import { createStocktakeService } from './services/stocktake/stocktake.service'
 import { createAssembleService } from './services/assemble/assemble.service'
@@ -231,6 +235,14 @@ function getArrearsService(): ReturnType<typeof createArrearsService> {
   return arrearsService
 }
 
+let reportService: ReturnType<typeof createReportService> | null = null
+function getReportService(): ReturnType<typeof createReportService> {
+  if (!reportService) {
+    reportService = createReportService(getDb())
+  }
+  return reportService
+}
+
 function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
     title: '禾序进销存',
@@ -305,18 +317,37 @@ function initialize(): void {
     return perm !== undefined && can(perm)
   }
   setDefaultPermissionGuard((channel) => {
-    if (channel.startsWith('auth:') || channel.startsWith('license:') || channel.startsWith('update:')) return true
+    if (channel.startsWith('auth:') || channel.startsWith('license:') || channel.startsWith('trial:') || channel.startsWith('update:')) return true
     if (!prevGuard(channel)) return false
     const status = licenseSvc.getStatus()
-    if (status.mode === 'trial' && status.daysLeft !== undefined && status.daysLeft <= 0) {
+    // 新试用策略：expired（超 14 天未激活）→ 只读模式，拦截业务单据写通道；
+    // isTrialExpiredWrite 内部放行 license:/trial:/backup:/sync:/csv:/auth:/update: 白名单。
+    if (isTrialExpiredWrite(channel, status.phase, status.daysLeft)) {
+      audit('trial.blocked', `试用到期只读拦截通道: ${channel}`)
       return false
+    }
+    // 兼容旧守卫：未激活且无剩余天数（异常状态兜底）拒绝
+    if (status.mode === 'trial' && status.daysLeft !== undefined && status.daysLeft <= 0 && status.phase === 'expired') {
+      // phase=expired 已由 isTrialExpiredWrite 按白名单/拦截清单精判，此处不再一刀切
+      return true
     }
     return true
   })
   registerIpc({
     'license:check': () => licenseSvc.getStatus(),
     'license:activate': (_evt, payload) => licenseSvc.activate(String(payload)),
-    'license:activateOnline': (_evt, payload) => licenseSvc.activateOnline(String(payload))
+    'license:activateOnline': (_evt, payload) => licenseSvc.activateOnline(String(payload)),
+    'trial:check': () => licenseSvc.getStatus(),
+    'trial:extend': () => {
+      licenseSvc.extendTrial()
+      audit('trial.extend', '试用本地延期 7 天（trial_extended=1）')
+      return licenseSvc.getStatus()
+    },
+    'trial:resetDemo': () => {
+      const ok = resetDemoData(getDb())
+      audit('trial.resetDemo', '重置演示数据为初始演示态（试用计时不受影响）')
+      return ok
+    }
   })
 
   const workflow = createWorkflowService(getDb())
@@ -382,7 +413,24 @@ function initialize(): void {
       return { ...result, list: result.list.map(visibleProduct) }
     },
     'product:disable': (_evt, payload) => svc.disable(Number(payload)),
-    'product:enable': (_evt, payload) => svc.enable(Number(payload))
+    // S 级：商品成本映射（售价低于成本提醒用；复用 inventory.report 权限键）
+    'product:costMap': (_evt, payload) => {
+      const ids = payload as number[] | undefined
+      return svc.costMap(Array.isArray(ids) ? ids.map(Number) : undefined)
+    },
+    'product:enable': (_evt, payload) => svc.enable(Number(payload)),
+    // P3：批量修改（安全字段白名单），写操作日志
+    'product:bulkUpdate': (_evt, payload) => {
+      const { ids, patch } = payload as { ids: number[]; patch: Record<string, unknown> }
+      const r = svc.bulkUpdate(ids, patch)
+      const fields = Object.keys(patch).join(',')
+      auditSvc.record(
+        'product.bulk_update',
+        getCurrentUser()?.username,
+        `${r.updated} 个商品；ids=[${ids.join(',')}]；字段=${fields}`
+      )
+      return r
+    }
   })
 
   // 价格等级 + 保质期/批次效期（商品主档增强）
@@ -610,6 +658,9 @@ function initialize(): void {
     'stock:costChanges': (_evt, payload) => stockReportSvc.costChanges(payload as never),
     'stock:flows': (_evt, payload) => stockReportSvc.stockFlow(payload as never),
     'stock:warnings': (_evt, payload) => stockReportSvc.warnings(payload as never),
+    // S 级：滞销商品（复用 inventory.report 权限键）
+    'stock:unsold': (_evt, payload) =>
+      stockReportSvc.unsold((payload ?? {}) as { days?: number; warehouse_id?: number }),
     'stock:setWarning': (_evt, payload) => {
       const { product_id, min_stock } = payload as { product_id: number; min_stock: number }
       stockReportSvc.setWarning(Number(product_id), Number(min_stock))
@@ -653,7 +704,9 @@ function initialize(): void {
     purchase: 'doc.purchase', purchase_return: 'doc.purchase', sale: 'doc.sale', sale_return: 'doc.sale',
     retail: 'doc.retail', transfer: 'inventory.adjust', stocktake: 'inventory.adjust',
     assemble: 'inventory.assemble', disassemble: 'inventory.assemble', receipt: 'doc.payment',
-    payment: 'doc.payment', other_in: 'doc.payment', other_out: 'doc.payment'
+    payment: 'doc.payment', other_in: 'doc.payment', other_out: 'doc.payment',
+    // P3：内部领用出库单——归库存组权限
+    internal_use: 'inventory.adjust'
   }
   function canViewDocument(type: DocType): boolean {
     return Object.hasOwn(documentPermissions, type) && can(documentPermissions[type])
@@ -806,7 +859,70 @@ function initialize(): void {
         (payload ?? {}) as { date_from?: string; date_to?: string }
       ),
     // M 级功能：月度库存汇总表（复用 report.business 权限键）
-    'stats:monthlyStock': (_evt, payload) => monthlySvc.monthlyStockSummary((payload ?? {}) as never)
+    'stats:monthlyStock': (_evt, payload) => monthlySvc.monthlyStockSummary((payload ?? {}) as never),
+    // S 级：热销分析报表（复用 report.business 权限键）
+    'stats:hotSale': (_evt, payload) =>
+      reportSvc.hotSale(
+        (payload ?? {}) as {
+          date_from: string
+          date_to: string
+          top?: number
+          warehouse_id?: number
+        }
+      )
+  })
+
+  // P3：销售日历（复用 stats 服务与 report.business 权限键）
+  registerIpc({
+    'stats:calendarSales': (_evt, payload) =>
+      getReportService().calendarSales((payload ?? {}) as { year: number; month: number })
+  })
+
+  // P3：内部领用出库单（归库存组权限，带审计日志）
+  const internalUseSvc = createInternalUseService(getDb())
+  registerIpc({
+    'internalUse:create': (_evt, payload) => {
+      const doc = internalUseSvc.create(payload as never)
+      auditSvc.record('internalUse:create', operator(), `内部领用 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
+      return doc
+    },
+    'internalUse:getDetail': (_evt, payload) => internalUseSvc.getDetail(Number(payload)),
+    'internalUse:query': (_evt, payload) => internalUseSvc.query((payload ?? {}) as never)
+  })
+
+  // P3：进出类别字典（系统设置权限）
+  const flowCategorySvc = createFlowCategoryService(getDb())
+  registerIpc({
+    'flowCategory:list': (_evt, payload) =>
+      flowCategorySvc.list((payload ?? {}) as { kind?: 'in' | 'out'; include_disabled?: boolean }),
+    'flowCategory:create': (_evt, payload) =>
+      flowCategorySvc.create((payload ?? {}) as { name: string; kind: 'in' | 'out' }),
+    'flowCategory:update': (_evt, payload) => {
+      const { id, ...rest } = (payload ?? {}) as { id: number; name?: string; kind?: 'in' | 'out' }
+      flowCategorySvc.update(Number(id), rest)
+    },
+    'flowCategory:remove': (_evt, payload) => flowCategorySvc.remove(Number(payload)),
+    'flowCategory:disable': (_evt, payload) => flowCategorySvc.disable(Number(payload)),
+    'flowCategory:enable': (_evt, payload) => flowCategorySvc.enable(Number(payload))
+  })
+
+  // P3：商品图片（≤3 张，目录由 main 注入，服务层不 import electron）
+  const productImageSvc = createProductImageService(
+    getDb(),
+    join(app.getPath('userData'), 'product-images')
+  )
+  registerIpc({
+    'productImage:save': (_evt, payload) =>
+      productImageSvc.save((payload ?? {}) as { product_id: number; file_name: string; data: string }),
+    'productImage:remove': (_evt, payload) => {
+      const { product_id, stored_name } = (payload ?? {}) as { product_id: number; stored_name: string }
+      productImageSvc.remove(Number(product_id), String(stored_name))
+    },
+    'productImage:list': (_evt, payload) =>
+      productImageSvc.list(Number((payload as { product_id: number } | undefined)?.product_id)),
+    // 渲染层预览用：按相对文件名读回 {mime, data(base64)}
+    'productImage:read': (_evt, payload) =>
+      productImageSvc.read(String((payload as { stored_name: string } | undefined)?.stored_name))
   })
 
   // M 级功能：单据图片附件（离线拍照留证）。attachmentsDir 由 main 注入，服务层不 import electron。
@@ -937,8 +1053,8 @@ function initialize(): void {
       return file
     },
     'csv:importProducts': (_evt, payload) => {
-      const { fileContent } = payload as { fileContent: string }
-      return csvIpc.importProducts(String(fileContent))
+      const { fileContent, mode } = payload as { fileContent: string; mode?: 'skip' | 'update' }
+      return csvIpc.importProducts(String(fileContent), mode === 'skip' ? 'skip' : 'update')
     },
     'csv:previewProducts': (_evt, payload) => {
       const { fileContent } = payload as { fileContent: string }

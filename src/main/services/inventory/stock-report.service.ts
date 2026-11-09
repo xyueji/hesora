@@ -21,7 +21,8 @@ import type {
   WarningQuery,
   WarningRow,
   PurchaseSuggestion,
-  PurchaseSuggestionQuery
+  PurchaseSuggestionQuery,
+  UnsoldRow
 } from '../../../shared/types/stock-report'
 
 export type DB = Database
@@ -72,6 +73,9 @@ interface RawWarningRow {
   base_unit: string
   qty: number
   min_stock: number
+  max_stock: number | null
+  diff: number
+  warn_kind: 'low' | 'over'
 }
 
 /** 变动来源中文名（单据类来源见 DOC_TYPE_LABELS，其余见 COST_SOURCE_LABELS） */
@@ -445,28 +449,57 @@ export function createStockReportService(db: DB) {
       GROUP BY product_id
     `
     if (query.warehouse_id !== undefined) params['warehouse_id'] = query.warehouse_id
-    const baseSql = `
+    const whereSql = where.join(' AND ')
+    // P3：缺货/低于预警值分支（warn_kind='low'）
+    const lowSql = `
+      SELECT
+        p.id AS product_id,
+        p.code,
+        p.name,
+        COALESCE(p.spec, '') AS spec,
+        p.base_unit,
+        COALESCE(s.qty, 0) AS qty,
+        COALESCE(p.min_stock, 0) AS min_stock,
+        p.max_stock AS max_stock,
+        COALESCE(p.min_stock, 0) - COALESCE(s.qty, 0) AS diff,
+        'low' AS warn_kind
       FROM product p
       LEFT JOIN (${stockSql}) s ON s.product_id = p.id
-      WHERE ${where.join(' AND ')}
+      WHERE ${whereSql}
         AND COALESCE(s.qty, 0) <= COALESCE(p.min_stock, 0)
         AND (p.min_stock IS NOT NULL OR s.qty IS NOT NULL)
     `
+    // P3：超储分支（warn_kind='over'）
+    const overSql = `
+      SELECT
+        p.id AS product_id,
+        p.code,
+        p.name,
+        COALESCE(p.spec, '') AS spec,
+        p.base_unit,
+        s.qty AS qty,
+        COALESCE(p.min_stock, 0) AS min_stock,
+        p.max_stock AS max_stock,
+        s.qty - p.max_stock AS diff,
+        'over' AS warn_kind
+      FROM product p
+      JOIN (${stockSql}) s ON s.product_id = p.id
+      WHERE ${whereSql}
+        AND p.max_stock IS NOT NULL
+        AND s.qty > p.max_stock
+    `
+    const unionSql = `
+      SELECT * FROM (${lowSql})
+      UNION ALL
+      SELECT * FROM (${overSql})
+    `
     const total = Number(
-      (db.prepare(`SELECT COUNT(*) AS c ${baseSql}`).get(params) as { c: number }).c
+      (db.prepare(`SELECT COUNT(*) AS c FROM (${unionSql})`).get(params) as { c: number }).c
     )
     const rows = db
       .prepare(
-        `SELECT
-           p.id AS product_id,
-           p.code,
-           p.name,
-           COALESCE(p.spec, '') AS spec,
-           p.base_unit,
-           COALESCE(s.qty, 0) AS qty,
-           COALESCE(p.min_stock, 0) AS min_stock
-         ${baseSql}
-         ORDER BY p.code
+        `SELECT * FROM (${unionSql})
+         ORDER BY code
          LIMIT @limit OFFSET @offset`
       )
       .all({ ...params, limit: pageSize, offset: (page - 1) * pageSize }) as RawWarningRow[]
@@ -474,9 +507,9 @@ export function createStockReportService(db: DB) {
       .prepare(
         `SELECT
            COUNT(*) AS count,
-           COALESCE(SUM(COALESCE(s.qty, 0)), 0) AS qty,
-           COALESCE(SUM(COALESCE(p.min_stock, 0) - COALESCE(s.qty, 0)), 0) AS diff
-         ${baseSql}`
+           COALESCE(SUM(qty), 0) AS qty,
+           COALESCE(SUM(diff), 0) AS diff
+         FROM (${unionSql})`
       )
       .get(params) as { count: number; qty: number; diff: number }
 
@@ -488,8 +521,10 @@ export function createStockReportService(db: DB) {
       base_unit: r.base_unit,
       qty: r.qty,
       min_stock: r.min_stock,
-      diff: r.min_stock - r.qty,
-      status: r.qty <= 0 ? '缺货' : '低于预警值'
+      max_stock: r.max_stock,
+      diff: r.diff,
+      status: r.warn_kind === 'over' ? '超储' : r.qty <= 0 ? '缺货' : '低于预警值',
+      warn_kind: r.warn_kind
     }))
 
     return {
@@ -665,6 +700,63 @@ export function createStockReportService(db: DB) {
     }))
   }
 
+  /**
+   * S 级：滞销商品——有库存（inventory.qty > 0）但近 N 天无销售出库的商品。
+   * 口径：cost_log 无 change_qty < 0 且来源单据 type IN ('sale','retail') 的记录（source 字段
+   * 存的就是单据类型，见 costChanges 的来源映射），以 cost_log.created_at 与当前时间比较天数。
+   */
+  function unsold(query: { days?: number; warehouse_id?: number } = {}): UnsoldRow[] {
+    const days = Math.trunc(Number(query.days))
+    if (!Number.isFinite(days) || days < 1 || days > 3650) {
+      throw new BizError('VALIDATION', '滞销天数须在 1-3650 之间')
+    }
+    const wid = query.warehouse_id
+    if (wid !== undefined && !Number.isInteger(Number(wid))) {
+      throw new BizError('VALIDATION', '仓库参数无效')
+    }
+    const stockSql = `
+      SELECT product_id, SUM(qty) AS qty
+      FROM inventory
+      WHERE qty > 0 ${wid !== undefined ? 'AND warehouse_id = @warehouse_id' : ''}
+      GROUP BY product_id`
+    const soldSql = `
+      SELECT cl.product_id, MAX(cl.created_at) AS last_out
+      FROM cost_log cl
+      JOIN doc d ON d.id = cl.source_id AND d.type = cl.source
+      WHERE cl.change_qty < 0 AND d.type IN ('sale','retail')
+        AND cl.created_at >= datetime('now','localtime','-${days} days')
+        ${wid !== undefined ? 'AND cl.warehouse_id = @warehouse_id' : ''}
+      GROUP BY cl.product_id`
+    const rows = db
+      .prepare(
+        `SELECT p.id AS product_id, p.code, p.name, COALESCE(p.spec, '') AS spec, p.base_unit,
+           s.qty AS qty, u.last_out
+         FROM (${stockSql}) s
+         JOIN product p ON p.id = s.product_id AND p.disabled = 0
+         LEFT JOIN (${soldSql}) u ON u.product_id = p.id
+         WHERE u.product_id IS NULL
+         ORDER BY p.code`
+      )
+      .all(wid !== undefined ? { warehouse_id: Number(wid) } : {}) as Array<{
+      product_id: number
+      code: string
+      name: string
+      spec: string
+      base_unit: string
+      qty: number
+      last_out: string | null
+    }>
+    return rows.map((r) => ({
+      product_id: r.product_id,
+      code: r.code,
+      name: r.name,
+      spec: r.spec,
+      base_unit: r.base_unit,
+      qty: r.qty,
+      last_out: r.last_out
+    }))
+  }
+
   return {
     statisticsDetail,
     costChanges,
@@ -673,7 +765,8 @@ export function createStockReportService(db: DB) {
     setWarning,
     setWarningsByCondition,
     adjustPrices,
-    purchaseSuggestions
+    purchaseSuggestions,
+    unsold
   }
 }
 

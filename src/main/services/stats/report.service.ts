@@ -193,5 +193,75 @@ export function createReportService(db: Database) {
     }>
   }
 
-  return { query, exportCsv, operatorPerformance, fundSummaryByCategory }
+  /**
+   * P3：销售日历——按日聚合销售额（口径 sale+retail，status='done'）。
+   * 返回该月每日 {date, count, amount}，仅含有单据的日期。
+   */
+  function calendarSales(query: { year: number; month: number }): Array<{
+    date: string
+    count: number
+    amount: number
+  }> {
+    const year = Math.trunc(Number(query?.year))
+    const month = Math.trunc(Number(query?.month))
+    if (!Number.isInteger(year) || year < 1 || year > 9999 || !Number.isInteger(month) || month < 1 || month > 12) {
+      throw new BizError('VALIDATION', '请选择有效的年月')
+    }
+    const mm = String(month).padStart(2, '0')
+    return db
+      .prepare(
+        `SELECT d.date, COUNT(*) AS count, COALESCE(SUM(d.total_amount), 0) AS amount
+         FROM doc d
+         WHERE d.status = 'done' AND d.type IN ('sale','retail') AND d.date LIKE @pattern
+         GROUP BY d.date ORDER BY d.date`
+      )
+      .all({ pattern: `${year}-${mm}-%` }) as Array<{ date: string; count: number; amount: number }>
+  }
+
+  /**
+   * S 级：热销商品榜——按销售数量排序的商品榜。
+   * 口径说明（对冲选择）：doc type IN ('sale','retail') 且 status='done'，doc_item 汇总；
+   * 仅统计正向销售单，销售退货单（sale_return）**不冲减**——与参考系统 /report/hot-sale 的
+   * 正向口径一致（榜单反映"卖出了多少"，退货量另见 sales 报表的 returns 列）。
+   * 返回 [{product_id, code, name, sale_qty, sale_amount}]，按 sale_qty 降序取前 top 条。
+   */
+  function hotSale(query: {
+    date_from?: string
+    date_to?: string
+    top?: number
+    warehouse_id?: number
+  }): Array<{ product_id: number; code: string; name: string; sale_qty: number; sale_amount: number }> {
+    const dateFrom = query?.date_from || '0001-01-01'
+    const dateTo = query?.date_to || '9999-12-31'
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/
+    if (!datePattern.test(dateFrom) || !datePattern.test(dateTo) || dateFrom > dateTo) {
+      throw new BizError('VALIDATION', '请选择有效的日期范围')
+    }
+    const top = Math.min(200, Math.max(1, Math.trunc(Number(query?.top) || 20)))
+    const warehouseId = query?.warehouse_id ?? null
+    return db
+      .prepare(
+        `SELECT i.product_id, p.code, p.name,
+           SUM(i.qty * i.rate) AS sale_qty,
+           SUM(i.amount) AS sale_amount
+         FROM doc d
+         JOIN doc_item i ON i.doc_id = d.id
+         JOIN product p ON p.id = i.product_id
+         WHERE d.status = 'done' AND d.type IN ('sale','retail')
+           AND d.date BETWEEN @date_from AND @date_to
+           AND (@warehouse_id IS NULL OR d.warehouse_id = @warehouse_id)
+         GROUP BY i.product_id, p.code, p.name
+         ORDER BY sale_qty DESC, p.code ASC
+         LIMIT @top`
+      )
+      .all({ date_from: dateFrom, date_to: dateTo, top, warehouse_id: warehouseId }) as Array<{
+      product_id: number
+      code: string
+      name: string
+      sale_qty: number
+      sale_amount: number
+    }>
+  }
+
+  return { query, exportCsv, operatorPerformance, fundSummaryByCategory, calendarSales, hotSale }
 }

@@ -134,6 +134,7 @@ function appendLine(p: Product): void {
     ElMessage.error('无法识别该商品，请重新查询')
     return
   }
+  if (p.id !== undefined) void refreshCostMap([p.id])
   const existing = lines.value.find((l) => l.product_id === p.id)
   if (existing) {
     existing.qty += 1
@@ -147,6 +148,29 @@ function appendLine(p: Product): void {
       price: p.retail_price
     })
   }
+}
+
+// ── S 级：售价低于成本提醒（仅 UI 提示，不阻断收银）──
+// 成本口径：product:costMap 返回的加权平均移动成本（inventory.moving_cost 按正库存加权）。
+const costMap = ref<Record<number, number>>({})
+
+async function refreshCostMap(ids: number[]): Promise<void> {
+  const need = ids.filter((id) => !(id in costMap.value))
+  if (need.length === 0) return
+  try {
+    const m = await productApi.costMap(need)
+    costMap.value = { ...costMap.value, ...m }
+  } catch {
+    /* 静默：成本获取失败不影响收银，仅少提示 */
+  }
+}
+
+/** 售价低于成本时返回提示文案（黄色行内警示），否则 null */
+function belowCostHint(line: Line): string | null {
+  const cost = costMap.value[line.product_id]
+  if (typeof cost !== 'number' || cost <= 0) return null
+  if (line.price < cost) return `低于成本价 ${cost.toFixed(2)}`
+  return null
 }
 
 function lineAmount(l: Line): number {
@@ -384,9 +408,19 @@ function fmt(n: number): string {
 }
 
 function onCashShortcut(event: KeyboardEvent): void {
-  if (event.key !== 'F2' || payVisible.value || heldVisible.value) return
-  event.preventDefault()
-  openPay()
+  if (payVisible.value) return
+  // P3：收银页快捷键（F 功能键在输入框内也触发，属预期）。
+  // F2=收款/结算；F4=取单（唤出挂单列表）；F9=挂单。
+  if (event.key === 'F2') {
+    event.preventDefault()
+    openPay()
+  } else if (event.key === 'F4') {
+    event.preventDefault()
+    void showHeldCarts()
+  } else if (event.key === 'F9') {
+    event.preventDefault()
+    if (!heldVisible.value) void holdCart()
+  }
 }
 
 onMounted(() => {
@@ -414,6 +448,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onCashShortcut))
         <el-select v-model="form.warehouse_id" size="large" class="wh-select" placeholder="仓库">
           <el-option v-for="w in warehouseOptions" :key="w.id" :label="w.name" :value="w.id as number" />
         </el-select>
+        <span class="kbd-hint">快捷键：F2 收款 · F9 挂单 · F4 取单</span>
       </div>
     </el-card>
 
@@ -426,9 +461,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onCashShortcut))
             <el-input-number v-model="row.qty" :min="1" :step="1" size="small" controls-position="right" />
           </template>
         </el-table-column>
-        <el-table-column label="单价" width="150" align="right">
+        <el-table-column label="单价" width="170" align="right">
           <template #default="{ row }">
             <el-input-number v-model="row.price" :min="0" :precision="2" :step="0.5" size="small" controls-position="right" />
+            <div v-if="belowCostHint(row)" class="below-cost-hint">{{ belowCostHint(row) }}</div>
           </template>
         </el-table-column>
         <el-table-column label="金额" width="110" align="right">
@@ -449,8 +485,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onCashShortcut))
           合计：<span class="total-num">¥{{ fmt(totalAmount) }}</span>
         </div>
         <el-button type="primary" size="large" class="pay-btn" @click="openPay">收款 (F2)</el-button>
-        <el-button :disabled="lines.length === 0" :loading="holding" @click="holdCart">挂单</el-button>
-        <el-button @click="showHeldCarts">取单</el-button>
+        <el-button :disabled="lines.length === 0" :loading="holding" @click="holdCart">挂单 (F9)</el-button>
+        <el-button @click="showHeldCarts">取单 (F4)</el-button>
         <el-button size="large" :disabled="lastReceiptDocId === null" :loading="printingReceipt" @click="reprintReceipt">打印小票</el-button>
       </div>
     </el-card>
@@ -561,6 +597,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onCashShortcut))
 .wh-select {
   width: 180px;
 }
+.kbd-hint {
+  align-self: center;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
 .table-card {
   flex: 1;
   overflow: hidden;
@@ -618,5 +660,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onCashShortcut))
 .pay-lines-sum {
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+/* S 级：售价低于成本的行内黄色警示（仅提示，不阻断收银） */
+.below-cost-hint {
+  color: var(--el-color-warning);
+  font-size: 12px;
+  line-height: 1.4;
 }
 </style>

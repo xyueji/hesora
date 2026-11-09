@@ -24,6 +24,8 @@ interface DocDbRow {
   reversal_of: number | null
   operator: string | null
   total_amount: number
+  /** 让利闭环：整单优惠（070 起，旧库/未选列时缺省 0） */
+  preferential_amount?: number
   remark: string | null
   status: string
   created_at: string
@@ -69,6 +71,8 @@ function toDocRow(row: DocDbRow): DocRow {
     review_at: (row as { review_at?: string | null }).review_at ?? null,
     review_remark: (row as { review_remark?: string | null }).review_remark ?? null,
     total_amount: row.total_amount,
+    // 让利闭环：整单优惠（070 起，旧库/未选列时缺省 0）
+    preferential_amount: (row as { preferential_amount?: number }).preferential_amount ?? 0,
     remark: row.remark,
     status: row.status as DocRow['status'],
     created_at: row.created_at,
@@ -82,8 +86,8 @@ export function createDocService(db: DB) {
     VALUES (@no, @type, @date, @partner_id, @warehouse_id, @warehouse_in_id, @account_id, @total_amount, @remark, @source_doc_id, @operator, @external_no, @invoice_status, @express_com, @express_no, @delivery_status)
   `)
   const insertItem = db.prepare(`
-    INSERT INTO doc_item (doc_id, product_id, warehouse_id, batch_no, unit, rate, qty, price, amount)
-    VALUES (@doc_id, @product_id, @warehouse_id, @batch_no, @unit, @rate, @qty, @price, @amount)
+    INSERT INTO doc_item (doc_id, product_id, warehouse_id, batch_no, unit, rate, qty, price, amount, commission_rate)
+    VALUES (@doc_id, @product_id, @warehouse_id, @batch_no, @unit, @rate, @qty, @price, @amount, @commission_rate)
   `)
 
   // 读取可配置单号前缀（app_setting 键 doc.no_prefix，JSON {type: prefix}），缺省用内置值
@@ -203,6 +207,12 @@ export function createDocService(db: DB) {
         if (price < 0 || !Number.isFinite(amount)) {
           throw new BizError('VALIDATION', '明细单价或金额无效')
         }
+        const commissionRate = it.commission_rate === undefined || it.commission_rate === null
+          ? 0
+          : Number(it.commission_rate)
+        if (!Number.isFinite(commissionRate) || commissionRate < 0) {
+          throw new BizError('VALIDATION', '明细提成率无效')
+        }
         return {
           product_id: it.product_id,
           warehouse_id: it.warehouse_id ?? null,
@@ -211,7 +221,8 @@ export function createDocService(db: DB) {
           rate,
           qty,
           price,
-          amount
+          amount,
+          commission_rate: commissionRate
         }
       })
       const totalAmount = lines.reduce((sum, l) => sum + l.amount, 0)

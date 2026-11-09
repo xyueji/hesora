@@ -61,6 +61,13 @@ const routes: RouteRecordRaw[] = [
   { path: '/stats/business', name: 'stats-business', component: () => import('./views/stats/BusinessReportView.vue'), meta: { title: '经营报表' } },
   { path: '/stats/operator', name: 'stats-operator', component: () => import('./views/stats/OperatorPerformanceView.vue'), meta: { title: '员工业绩' } },
   { path: '/stats/monthly', name: 'stats-monthly', component: () => import('./views/stats/MonthlyStockView.vue'), meta: { title: '月度库存汇总' } },
+  { path: '/stats/hotsale', name: 'stats-hotsale', component: () => import('./views/stats/HotSaleView.vue'), meta: { title: '热销榜' } },
+  { path: '/stats/calendar', name: 'stats-calendar', component: () => import('./views/stats/CalendarView.vue'), meta: { title: '销售日历' } },
+  // P3：内部领用出库单
+  { path: '/inventory/internal-use', name: 'internal-use-list', component: () => import('./views/inventory/InternalUseListView.vue'), meta: { title: '内部领用单列表' } },
+  { path: '/inventory/internal-use/new', name: 'internal-use-new', component: () => import('./views/inventory/InternalUseEditView.vue'), meta: { title: '开内部领用单' } },
+  // P3：进出类别字典
+  { path: '/setting/flow-categories', name: 'setting-flow-categories', component: () => import('./views/setting/FlowCategoryListView.vue'), meta: { title: '进出类别' } },
   { path: '/doc/search', name: 'doc-search', component: () => import('./views/doc/DocSearchView.vue'), meta: { title: '单据查询' } },
   { path: '/opening', name: 'opening', component: () => import('./views/opening/OpeningView.vue'), meta: { title: '期初建账' } },
   { path: '/setting', name: 'setting', component: () => import('./views/setting/SettingView.vue'), meta: { title: '设置' } },
@@ -97,7 +104,8 @@ router.beforeEach(async (to) => {
     try {
       const { licenseApi } = await import('./api/license')
       const s = await licenseApi.check()
-      if (s.mode === 'trial' && s.daysLeft !== undefined && s.daysLeft <= 0) {
+      // 新试用策略：expired（试用+延期均用尽且未激活）→ 只读模式，强制进入激活页
+      if (s.phase === 'expired') {
         return { path: '/activate' }
       }
     } catch {

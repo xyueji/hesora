@@ -110,7 +110,9 @@ const groups: MenuGroup[] = [
       { path: '/stocktake/edit', label: '开盘点单', perm: 'inventory.adjust' },
       { path: '/stocktake/list', label: '盘点单列表', perm: 'inventory.adjust' },
       { path: '/assemble/edit', label: '开组装拆卸单', perm: 'inventory.assemble' },
-      { path: '/assemble/list', label: '组装拆卸单列表', perm: 'inventory.assemble' }
+      { path: '/assemble/list', label: '组装拆卸单列表', perm: 'inventory.assemble' },
+      { path: '/inventory/internal-use/new', label: '开内部领用单', perm: 'inventory.adjust' },
+      { path: '/inventory/internal-use', label: '内部领用单列表', perm: 'inventory.adjust' }
     ]
   },
   {
@@ -121,6 +123,8 @@ const groups: MenuGroup[] = [
       { path: '/stats/business', label: '经营报表', perm: 'report.business' },
       { path: '/stats/operator', label: '员工业绩', perm: 'report.business' },
       { path: '/stats/monthly', label: '月度库存汇总', perm: 'report.business' },
+      { path: '/stats/hotsale', label: '热销榜', perm: 'report.business' },
+      { path: '/stats/calendar', label: '销售日历', perm: 'report.business' },
       { path: '/stats/statement', label: '客商对账单', perm: 'report.arrears' },
       { path: '/stats/aging', label: '账龄分析', perm: 'report.arrears' },
       { path: '/doc/search', label: '单据查询', perm: 'report.docSearch' }
@@ -133,6 +137,7 @@ const groups: MenuGroup[] = [
       { path: '/opening', label: '期初建账', perm: 'opening.edit' },
       { path: '/setting', label: '设置', perm: 'system.setting' },
       { path: '/setting/categories', label: '收支科目', perm: 'system.setting' },
+      { path: '/setting/flow-categories', label: '进出类别', perm: 'system.setting' },
       { path: '/setting/print-templates', label: '打印模板', perm: 'system.setting' },
       { path: '/system/users', label: '用户管理', perm: 'system.user' },
       { path: '/system/roles', label: '角色权限', perm: 'system.role' },

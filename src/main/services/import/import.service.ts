@@ -17,6 +17,8 @@ export interface ImportError {
 export interface ImportResult {
   created: number
   updated: number
+  /** mode='skip' 时编码已存在被跳过的行数（'update' 恒为 0） */
+  skipped: number
   errors: ImportError[]
 }
 
@@ -98,9 +100,17 @@ export function createImportService(db: DB) {
     return result
   }
 
-  function importProducts(csvText: string): ImportResult {
+  /**
+   * S 级：商品导入——逐行独立处理（成功行入库，失败行收集到 errors，不整体失败）。
+   * mode（更新策略，按商品编码判断存在）：
+   *  - 'update'（默认，兼容既有行为）：覆盖名称/单位/价格/追踪方式/条码等可变字段（编码永不覆盖；
+   *    规格/类别/最低库存仅在有值时覆盖，空列不抹掉已有数据）。
+   *  - 'skip'：编码已存在时跳过该行（计 updated? 不，计 skipped→仍记为 updated 计数外的跳过行，
+   *    返回 errors 不含跳过行；跳过行计入 updated 之外，此处以 result.skipped 体现）。
+   */
+  function importProducts(csvText: string, mode: 'skip' | 'update' = 'update'): ImportResult {
     const rows = parseCsv(csvText)
-    const result: ImportResult = { created: 0, updated: 0, errors: [] }
+    const result: ImportResult & { skipped: number } = { created: 0, updated: 0, skipped: 0, errors: [] }
     for (let i = 1; i < rows.length; i++) {
       const rowNo = i + 1 // 数据行从第 2 行开始
       const cols = rows[i] ?? []
@@ -133,6 +143,10 @@ export function createImportService(db: DB) {
         const existing = db
           .prepare('SELECT id FROM product WHERE code = ?')
           .get(code) as { id: number } | undefined
+        if (existing && mode === 'skip') {
+          result.skipped++
+          continue
+        }
         // 规格/类别/最低库存仅在有值时覆盖（CSV 空列不抹掉已有数据）
         const extras: Partial<Product> = {}
         if (spec !== '') extras.spec = spec
@@ -200,7 +214,7 @@ export function createImportService(db: DB) {
 
   function importOpeningStock(csvText: string, warehouseId: number): ImportResult {
     const { lines, errors } = previewOpeningStock(csvText)
-    const result: ImportResult = { created: 0, updated: 0, errors }
+    const result: ImportResult = { created: 0, updated: 0, skipped: 0, errors }
     if (lines.length === 0) return result
     try {
       inventoryService.applyChanges(

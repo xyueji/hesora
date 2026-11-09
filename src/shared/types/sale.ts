@@ -9,6 +9,8 @@ export interface SaleItemInput extends TrackingItemInput {
   qty: number
   /** 单价：可省略，服务层未传时按 客户专属价>等级价>零售价 兜底解析 */
   price?: number
+  /** P3：提成率（%，下单时从商品带出、可改） */
+  commission_rate?: number
 }
 
 export interface SaleCreateInput {
@@ -20,6 +22,8 @@ export interface SaleCreateInput {
   operator?: string
   /** P1 功能 #2 预存款抵扣：从 customer.prepaid 扣减的金额（需 ≤ 预存款余额；散客不可用） */
   prepaid_amount?: number
+  /** 让利闭环：整单优惠（立减）金额，≥0 且 < 商品合计；total_amount = 商品合计 − preferential_amount */
+  preferential_amount?: number
   // ── S 级功能批次 B ──
   /** [3] 外部订单号 */
   external_no?: string

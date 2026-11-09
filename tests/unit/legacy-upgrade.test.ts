@@ -62,6 +62,13 @@ it('upgrades a version 21 account and safely restores the original snapshot with
   // P2 功能 #6 商品自定义属性：product.attributes（迁移 051），legacy 库同样补齐（幂等）
   const productCols = (db.prepare('PRAGMA table_info(product)').all() as Array<{ name: string }>).map((c) => c.name)
   if (!productCols.includes('attributes')) db.exec('ALTER TABLE product ADD COLUMN attributes TEXT')
+  // P3 功能：product.max_stock/shelf_no（迁移 060），legacy 库同样补齐（幂等）
+  if (!productCols.includes('max_stock')) db.exec('ALTER TABLE product ADD COLUMN max_stock REAL')
+  if (!productCols.includes('shelf_no')) db.exec('ALTER TABLE product ADD COLUMN shelf_no TEXT')
+  // P3 功能（并行）：product.commission_rate（迁移 061），legacy 库同样补齐（幂等）
+  if (!productCols.includes('commission_rate')) db.exec('ALTER TABLE product ADD COLUMN commission_rate REAL NOT NULL DEFAULT 0')
+  const docItemCols = (db.prepare('PRAGMA table_info(doc_item)').all() as Array<{ name: string }>).map((c) => c.name)
+  if (!docItemCols.includes('commission_rate')) db.exec('ALTER TABLE doc_item ADD COLUMN commission_rate REAL NOT NULL DEFAULT 0')
   const owner = createUserService(db).setupAdmin('旧账管理员', 'legacy-owner-password')
   db.prepare("INSERT INTO app_setting VALUES ('shop.name', '老店'), ('license.install_id', 'legacy-device')").run()
   const customer = createCustomerService(db).create({ code: 'C18', name: '旧客户', opening_receivable: 5 })
@@ -90,7 +97,9 @@ it('upgrades a version 21 account and safely restores the original snapshot with
   for (const [table, col] of [
     ['customer', 'email'], ['customer', 'category'],
     ['doc', 'external_no'], ['doc', 'invoice_status'], ['doc', 'express_com'], ['doc', 'express_no'], ['doc', 'delivery_status'],
-    ['doc', 'prepaid_amount'], ['doc', 'charge_type'], ['product', 'attributes']
+    ['doc', 'prepaid_amount'], ['doc', 'charge_type'], ['product', 'attributes'],
+    ['product', 'max_stock'], ['product', 'shelf_no'], ['product', 'commission_rate'],
+    ['doc_item', 'commission_rate']
   ] as Array<[string, string]>) {
     db.exec(`ALTER TABLE ${table} DROP COLUMN ${col}`)
   }

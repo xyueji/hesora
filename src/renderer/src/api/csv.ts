@@ -6,6 +6,8 @@ import type { ReportQuery } from '../../../shared/types/report'
 export interface ImportResult {
   created: number
   updated: number
+  /** mode='skip' 时编码已存在被跳过的行数（'update' 恒为 0） */
+  skipped: number
   errors: Array<{ row: number; message: string }>
 }
 
@@ -55,8 +57,8 @@ export const csvApi = {
   /** 导出 CSV：弹出保存对话框，返回保存路径；用户取消时抛"已取消导出"。 */
   export: (kind: CsvExportKind, params?: CsvExportParams) =>
     call<string>('csv:export', { kind, params: params ?? {} }),
-  importProducts: (fileContent: string) =>
-    call<ImportResult>('csv:importProducts', { fileContent }),
+  importProducts: (fileContent: string, mode: 'skip' | 'update' = 'update') =>
+    call<ImportResult>('csv:importProducts', { fileContent, mode }),
   previewProducts: (fileContent: string) =>
     call<ProductPreview>('csv:previewProducts', { fileContent }),
   importOpeningStock: (fileContent: string, warehouseId: number) =>

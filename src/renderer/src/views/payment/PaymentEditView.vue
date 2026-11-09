@@ -40,17 +40,26 @@ const accountOptions = ref<FundAccount[]>([])
 const partnerOptions = ref<Array<Customer | Supplier>>([])
 const openBills = ref<SettlementDocument[]>([])
 const assigned = ref<Record<number, number | undefined>>({})
+// 让利闭环：核销行优惠金额（核销金额 + 优惠 = 本次销账金额）
+const assignedPref = ref<Record<number, number | undefined>>({})
 const split = ref(false)
 const legs = ref<{ account_id?: number; amount?: number }[]>([])
 const loadingBills = ref(false)
 let billRequest = 0
-const totalAllocated = computed(() => Object.values(assigned.value).reduce<number>((sum, value) => sum + Math.round((value ?? 0) * 100), 0) / 100)
+const totalAllocated = computed(() => {
+  const rows = Object.entries(assigned.value)
+  return rows.reduce<number>((sum, [docId, value]) => {
+    const pref = assignedPref.value[Number(docId)] ?? 0
+    return sum + Math.round(((value ?? 0) + pref) * 100)
+  }, 0) / 100
+})
 const accountTotal = computed(() => legs.value.reduce((sum, row) => sum + Math.round((row.amount ?? 0) * 100), 0) / 100)
 
 async function loadOpenBills(partnerId: number | null, sourceId?: number): Promise<void> {
   const request = ++billRequest
   openBills.value = []
   assigned.value = {}
+  assignedPref.value = {}
   loadingBills.value = !!partnerId
   if (!partnerId) return
   try {
@@ -103,8 +112,17 @@ async function save(): Promise<void> {
     return
   }
   if (totalAllocated.value > form.amount) {
-    ElMessage.warning('核销合计不能超过单据金额')
+    ElMessage.warning('核销合计（含优惠）不能超过单据金额')
     return
+  }
+  // 让利闭环：单行优惠不得超过该单剩余余额
+  for (const bill of openBills.value) {
+    const pref = assignedPref.value[bill.id] ?? 0
+    const amt = assigned.value[bill.id] ?? 0
+    if (pref < 0 || amt + pref > bill.remaining) {
+      ElMessage.warning(`单据 ${bill.no} 的核销金额加优惠超出待核销余额`)
+      return
+    }
   }
   saving.value = true
   try {
@@ -114,7 +132,9 @@ async function save(): Promise<void> {
       accounts: split.value ? legs.value.map((row) => ({ account_id: row.account_id!, amount: row.amount! })) : undefined,
       allocations: openBills.value.flatMap((bill) => {
         const amount = assigned.value[bill.id]
-        return amount && amount > 0 ? [{ doc_id: bill.id, amount }] : []
+        if (!amount || amount <= 0) return []
+        const pref = assignedPref.value[bill.id]
+        return [{ doc_id: bill.id, amount, preferential: pref && pref > 0 ? pref : undefined }]
       }),
       amount: form.amount,
       date: form.date || undefined,
@@ -222,13 +242,19 @@ watch(split, (active) => {
       </section>
 
       <section v-if="form.partner_id" class="settlement-section">
-        <h4>核销明细 · 已选 ¥{{ totalAllocated.toFixed(2) }}</h4>
+        <h4>核销明细 · 已销账（含优惠）¥{{ totalAllocated.toFixed(2) }}</h4>
         <el-table v-loading="loadingBills" :data="openBills" max-height="320" empty-text="暂无待核销单据">
           <el-table-column prop="no" label="来源单号" min-width="148" />
           <el-table-column prop="date" label="业务日期" width="115" />
           <el-table-column label="待核销金额" align="right" min-width="120"><template #default="{ row }">{{ row.remaining.toFixed(2) }}</template></el-table-column>
           <el-table-column label="本次核销" align="right" width="170"><template #default="{ row }">
-            <el-input-number v-model="assigned[row.id]" :min="0" :max="row.remaining" :precision="2" :controls="false" size="small" />
+            <el-input-number v-model="assigned[row.id]" :min="0" :max="row.remaining - (assignedPref[row.id] ?? 0)" :precision="2" :controls="false" size="small" />
+          </template></el-table-column>
+          <el-table-column label="优惠" align="right" width="170"><template #default="{ row }">
+            <el-input-number v-model="assignedPref[row.id]" :min="0" :max="row.remaining - (assigned[row.id] ?? 0)" :precision="2" :controls="false" size="small" placeholder="让利" />
+          </template></el-table-column>
+          <el-table-column label="核销后剩余" align="right" min-width="110"><template #default="{ row }">
+            {{ Math.max(row.remaining - (assigned[row.id] ?? 0) - (assignedPref[row.id] ?? 0), 0).toFixed(2) }}
           </template></el-table-column>
         </el-table>
       </section>

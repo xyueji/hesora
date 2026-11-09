@@ -26,6 +26,8 @@ interface Line extends TrackingItemInput {
   batch_no: string
   qty: number | null
   price: number | null
+  /** P3：提成率%（下单时从商品带出，可改） */
+  commission_rate: number | null
   /** 用户手动改过价：客户变化时不自动覆盖 */
   priceManual: boolean
 }
@@ -46,6 +48,8 @@ const form = reactive({
   remark: '',
   // P1 功能 #2 预存款抵扣金额（≤ 客户预存款余额）
   prepaid_amount: null as number | null,
+  // 让利闭环：整单优惠（立减）金额，< 商品合计
+  preferential_amount: null as number | null,
   // ── S 级功能批次 B：[3] 外部订单号、[7] 发票状态、[9] 发货信息 ──
   external_no: '',
   invoice_status: 'none' as 'none' | 'invoiced',
@@ -60,15 +64,19 @@ const lines = ref<Line[]>([emptyLine()])
 const customerPrepaid = ref(0)
 
 function emptyLine(): Line {
-  return { product_id: null, product: null, unit: '', rate: 1, unitOptions: [], batch_no: '', qty: null, price: null, priceManual: false }
+  return { product_id: null, product: null, unit: '', rate: 1, unitOptions: [], batch_no: '', qty: null, price: null, commission_rate: null, priceManual: false }
 }
 
 const saving = ref(false)
 const canPost = computed(() => hasPermission('doc.approve'))
 const canSave = computed(() => hasPermission('doc.sale') && (canPost.value || hasPermission('doc.workflow')))
 
-const totalAmount = computed(() =>
+const grossAmount = computed(() =>
   lines.value.reduce((sum, l) => sum + lineAmount(l), 0)
+)
+// 折后合计 = 商品合计 − 整单优惠（实时显示，与后端 total_amount 口径一致）
+const totalAmount = computed(() =>
+  Math.max(0, grossAmount.value - (form.preferential_amount ?? 0))
 )
 
 async function searchCustomers(keyword: string): Promise<void> {
@@ -104,6 +112,35 @@ async function searchProducts(keyword: string): Promise<void> {
 
 const productOptions = ref<Product[]>([])
 
+// ── S 级：售价低于成本提醒（仅 UI 提示，不阻断开单）──
+// 成本口径：product:costMap 返回的加权平均移动成本（inventory.moving_cost 按正库存加权）。
+const costMap = ref<Record<number, number>>({})
+
+async function refreshCostMap(ids: number[]): Promise<void> {
+  const need = ids.filter((id) => !(id in costMap.value))
+  if (need.length === 0) return
+  try {
+    const m = await productApi.costMap(need)
+    costMap.value = { ...costMap.value, ...m }
+  } catch {
+    /* 静默：成本获取失败不影响录单，仅少提示 */
+  }
+}
+
+function costOf(productId: number | null): number | null {
+  if (productId === null) return null
+  const c = costMap.value[productId]
+  return typeof c === 'number' && c > 0 ? c : null
+}
+
+/** 售价低于成本时返回提示文案（黄色行内警示），否则 null */
+function belowCostHint(line: { product_id: number | null; price: number | null }): string | null {
+  const cost = costOf(line.product_id)
+  if (cost === null || line.price === null || line.price === undefined) return null
+  if (line.price < cost) return `低于成本价 ${cost.toFixed(2)}`
+  return null
+}
+
 function onProductSelect(line: Line): void {
   const p = productOptions.value.find((x) => x.id === line.product_id)
   line.product = p ?? null
@@ -117,11 +154,14 @@ function onProductSelect(line: Line): void {
   line.rate = 1
   // 售价默认带出零售价（选中客户后由按客户取价逻辑覆盖）
   line.priceManual = false
+  // P3：提成率从商品带出
+  line.commission_rate = p?.commission_rate ?? null
   if (!p || p.retail_price === undefined) {
     line.price = null
   } else {
     line.price = p.retail_price
   }
+  if (line.product_id !== null) void refreshCostMap([line.product_id])
 }
 
 /** 按客户取价：刷新未手动改价的行（专属价 > 等级价 > 零售价，由服务端解析） */
@@ -199,7 +239,8 @@ async function save(): Promise<void> {
       unit: l.unit || undefined,
       rate: l.rate || 1,
       qty: l.qty as number,
-      price: l.price ?? 0
+      price: l.price ?? 0,
+      commission_rate: l.commission_rate ?? 0
     }))
   if (items.length === 0) {
     ElMessage.warning('请至少录入一条商品明细')
@@ -226,6 +267,8 @@ async function save(): Promise<void> {
       date: form.date || undefined,
       remark: form.remark || undefined,
       prepaid_amount: form.prepaid_amount && form.prepaid_amount > 0 ? form.prepaid_amount : undefined,
+      preferential_amount:
+        form.preferential_amount && form.preferential_amount > 0 ? form.preferential_amount : undefined,
       // ── S 级功能批次 B：[3][7][9] ──
       external_no: form.external_no.trim() || undefined,
       invoice_status: form.invoice_status,
@@ -343,6 +386,28 @@ useDocumentScanner({ onProduct: fillScanned })
         </el-form-item>
       </el-form>
 
+      <!-- 让利闭环：整单优惠折叠区 -->
+      <el-collapse class="express-collapse">
+        <el-collapse-item title="整单优惠">
+          <el-form label-width="90px" inline>
+            <el-form-item label="整单立减">
+              <el-input-number
+                v-model="form.preferential_amount"
+                :min="0"
+                :max="grossAmount > 0 ? grossAmount : 0"
+                :precision="2"
+                :controls="false"
+                placeholder="0.00"
+                style="width: 160px"
+              />
+            </el-form-item>
+            <el-form-item label="折后合计">
+              <span class="total-amount">{{ totalAmount.toFixed(2) }}</span> 元
+            </el-form-item>
+          </el-form>
+        </el-collapse-item>
+      </el-collapse>
+
       <!-- [9] 发货信息折叠区（S 级功能批次 B） -->
       <el-collapse class="express-collapse">
         <el-collapse-item title="发货信息">
@@ -398,9 +463,15 @@ useDocumentScanner({ onProduct: fillScanned })
             <el-input-number v-model="row.qty" :min="0" :precision="2" controls-position="right" style="width: 100%" />
           </template>
         </el-table-column>
-        <el-table-column label="售价" width="130">
+        <el-table-column label="售价" width="150">
           <template #default="{ row }">
             <el-input-number v-model="row.price" :min="0" :precision="2" controls-position="right" style="width: 100%" @change="row.priceManual = true" />
+            <div v-if="belowCostHint(row)" class="below-cost-hint">{{ belowCostHint(row) }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="提成率%" width="110">
+          <template #default="{ row }">
+            <el-input-number v-model="row.commission_rate" :min="0" :max="100" :precision="2" controls-position="right" style="width: 100%" />
           </template>
         </el-table-column>
         <el-table-column label="批次号" width="120">
@@ -472,5 +543,11 @@ useDocumentScanner({ onProduct: fillScanned })
   font-size: 18px;
   font-weight: 600;
   color: var(--el-color-danger);
+}
+/* S 级：售价低于成本的行内黄色警示（仅提示，不阻断开单） */
+.below-cost-hint {
+  color: var(--el-color-warning);
+  font-size: 12px;
+  line-height: 1.4;
 }
 </style>

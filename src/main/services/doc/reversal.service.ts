@@ -196,9 +196,10 @@ export function createReversalService(db: DB) {
     if (!isFund && items.length === 0) {
       throw new BizError('VALIDATION', '原单没有明细，无法红冲')
     }
-    const totalAmount = isFund
-      ? -(db.prepare('SELECT total_amount FROM doc WHERE id = ?').get(id) as { total_amount: number }).total_amount
-      : items.reduce((sum, it) => sum + it.amount, 0)
+    // 让利闭环：非资金类红冲单也按 -(原单 total_amount) 对称冲减（total_amount 已含整单优惠口径，
+    // 明细合计不含优惠——若用明细合计，带优惠原单的红冲金额会偏大、往来余额失衡）
+    const totalAmount =
+      -1 * (db.prepare('SELECT total_amount FROM doc WHERE id = ?').get(id) as { total_amount: number }).total_amount
 
     let reversalId = 0
     db.transaction(() => {

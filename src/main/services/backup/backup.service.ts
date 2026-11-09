@@ -111,8 +111,11 @@ export function createBackupService(
       const copy = new Database(staged, { fileMustExist: true })
       try {
         copy.pragma('trusted_schema = OFF')
-        copy.pragma('foreign_keys = ON')
+        // 061 等重建表型迁移（DROP TABLE doc）要求运行时 foreign_keys=OFF
+        //（见 061 注释"此文件运行时 foreign_keys 已由调用方关闭"），迁移完再恢复校验。
+        copy.pragma('foreign_keys = OFF')
         migrateRestore?.(copy)
+        copy.pragma('foreign_keys = ON')
         if (Number(copy.pragma('user_version', { simple: true })) !== originalVersion) {
           throw new Error('snapshot migrations incomplete')
         }

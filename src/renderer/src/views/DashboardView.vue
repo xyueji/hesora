@@ -1,9 +1,82 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { dashboardApi, type DashboardSummary, type DashboardTrendRow, type ReminderItem, type TodayBrief } from '../api/dashboard'
+import { licenseApi, type LicenseStatus } from '../api/license'
 
 const $router = useRouter()
+
+// 试用引导条：第 1-2 天 onboarding、第 3-4 天价值提示、第 5 天起剩余提醒+延期入口
+const licenseStatus = ref<LicenseStatus | null>(null)
+const extendingTrial = ref(false)
+const TRIAL_BANNER_DISMISS_KEY = 'trial_banner_dismissed_v1'
+
+const trialBanner = computed(() => {
+  const s = licenseStatus.value
+  if (!s || s.mode === 'licensed') return null
+  const daysLeft = s.daysLeft ?? 0
+  const elapsed = 14 - daysLeft // trial:7 / extended:14 总长
+  if (s.phase === 'expired') {
+    return { type: 'error' as const, title: '试用期已结束（只读模式）', text: '业务单据已暂停新增与修改，查看、导出与备份不受影响。请购买激活恢复全部功能。', cta: '立即激活' as const }
+  }
+  if (s.phase === 'extended' && daysLeft <= 7) {
+    return { type: 'warning' as const, title: `延期试用剩余 ${daysLeft} 天`, text: '延期结束后将进入只读模式，请及时购买激活。', cta: '立即激活' as const }
+  }
+  if (elapsed < 2) {
+    return { type: 'info' as const, title: '欢迎体验禾序进销存（7 天全功能试用）', text: '已为您准备好演示数据：试着一开销售单，看看库存和流水如何自动联动。', cta: '完成第一笔销售' as const }
+  }
+  if (elapsed < 4) {
+    return { type: 'info' as const, title: '小技巧：让数据为你打工', text: '库存预警帮你盯紧断货风险，销售统计帮你看清哪款最好卖。', cta: '查看库存预警' as const }
+  }
+  return { type: 'warning' as const, title: `试用剩余 ${daysLeft} 天`, text: '可免费延长 7 天（仅一次），或直接购买激活。', cta: '延期 / 激活' as const }
+})
+
+async function loadTrialStatus(): Promise<void> {
+  try {
+    licenseStatus.value = await licenseApi.check()
+  } catch {
+    licenseStatus.value = null
+  }
+}
+
+function onTrialCta(): void {
+  const s = licenseStatus.value
+  if (!s) return
+  if (s.phase === 'expired' || (s.phase === 'extended' && (s.daysLeft ?? 0) <= 7)) {
+    void $router.push('/activate')
+    return
+  }
+  const elapsed = 14 - (s.daysLeft ?? 0)
+  if (elapsed < 2) {
+    void $router.push('/sale/edit')
+  } else if (elapsed < 4) {
+    void $router.push('/inventory/warning')
+  } else {
+    void onExtendTrial()
+  }
+}
+
+async function onExtendTrial(): Promise<void> {
+  extendingTrial.value = true
+  try {
+    licenseStatus.value = await licenseApi.extendTrial()
+    ElMessage.success('已延长试用 7 天，全部功能继续可用')
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : String(e))
+  } finally {
+    extendingTrial.value = false
+  }
+}
+
+function dismissTrialBanner(): void {
+  licenseStatus.value = null
+  try {
+    localStorage.setItem(TRIAL_BANNER_DISMISS_KEY, '1')
+  } catch {
+    /* 忽略 */
+  }
+}
 
 const summary = ref<DashboardSummary | null>(null)
 const trend = ref<DashboardTrendRow[]>([])
@@ -70,13 +143,28 @@ function goReminder(type: ReminderItem['type']): void {
   void $router.push(reminderMeta[type].route)
 }
 
-onMounted(load)
+onMounted(() => {
+  void loadTrialStatus()
+  load()
+})
 </script>
 
 <template>
   <div class="dashboard" v-loading="loading">
     <header class="dashboard-heading"><div><div class="brand-eyebrow">BUSINESS OVERVIEW</div><h1>经营概况</h1><p>从每一笔记录，看清今天的生意。</p></div><el-button :loading="loading" @click="load">刷新数据</el-button></header>
     <el-alert v-if="errMsg" type="error" :title="errMsg" show-icon :closable="false" />
+    <!-- 试用引导条：第 1 天 onboarding / 第 3 天价值提示 / 第 5 天剩余提醒+延期 / expired 只读提示 -->
+    <el-alert
+      v-if="trialBanner"
+      :type="trialBanner.type"
+      :title="trialBanner.title"
+      show-icon
+      :closable="trialBanner.type !== 'error'"
+      @close="dismissTrialBanner"
+    >
+      <span>{{ trialBanner.text }}</span>
+      <el-button size="small" type="primary" link :loading="extendingTrial" @click="onTrialCta">{{ trialBanner.cta }}</el-button>
+    </el-alert>
     <template v-if="summary">
       <div class="card-row">
         <template v-for="c in cards" :key="c.label">

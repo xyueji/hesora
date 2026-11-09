@@ -12,6 +12,8 @@ export type DocType =
   | 'payment'
   | 'other_out'
   | 'other_in'
+  /** P3：内部领用出库单（不涉及资金与客商，成本按移动加权） */
+  | 'internal_use'
 
 /** [7] 发票状态（S 级功能批次 B） */
 export type InvoiceStatus = 'none' | 'invoiced'
@@ -27,6 +29,8 @@ export interface DocItemInput {
   rate?: number
   qty: number
   price?: number
+  /** P3：提成率（%，销售明细下单时从商品带出、可改） */
+  commission_rate?: number
 }
 
 export interface DocCreateInput {
@@ -65,6 +69,8 @@ export interface DocItemRow {
   qty: number
   price: number
   amount: number
+  /** P3：提成率（%，仅销售类明细有值） */
+  commission_rate?: number
   serial_numbers?: string[]
 }
 
@@ -104,6 +110,8 @@ export interface DocRow {
   /** 盘点复盘备注 */
   review_remark?: string | null
   total_amount: number
+  /** 让利闭环：整单优惠（整单立减 + 开单抹零差额）。total_amount = 商品合计（折扣后）− preferential_amount */
+  preferential_amount?: number
   remark: string | null
   status: 'done'
   created_at: string
@@ -149,7 +157,8 @@ export const DOC_NO_PREFIX: Record<DocType, string> = {
   receipt: 'SK',
   payment: 'FK',
   other_out: 'QT',
-  other_in: 'QR'
+  other_in: 'QR',
+  internal_use: 'NL'
 }
 
 /** 单据类型中文名（单据查询中心等通用界面使用） */
@@ -166,7 +175,8 @@ export const DOC_TYPE_LABELS: Record<DocType, string> = {
   receipt: '收款单',
   payment: '付款单',
   other_out: '其他支出',
-  other_in: '其他收入'
+  other_in: '其他收入',
+  internal_use: '内部领用单'
 }
 
 /** 支持 A4 打印的单据类型（与 print.service 的 A4_TITLES 一致） */

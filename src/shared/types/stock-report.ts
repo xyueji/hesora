@@ -196,7 +196,7 @@ export interface WarningQuery {
   pageSize: number
 }
 
-export type WarningStatus = '缺货' | '低于预警值'
+export type WarningStatus = '缺货' | '低于预警值' | '超储'
 
 export interface WarningRow {
   product_id: number
@@ -211,6 +211,10 @@ export interface WarningRow {
   /** 差额 = 预警值 - 当前数量 */
   diff: number
   status: WarningStatus
+  /** P3：安全库存上限（null 表示未设置上限） */
+  max_stock: number | null
+  /** P3：类型分组：low = 缺货/低于预警值，over = 超储 */
+  warn_kind: 'low' | 'over'
 }
 
 export interface WarningTotals {
@@ -302,4 +306,24 @@ export interface PurchaseSuggestion {
 
 export interface PurchaseSuggestionQuery {
   warehouse_id?: number
+}
+
+/* ---------------------------------- 滞销商品 ---------------------------------- */
+
+/** 滞销商品查询参数：days = 近 N 天无销售出库（默认 30） */
+export interface UnsoldQuery {
+  days?: number
+  warehouse_id?: number
+}
+
+/** 滞销商品行：有库存（inventory.qty > 0）但近 N 天无 sale/retail 出库 */
+export interface UnsoldRow {
+  product_id: number
+  code: string
+  name: string
+  spec: string
+  base_unit: string
+  qty: number
+  /** 最近一次销售出库时间（口径内为 null = N 天内无出库） */
+  last_out: string | null
 }

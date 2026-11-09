@@ -76,3 +76,29 @@ export const monthlyStockApi = {
   query: (query: { year: number; warehouse_id?: number; product_id?: number }) =>
     call<MonthlyStockRow[]>('stats:monthlyStock', query)
 }
+
+// ── P3：销售日历 ──
+export interface CalendarSalesDay {
+  date: string
+  count: number
+  amount: number
+}
+
+export const calendarSalesApi = {
+  query: (query: { year: number; month: number }) =>
+    call<CalendarSalesDay[]>('stats:calendarSales', query)
+}
+
+// ── S 级功能：热销分析报表 ──
+export interface HotSaleRow {
+  product_id: number
+  code: string
+  name: string
+  sale_qty: number
+  sale_amount: number
+}
+
+export const hotSaleApi = {
+  query: (query: { date_from: string; date_to: string; top?: number; warehouse_id?: number }) =>
+    call<HotSaleRow[]>('stats:hotSale', query)
+}

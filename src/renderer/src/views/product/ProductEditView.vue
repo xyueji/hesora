@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { productApi } from '../../api/product'
 import { productAttributeApi } from '../../api/product-attribute'
+import { productImageApi } from '../../api/product-image'
 import type { Product, ProductUnit, TrackingType, ProductKind, ProductAttribute } from '../../../../shared/types/product'
 
 const route = useRoute()
@@ -42,6 +43,77 @@ const saving = ref(false)
 const attrDict = ref<ProductAttribute[]>([])
 interface AttrLine { attr_id: number | null; value: string }
 const attrLines = ref<AttrLine[]>([])
+
+// ── P3：商品图片（≤3 张，主图 = 第 1 张；相对文件名经 IPC 读 base64 预览）──
+interface ImageItem { stored_name: string; data_url: string }
+const imageItems = ref<ImageItem[]>([])
+const imageInput = ref<HTMLInputElement | null>(null)
+const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|bmp)$/i
+
+async function loadImages(): Promise<void> {
+  if (!isEdit.value) {
+    imageItems.value = []
+    return
+  }
+  try {
+    const names = await productImageApi.list(id.value!)
+    const loaded: ImageItem[] = []
+    for (const name of names) {
+      try {
+        const w = await window.api.invoke('productImage:read', { stored_name: name }) as { mime: string; data: string }
+        loaded.push({ stored_name: name, data_url: `data:${w.mime};base64,${w.data}` })
+      } catch {
+        /* 文件丢失跳过 */
+      }
+    }
+    imageItems.value = loaded
+  } catch {
+    imageItems.value = []
+  }
+}
+
+function pickImage(): void {
+  imageInput.value?.click()
+}
+
+async function onImagePicked(evt: Event): Promise<void> {
+  const input = evt.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !isEdit.value || id.value === null) return
+  if (!IMAGE_EXTS.test(file.name)) {
+    ElMessage.warning('仅支持图片（png/jpg/jpeg/gif/webp/bmp）')
+    return
+  }
+  if (imageItems.value.length >= 3) {
+    ElMessage.warning('每个商品最多上传 3 张图片')
+    return
+  }
+  try {
+    const reader = new FileReader()
+    reader.readAsDataURL(file)
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(new Error('读取图片失败'))
+    })
+    const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+    const stored = await productImageApi.save({ product_id: id.value, file_name: file.name, data: base64 })
+    imageItems.value.push({ stored_name: stored, data_url: dataUrl })
+    ElMessage.success('图片已上传')
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
+
+async function removeImage(item: ImageItem): Promise<void> {
+  if (id.value === null) return
+  try {
+    await productImageApi.remove(id.value, item.stored_name)
+    imageItems.value = imageItems.value.filter((x) => x.stored_name !== item.stored_name)
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+  }
+}
 
 function addAttrLine(): void {
   attrLines.value.push({ attr_id: null, value: '' })
@@ -212,6 +284,7 @@ async function save(): Promise<void> {
 onMounted(() => {
   void load()
   void loadAttrDict()
+  void loadImages()
 })
 </script>
 
@@ -274,6 +347,12 @@ onMounted(() => {
           <el-form-item label="最低库存">
             <el-input-number v-model="form.min_stock" :min="0" :value-on-clear="null" />
           </el-form-item>
+          <el-form-item label="货架号">
+            <el-input v-model="form.shelf_no" maxlength="30" placeholder="如：A-01-03" />
+          </el-form-item>
+          <el-form-item label="提成率%">
+            <el-input-number v-model="form.commission_rate" :min="0" :max="100" :precision="2" :value-on-clear="0" />
+          </el-form-item>
           <el-form-item v-if="!isCombo && form.tracking_type === 'batch'" label="保质期(天)">
             <el-input-number v-model="form.shelf_life_days" :min="1" :value-on-clear="null" placeholder="按批次启用" />
           </el-form-item>
@@ -283,6 +362,17 @@ onMounted(() => {
         </div>
 
         <template v-if="!isCombo">
+        <div class="section-title">商品图片（最多 3 张，第 1 张为主图）</div>
+        <div class="image-row">
+          <div v-for="img in imageItems" :key="img.stored_name" class="image-item">
+            <el-image :src="img.data_url" fit="cover" class="image-thumb" :preview-src-list="[img.data_url]" />
+            <el-button link type="danger" size="small" @click="removeImage(img)">删除</el-button>
+          </div>
+          <el-button v-if="isEdit && imageItems.length < 3" @click="pickImage">+ 上传图片</el-button>
+          <span v-if="!isEdit" class="muted-hint">保存商品后可上传图片</span>
+          <input ref="imageInput" type="file" accept="image/*" style="display: none" @change="onImagePicked" />
+        </div>
+
         <div class="section-title">多单位</div>
         <el-table :data="unitRows" size="small" class="units-table" empty-text="暂无多单位，可点击下方添加">
           <el-table-column label="单位" min-width="140">
@@ -443,5 +533,28 @@ onMounted(() => {
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
+}
+
+.image-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.image-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.image-thumb {
+  width: 96px;
+  height: 96px;
+  border-radius: 4px;
+  border: 1px solid var(--el-border-color-lighter);
+}
+.muted-hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 </style>

@@ -12,7 +12,8 @@ import type {
   StockFlowResult,
   WarningPage,
   WarningQuery,
-  PurchaseSuggestion
+  PurchaseSuggestion,
+  UnsoldRow
 } from '../../../shared/types/stock-report'
 
 export const stockReportApi = {
@@ -35,5 +36,8 @@ export const stockReportApi = {
     call<AdjustPriceResult>('stock:adjustPrices', { items, operator }),
   /** P2：采购建议清单（min_stock>0 且现库存不足） */
   purchaseSuggestions: (warehouseId?: number) =>
-    call<PurchaseSuggestion[]>('stock:purchaseSuggestions', { warehouse_id: warehouseId })
+    call<PurchaseSuggestion[]>('stock:purchaseSuggestions', { warehouse_id: warehouseId }),
+  /** S 级：滞销商品（有库存但近 N 天无销售出库） */
+  unsold: (q?: { days?: number; warehouse_id?: number }) =>
+    call<UnsoldRow[]>('stock:unsold', q ?? {})
 }

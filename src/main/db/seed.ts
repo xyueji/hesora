@@ -27,6 +27,45 @@ export function seedDemoData(db: Database): boolean {
   return db.transaction(() => populateDemoData(db)).immediate()
 }
 
+/**
+ * 重置演示数据：清空业务数据表后重灌初始演示态。
+ * 保留：app_setting 中的 license.*（试用计时/延期标记）、guide.*、用户与角色表、
+ * platform_log（审计红线：危险操作日志不得清除）。
+ * 试用计时不受演示数据重置影响（first_run_at/license.start 落盘后不回退）。
+ */
+const DEMO_TABLES: readonly string[] = [
+  'serial_flow', 'serial_number', 'doc_workflow_event', 'doc_workflow', 'doc_item', 'doc',
+  'payment_allocation', 'fund_transfer', 'fund_flow', 'income_category',
+  'retail_held', 'cost_log', 'inventory', 'price_adjust_log', 'price_change_log',
+  'customer_product_price', 'product_price', 'product_unit', 'product_barcode',
+  'product_batch', 'product_attribute', 'bom_item', 'formula_item', 'formula',
+  'flow_category', 'attachment', 'print_template',
+  'product', 'customer', 'supplier', 'warehouse', 'fund_account'
+]
+
+// app_setting 中保留业务侧键（期初建账标记随演示重置，引导与授权键保留）
+const KEEP_SETTING_PREFIXES: readonly string[] = ['license.', 'guide.', 'sync.', 'backup.']
+const RESET_SETTINGS: readonly string[] = ['opening.done']
+
+export function resetDemoData(db: Database): boolean {
+  return db.transaction(() => {
+    for (const table of DEMO_TABLES) {
+      db.prepare(`DELETE FROM ${table}`).run()
+    }
+    for (const key of RESET_SETTINGS) {
+      db.prepare('DELETE FROM app_setting WHERE key = ?').run(key)
+    }
+    // 清理游离设置：不属于保留前缀且非用户/角色的 app_setting 全清，保证种子自洽
+    const keys = (db.prepare('SELECT key FROM app_setting').all() as Array<{ key: string }>).map((r) => r.key)
+    for (const key of keys) {
+      if (!KEEP_SETTING_PREFIXES.some((p) => key.startsWith(p))) {
+        db.prepare('DELETE FROM app_setting WHERE key = ?').run(key)
+      }
+    }
+    return populateDemoData(db)
+  }).immediate()
+}
+
 function populateDemoData(db: Database): boolean {
   const count = (db.prepare('SELECT COUNT(*) AS c FROM product').get() as { c: number }).c
   if (count > 0) return false
