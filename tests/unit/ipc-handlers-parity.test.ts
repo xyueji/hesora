@@ -93,7 +93,8 @@ const LOCAL_CHANNELS = [
   'sync:getConfig', 'sync:saveConfig', 'sync:now', 'sync:download', 'sync:checkTargets', 'sync:cancelRestore', 'sync:restoreFromCloud'
 ]
 
-// 永不该被调用的 db 桩：构建 handler 表时不允许触碰数据库
+// buildAllHandlers 在构建期会急切实例化全部服务（与原 index.ts initialize 行为一致），
+// 因此这里传入 openMemDb 内存库与临时目录，而不是纯桩。
 const stubAudit = {
   record: () => {},
   list: () => {
@@ -151,10 +152,6 @@ describe('ipc handlers parity', () => {
 
   it('spot-checks 10 key business channels are callable handlers', () => {
     const handlers = new Map(buildAllHandlers(stubDeps).map((h) => [h.channel, h.handler]))
-    const keys = [
-      'sale:create', 'customer:create', 'product:create', 'doc:list', 'license:activate',
-      'stocktake:create', 'payment:create', 'inventory:transfer', 'reversal:reverse', 'doc:query'
-    ]
     // 注：doc:list / inventory:transfer / reversal:reverse 是规划文档中的旧称，
     // 实际通道名为 doc:query / transfer:create / doc:reverse，此处按实际名单抽查。
     const actualKeys = [
@@ -170,6 +167,5 @@ describe('ipc handlers parity', () => {
     for (const ch of ['doc:list', 'inventory:transfer', 'reversal:reverse']) {
       expect(handlers.has(ch)).toBe(false)
     }
-    expect(keys.length).toBe(actualKeys.length)
   })
 })

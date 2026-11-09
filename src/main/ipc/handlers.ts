@@ -99,6 +99,20 @@ interface HandlerCaches {
 
 export interface IpcChannelHandler { channel: string; handler: IpcHandler }
 
+const documentPermissions: Record<DocType, PermissionKey> = {
+  purchase: 'doc.purchase', purchase_return: 'doc.purchase', sale: 'doc.sale', sale_return: 'doc.sale',
+  retail: 'doc.retail', transfer: 'inventory.adjust', stocktake: 'inventory.adjust',
+  assemble: 'inventory.assemble', disassemble: 'inventory.assemble', receipt: 'doc.payment',
+  payment: 'doc.payment', other_in: 'doc.payment', other_out: 'doc.payment',
+  // P3：内部领用出库单——归库存组权限
+  internal_use: 'inventory.adjust'
+}
+
+// 单据类型→权限键映射与判定（模块级，供本文件与 index.ts 本地 print:a4pdf 共用一份事实来源）
+export function canViewDocument(type: DocType): boolean {
+  return Object.hasOwn(documentPermissions, type) && can(documentPermissions[type])
+}
+
 export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
   const caches: HandlerCaches = {}
 
@@ -243,17 +257,6 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
   const docCopySvc = createDocCopyService(getDb())
   const docReversalSvc = createReversalService(getDb())
 
-  const documentPermissions: Record<DocType, PermissionKey> = {
-    purchase: 'doc.purchase', purchase_return: 'doc.purchase', sale: 'doc.sale', sale_return: 'doc.sale',
-    retail: 'doc.retail', transfer: 'inventory.adjust', stocktake: 'inventory.adjust',
-    assemble: 'inventory.assemble', disassemble: 'inventory.assemble', receipt: 'doc.payment',
-    payment: 'doc.payment', other_in: 'doc.payment', other_out: 'doc.payment',
-    // P3：内部领用出库单——归库存组权限
-    internal_use: 'inventory.adjust'
-  }
-  function canViewDocument(type: DocType): boolean {
-    return Object.hasOwn(documentPermissions, type) && can(documentPermissions[type])
-  }
   function assertDocumentVisible(id: number): void {
     const doc = docSvc.getById(id)
     if (!doc || !canViewDocument(doc.type)) throw new BizError('NO_PERMISSION', '当前操作员没有权限查看此单据')
@@ -269,7 +272,7 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
   }
 
   const arrearsSvc = getArrearsService()
-  const reportSvc = createReportService(getDb())
+  const reportSvc = getReportService()
   // M 级功能：月度库存汇总
   const monthlySvc = createMonthlyService(getDb())
   // P1 功能 #1：客商对账单 + 账龄分析（复用 report.arrears 权限键）
