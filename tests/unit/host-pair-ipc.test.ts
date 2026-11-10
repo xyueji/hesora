@@ -40,7 +40,7 @@ interface Fixture {
   secretDeps: SecretStoreDeps
 }
 
-function makeFixture(opts?: { lanAllowed?: boolean; serverPort?: number | null }): Fixture {
+function makeFixture(opts?: { lanAllowed?: boolean; serverPort?: number | null; assertDeviceLimit?: () => void }): Fixture {
   const pairing = createPairingService(openMemDb(), { clock: () => now })
   const secrets = new Map<string, string>()
   const kicked: string[] = []
@@ -62,6 +62,7 @@ function makeFixture(opts?: { lanAllowed?: boolean; serverPort?: number | null }
       if (i >= 0) saved.splice(i, 1)
     },
     lanAllowed: () => opts?.lanAllowed ?? true,
+    assertDeviceLimit: opts?.assertDeviceLimit,
     now: () => now,
     startedAt: 900_000
   })
@@ -162,6 +163,34 @@ describe('host:pairPending / pairGrant / pairDeny', () => {
     const { ipc } = makeFixture()
     const r = ipc.pairDeny('000000')
     expect(r.ok).toBe(false)
+  })
+
+  // v1.4 maxDevices 门控：超上限时 E_DEVICE_LIMIT，且配对码被回收（deny/pending 均不可再列）。
+  it('pairGrant rejects with E_DEVICE_LIMIT when assertDeviceLimit throws, code recycled', () => {
+    const f = makeFixture({ assertDeviceLimit: () => { throw new Error('已达授权设备数上限（1 台）') } })
+    const started = unwrap(f.ipc.pairStart('超限机'))
+    const r = f.ipc.pairGrant(started.code)
+    expect(r.ok).toBe(false)
+    expect(r.code).toBe('E_DEVICE_LIMIT')
+    expect(r.msg).toContain('已达授权设备数上限')
+    // 配对码已回收：pending 不再列出，重复 grant 失败。
+    expect(unwrap(f.ipc.pairPending())).toHaveLength(0)
+    expect(f.ipc.pairGrant(started.code).ok).toBe(false)
+    expect(f.secrets.size).toBe(0)
+  })
+
+  it('pairGrant passes when assertDeviceLimit does not throw', () => {
+    const f = makeFixture({ assertDeviceLimit: () => {} })
+    const started = unwrap(f.ipc.pairStart('正常机'))
+    const r = f.ipc.pairGrant(started.code)
+    expect(r.ok).toBe(true)
+    expect(f.secrets.size).toBe(1)
+  })
+
+  it('pairGrant without assertDeviceLimit dep still works (backward compat)', () => {
+    const { ipc } = makeFixture()
+    const started = unwrap(ipc.pairStart('老机'))
+    expect(ipc.pairGrant(started.code).ok).toBe(true)
   })
 
   it('deny covers HTTP-initiated code and clears it from pending', () => {

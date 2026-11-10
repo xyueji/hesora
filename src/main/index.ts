@@ -5,6 +5,7 @@ import { resolveDatabasePath } from './db/location'
 import { ensureProfileDir, resolveProfilePath } from './db/profile'
 import { seedDemoData, resetDemoData } from './db/seed'
 import { isTrialExpiredWrite, hasFeature } from '../shared/license'
+import { assertMaxDevices } from './services/license-gate'
 import { ALL_PERMISSIONS, ROLE_PRESETS } from '../shared/permissions'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
 import { createHostPairIpc, shouldCreateTray } from './ipc/host-pair-ipc'
@@ -271,6 +272,15 @@ function initialize(): void {
     | undefined
   // verifyFormat 是 licenseSvc 的公开方法（parseCode 的包装），返回 payload|null。
   const licensePayload = licenseCodeRow ? licenseSvc.verifyFormat(licenseCodeRow) : null
+  // v1.4 maxDevices：pairGrant 前检查未吊销设备数是否已达授权上限（activation 之后授权可变，惰性重读）。
+  const assertDeviceLimit = (): void => {
+    const row = getDb().prepare("SELECT value FROM app_setting WHERE key='license.code'").pluck().get() as
+      | string
+      | undefined
+    const payload = row ? licenseSvc.verifyFormat(row) : null
+    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM host_devices WHERE revoked_at IS NULL').get() as { c: number }).c
+    assertMaxDevices(payload, count)
+  }
   const lanEnabledRow = getDb().prepare("SELECT value FROM app_setting WHERE key='host_lan_enabled'").pluck().get() as
     | string
     | undefined
@@ -434,7 +444,8 @@ function initialize(): void {
       void import('./host/secret-store').then((m) => m.removeDeviceSecret(d, id))
     },
     lanAllowed: () => lanAllowed,
-    // T8 双审 A3：吊销设备时踢活跃 WS（经 hostServer.disconnectDevice → hub.disconnectDevice）。
+    // v1.4 maxDevices 门控：配对确认落库前拒绝超上限设备。
+    assertDeviceLimit,
     kickDevice: (deviceId) => {
       try {
         hostServer?.disconnectDevice?.(deviceId)

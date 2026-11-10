@@ -37,6 +37,11 @@ export interface HostPairIpcDeps {
   removeDeviceSecret: (deps: SecretStoreDeps, deviceId: string) => void
   /** host_lan_enabled === '1' && hasFeature(lan_collaboration)（Tray 门控复用） */
   lanAllowed: () => boolean
+  /**
+   * v1.4 maxDevices 门控：pairGrant 落库前调用，抛 BizError('E_DEVICE_LIMIT') 表示超上限。
+   * index.ts 装配处从 licenseSvc 读 licensePayload → assertMaxDevices；缺省不检查（测试兼容）。
+   */
+  assertDeviceLimit?: () => void
   now?: () => number
   /** 主机进程启动时刻（uptime 计算） */
   startedAt?: number
@@ -124,6 +129,18 @@ export function createHostPairIpc(deps: HostPairIpcDeps): HostPairIpc {
       if (!c) return fail('VALIDATION', '配对码不能为空')
       const confirmed = pairing.confirmPairing(c)
       if (!confirmed) return fail('E_PAIRING_INVALID', '配对码无效、已过期或已被处理')
+      // v1.4 maxDevices：配对确认（写 host_devices）前检查设备数上限，超限拒绝并回收配对码。
+      if (deps.assertDeviceLimit) {
+        try {
+          deps.assertDeviceLimit()
+        } catch (e) {
+          pairing.discardPairing(c)
+          startedCodes.delete(c)
+          httpPairRequests.delete(c)
+          const msg = e instanceof Error ? e.message : '设备数已达授权上限'
+          return fail('E_DEVICE_LIMIT', msg)
+        }
+      }
       const { deviceId, secret } = confirmed
       const secretHex = secret.toString('hex')
       // ① 内存 Map（HMAC 查找源） ② DPAPI 持久化（T8 双审 A4：三处写简化为两处）
