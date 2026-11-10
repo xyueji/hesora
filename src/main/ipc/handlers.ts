@@ -409,12 +409,16 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       return true
     } },
     { channel: 'product:setShelfLife', handler: (_evt, payload) => {
+      // v1.4 serial_batch 门控：批次/效期为专业版专属
+      assertFeature(deps.licensePayload(), 'serial_batch')
       const { productId, config } = payload as { productId: number; config: never }
       shelfLifeSvc.setShelfLife(Number(productId), config)
       return true
     } },
     { channel: 'product:batches', handler: (_evt, payload) => shelfLifeSvc.listBatches(payload as never) },
     { channel: 'product:saveBatch', handler: (_evt, payload) => {
+      // v1.4 serial_batch 门控
+      assertFeature(deps.licensePayload(), 'serial_batch')
       const { productId, warehouseId, batchNo, data } = payload as {
         productId: number
         warehouseId: number
@@ -625,9 +629,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       return r
     } },
 
-    // ── 序列号台账 ──
-    { channel: 'serial:registerIn', handler: (_evt, payload) => serialSvc.registerIn(payload as never) },
-    { channel: 'serial:consumeOut', handler: (_evt, payload) => serialSvc.consumeOut(payload as never) },
+    // ── 序列号台账（v1.4 serial_batch 门控：写入通道拒 standard；查询通道放行避免前端死角）──
+    { channel: 'serial:registerIn', handler: (_evt, payload) => { assertFeature(deps.licensePayload(), 'serial_batch'); return serialSvc.registerIn(payload as never) } },
+    { channel: 'serial:consumeOut', handler: (_evt, payload) => { assertFeature(deps.licensePayload(), 'serial_batch'); return serialSvc.consumeOut(payload as never) } },
     { channel: 'serial:stock', handler: (_evt, payload) => serialSvc.listStock(payload as never) },
     { channel: 'serial:flows', handler: (_evt, payload) => serialSvc.listFlow(payload as never) },
     { channel: 'serial:validate', handler: (_evt, payload) => {
@@ -694,6 +698,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     // ── sale ──
     { channel: 'sale:create', handler: (_evt, payload, session) => {
       if (!canForUser(session, 'doc.approve')) throw new BizError('FORBIDDEN', '请先保存销售草稿，由有审核权限的操作员过账')
+      // v1.4 serial_batch 门控：单据带 serial_numbers 时序列号出库为专业版专属
+      const withSerial = (payload as { items?: { serial_numbers?: unknown[] }[] })?.items?.some((it) => Array.isArray(it.serial_numbers) && it.serial_numbers.length > 0)
+      if (withSerial) assertFeature(deps.licensePayload(), 'serial_batch')
       const created = saleSvc.create(payload as never)
       emitDocChanged(created.no)
       emitInventoryChanged(created.no)
@@ -717,7 +724,7 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     } },
 
     // ── retail ──
-    { channel: 'retail:create', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); const created = retailSvc.create(payload as never, u.id); emitInventoryChanged(created.no); return created } },
+    { channel: 'retail:create', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); const withSerial = (payload as { items?: { serial_numbers?: unknown[] }[] })?.items?.some((it) => Array.isArray(it.serial_numbers) && it.serial_numbers.length > 0); if (withSerial) assertFeature(deps.licensePayload(), 'serial_batch'); const created = retailSvc.create(payload as never, u.id); emitInventoryChanged(created.no); return created } },
     { channel: 'retail:hold', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.hold(u.id, payload as never) } },
     { channel: 'retail:listHeld', handler: (_evt, _payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.listHeld(u.id) } },
     { channel: 'retail:discardHeld', handler: (_evt, payload, session) => { const u = userFor(session); if (!u) throw new BizError('VALIDATION', '请先登录'); return retailSvc.discardHeld(u.id, Number(payload)) } },

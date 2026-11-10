@@ -95,6 +95,7 @@ export type LicenseFeature =
   | 'multi_warehouse'
   | 'rbac'
   | 'device_handoff'
+  | 'serial_batch'
 
 export type LicenseEdition = 'standard' | 'professional'
 
@@ -106,7 +107,7 @@ export interface ResolvedLicense {
 
 const VALID_EDITIONS: readonly LicenseEdition[] = ['standard', 'professional']
 const VALID_FEATURES: readonly LicenseFeature[] = [
-  'lan_collaboration', 'cloud_backup', 'multi_warehouse', 'rbac', 'device_handoff'
+  'lan_collaboration', 'cloud_backup', 'multi_warehouse', 'rbac', 'device_handoff', 'serial_batch'
 ]
 
 /**
