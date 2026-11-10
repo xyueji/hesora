@@ -420,6 +420,10 @@ function initialize(): void {
     },
     'sync:getConfig': () => backupIpc.syncGetConfig(),
     'sync:saveConfig': (_evt, payload) => backupIpc.syncSaveConfig(payload),
+    // v1.4 授权门控说明：sync:now / sync:download / sync:restoreFromCloud（云盘备份与"两台电脑云盘接力"）
+    // 属基础版定价（¥199 含云盘备份 + 云盘接力上传），故 device_handoff 特征位不做门控，两档均放行。
+    // 仅 LAN 协同（lan_collaboration）、多仓（multi_warehouse）、序列号/批次效期（serial_batch）、
+    // RBAC（rbac）、多设备（maxDevices）为专业版（¥399）专属，在相应通道/license-gate.ts 处门控。
     'sync:now': () => backupIpc.syncNow(),
     'sync:download': (_evt, source) => {
       if (source !== undefined && source !== 'local' && source !== 'webdav') throw new BizError('VALIDATION', '同步目标无效')
