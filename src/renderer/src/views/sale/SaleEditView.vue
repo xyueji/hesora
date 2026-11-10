@@ -5,6 +5,8 @@ import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { saleApi } from '../../api/sale'
+import { BizApiError } from '../../api/call'
+import { handleSessionExpired } from '../../api/session-expired'
 import { customerApi } from '../../api/customer'
 import { productApi } from '../../api/product'
 import { warehouseApi } from '../../api/warehouse'
@@ -280,7 +282,14 @@ async function save(): Promise<void> {
     ElMessage.success(`保存成功：${doc.no}`)
     router.push('/sale/list')
   } catch (e) {
-    ElMessage.error((e as Error).message)
+    // 错误码差异化：E_AUTH_FAILED/E_SESSION_NOT_FOUND 会话失效 → 重新登录；
+    // NOT_ENOUGH 明示库存不足并定位（可去库存汇总核对）；其余走 msg 兜底。
+    if (e instanceof BizApiError && e.code === 'NOT_ENOUGH') {
+      ElMessage.error('库存不足，请检查该商品库存（可在「库存汇总」中核对现存量）')
+      void router.push('/inventory/statistics').catch(() => {})
+    } else if (!handleSessionExpired(e)) {
+      ElMessage.error((e as Error).message)
+    }
   } finally {
     saving.value = false
   }

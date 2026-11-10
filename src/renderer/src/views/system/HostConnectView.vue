@@ -12,7 +12,13 @@
         <el-col :span="10">
           <div class="qr-area">
             <img v-if="qrDataUrl" :src="qrDataUrl" alt="配对二维码" class="qr-img" />
+            <el-empty v-else-if="pairExpired" description="配对码已过期，请重新生成" :image-size="80" />
             <el-empty v-else description="主机未运行，无法生成二维码" :image-size="80" />
+            <div v-if="pairExpired" style="margin-top: 4px">
+              <el-button type="primary" size="small" :disabled="!statusEnabled" @click="regeneratePair">
+                重新生成配对码
+              </el-button>
+            </div>
             <p v-if="pairInfo" class="pair-code">
               配对码：<b>{{ pairInfo.code }}</b>
               <span class="pair-expire">（{{ remainText }} 后过期）</span>
@@ -57,10 +63,11 @@
 
 <script setup lang="ts">
 // 渲染层只做展示与交互：所有数据经 host:* IPC，不碰 FS/DB。
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import QRCode from 'qrcode'
 import { call } from '../../api/call'
+import { handleSessionExpired } from '../../api/session-expired'
 
 interface PairStartResult { code: string; expiresAt: number; ip: string | null; qrPayload: string }
 interface PendingPairing { code: string; deviceName: string; expiresAt: number }
@@ -80,6 +87,24 @@ let tickTimer: ReturnType<typeof setInterval> | null = null
 
 const remainText = computed(() => (pairInfo.value ? remainOf(pairInfo.value.expiresAt) : ''))
 
+// 配对码过期即时反馈：倒计时归零立即清除二维码/配对码并给出过期提示，
+// 不必等下一次 2s 轮询（或手动刷新）才感知。
+const pairExpired = ref(false)
+watch(
+  () => [pairInfo.value?.expiresAt, nowTick.value] as const,
+  ([expiresAt]) => {
+    if (pairInfo.value && typeof expiresAt === 'number' && nowTick.value >= expiresAt) {
+      pairExpired.value = true
+      pairInfo.value = null
+      qrDataUrl.value = ''
+    }
+  }
+)
+
+function clearPairExpired(): void {
+  pairExpired.value = false
+}
+
 function remainOf(expiresAt: number): string {
   const s = Math.max(0, Math.floor((expiresAt - nowTick.value) / 1000))
   const m = Math.floor(s / 60)
@@ -96,11 +121,12 @@ async function refreshStatus(): Promise<void> {
       pairInfo.value = null
       qrDataUrl.value = ''
       pending.value = []
+      pairExpired.value = false
     }
   } catch (e) {
     // T8 双审 B8：轮询失败每 2s 弹错会刷屏——仅首次提示，连续失败静默。
     refreshStatusFails++
-    if (refreshStatusFails === 1) {
+    if (refreshStatusFails === 1 && !handleSessionExpired(e)) {
       ElMessage.error(e instanceof Error ? e.message : '查询主机状态失败')
     }
   }
@@ -109,23 +135,32 @@ let refreshStatusFails = 0
 
 async function startPairing(deviceName: string): Promise<void> {
   manualSubmitting.value = true
+  clearPairExpired()
   try {
     const r = await call<PairStartResult>('host:pairStart', { deviceName })
     pairInfo.value = r
     qrDataUrl.value = await QRCode.toDataURL(r.qrPayload, { width: 200, margin: 1 })
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '生成配对码失败')
+    if (!handleSessionExpired(e)) ElMessage.error(e instanceof Error ? e.message : '生成配对码失败')
   } finally {
     manualSubmitting.value = false
   }
 }
 
 function startManual(): void {
+  clearPairExpired()
   const name = manualDeviceName.value.trim()
   if (!name) {
     ElMessage.warning('请先填写设备名')
     return
   }
+  void startPairing(name)
+}
+
+/** 过期后一键重新生成：沿用上次填写的设备名（为空则回落到默认名）。 */
+function regeneratePair(): void {
+  const name = manualDeviceName.value.trim() || '本机设备'
+  manualDeviceName.value = name
   void startPairing(name)
 }
 

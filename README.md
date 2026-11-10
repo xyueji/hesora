@@ -86,3 +86,42 @@ pnpm dist:release:signed   # 购买代码签名证书后使用（forceCodeSignin
 - [ ] 安装包启动冒烟：进程可启动、数据库可建立、登录页可见
 - [ ] 修改 `src/main/update.ts` 的 `UPDATE_URL` 为真实更新地址
 - [x] 禾序 SVG、PNG、Windows ICO 已接入界面与安装配置；兼容保留历史 appId 和账套路径
+
+## Windows SmartScreen 首次运行提示（未签名安装包）
+
+当前发布的 Windows 安装包**未做代码签名**，首次运行时 Windows SmartScreen 会弹出"Windows 已保护你的电脑"蓝色提示。这是对无签名程序的通用提醒，不代表发现病毒。安装包已公布 SHA256 校验值，请核对后再运行。
+
+### 首次运行步骤
+
+1. 双击运行 `禾序进销存-<版本>-setup.exe`，弹出 SmartScreen 蓝色窗口：**"Windows 已保护你的电脑"**。
+2. 点击窗口中的 **"更多信息"** 链接（蓝色小字，位于提示文字下方）。
+3. 提示展开后，右下角出现 **"仍要运行"** 按钮，点击它即可继续安装。
+4. 后续安装流程与普通安装程序一致；之后再次启动不会再出现该提示。
+
+> 截图占位：SmartScreen "更多信息 / 仍要运行" 界面（待补充实际截图）
+
+### 核对安装包 SHA256
+
+发布渠道会公布安装包的 SHA256 校验值。下载后在 PowerShell 或命令提示符中执行：
+
+```powershell
+Get-FileHash "禾序进销存-1.3.0-setup.exe" -Algorithm SHA256
+```
+
+或在 Git Bash / Linux 下：
+
+```bash
+sha256sum 禾序进销存-1.3.0-setup.exe
+```
+
+当前发布版本核对值：
+
+| 安装包 | SHA256 |
+|---|---|
+| `dist/禾序进销存-1.3.0-setup.exe` | `5129da58ff5d512cbd638d445a21394a39609bd1749712edb4594154a4716e72` |
+
+### 下载安全建议
+
+- 请始终从**官方渠道**（本仓库 Release 页或官方指定站点）下载安装包，不要使用第三方下载站的转载。
+- 下载后先核对上表 SHA256 值，一致再运行；不一致说明文件被篡改或不是官方版本，请勿运行。
+- 购买代码签名证书后，发布流程会切换到 `pnpm dist:release:signed`，届时 SmartScreen 提示将随签名信誉积累消失。
