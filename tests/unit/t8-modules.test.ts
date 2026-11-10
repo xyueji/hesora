@@ -77,6 +77,23 @@ describe('reconnect controller', () => {
     t.pending[t.pending.length - 1]!.fn()
     expect(t.pending.length).toBe(len) // 无新排队
   })
+
+  // v1.4 终审 B3 回归：stop() 后用户主动断开期间不重试，但「连上」后必须重新武装，
+  // 否则断开→重连/吊销→重新配对后的下一次网络抖动会永久停摆。
+  it('stop() is re-armed by markConnected() (reconnect after re-pair works)', () => {
+    const t = fakeTimers()
+    const ctl = createReconnectController({ attempt: async () => false, schedule: t.schedule, cancel: t.cancel })
+    ctl.markDisconnected()
+    ctl.stop()
+    expect(ctl.state()).toBe('stopped')
+    ctl.markDisconnected() // 主动断开期间：应静默忽略
+    expect(t.pending).toHaveLength(1)
+    ctl.markConnected() // 重新登录/配对成功
+    expect(ctl.state()).toBe('idle')
+    ctl.markDisconnected() // 之后网络再抖动：必须重新进入退避
+    expect(ctl.state()).toBe('backoff')
+    expect(t.pending).toHaveLength(2)
+  })
 })
 
 // ── pending-registry ──

@@ -6,6 +6,7 @@
 //  · 文件独立于主机侧 host-secrets.json（host-scoped key = 主机地址），避免两套语义混在一张表。
 import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import type { SafeStorageLike } from './secret-store'
 
 export interface ClientCredentialStoreDeps {
@@ -47,7 +48,8 @@ function filePath(deps: ClientCredentialStoreDeps): string {
 }
 
 function atomicWrite(file: string, data: string): void {
-  const tmp = `${file}.tmp`
+  // v1.4 终审 S2：临时文件带 pid + 随机后缀，避免并发 save/remove 互相覆盖同一 .tmp。
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
   writeFileSync(tmp, data, 'utf8')
   renameSync(tmp, file)
 }
@@ -123,7 +125,8 @@ export function createHostCredentialStore(deps: ClientCredentialStoreDeps): Host
   }
 
   function remove(hostAddress: string): void {
-    if (!available()) return
+    // v1.4 终审 S2：删除已落盘密文不依赖 DPAPI 当前是否可用——
+    // 若因 safeStorage 临时不可用而跳过，「忘记主机」会留下旧凭据文件，安全性反而更差。
     try {
       const store = readStore(deps)
       if (hostAddress in store.hosts) {

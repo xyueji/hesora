@@ -86,6 +86,12 @@ export function createReconnectController(opts: ReconnectOpts): ReconnectControl
       cancel(timer)
       timer = null
     }
+    // v1.4 终审 B3 修复：成功连上即恢复自动重连能力。此前 stop() 把 stopped
+    // 永久置 true 且全文件无复位，导致「断开→重连」或「吊销→重新配对」后
+    // 网络抖动再断线时 markDisconnected() 直接 return，指数退避永久死亡。
+    // stop() 仍只停当前代次（用户主动断开期间不重试），下一次 markConnected()
+    // 自然复位，语义最贴合「连上就重新武装」。
+    stopped = false
     round = 0
     st = 'idle'
     opts.onStateChange?.('idle', null)

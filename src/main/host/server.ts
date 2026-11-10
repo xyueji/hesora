@@ -99,6 +99,21 @@ function sha256Hex(s: string): string {
   return createHash('sha256').update(s).digest('hex')
 }
 
+/** 固定窗口近似限流：命中则桶计数 +1，超过上限返回 true（调用方回 429）。 */
+function rateExceeded(
+  buckets: Map<string, { windowStart: number; count: number }>,
+  ip: string,
+  now: number
+): boolean {
+  const bucket = buckets.get(ip)
+  if (!bucket || now - bucket.windowStart >= PAIR_RATE_WINDOW_MS) {
+    buckets.set(ip, { windowStart: now, count: 1 })
+    return false
+  }
+  bucket.count++
+  return bucket.count > PAIR_RATE_LIMIT
+}
+
 export async function createHostServer(deps: HostServerDeps): Promise<HostServerHandle> {
   const log = deps.log ?? (() => {})
   const getSecret = deps.getDeviceSecret ?? (() => null)
@@ -110,6 +125,11 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
   // /pair/start 限流：内存桶 key=IP，固定窗口近似（1min 重置）。3 台设备规模下
   // 精确性无关紧要，防暴力猜码即可（spec §5.2 实现裁定）。
   const rateBuckets = new Map<string, { windowStart: number; count: number }>()
+  // /pair/result 未知码穷举限流：与 /pair/start 分桶。
+  // v1.4 修复（终审 B1）：合法轮询（命中已知配对码）不计费，只有「未知/过期码」
+  // 才走本桶。若与 /pair/start 共用一桶，2s 一次的轮询在 5min TTL 内约 150 次，
+  // 第 11 次即 429 → 客户端置 error 停轮询，店长根本来不及确认。
+  const probeRateBuckets = new Map<string, { windowStart: number; count: number }>()
 
   // HTTP/1.1 https server（fastify 5：仅传 https 选项默认即 node:https h1，不启用 h2；
   // 客户端 lan-client 用 node:https 发 h1，h2 server 会拒绝，故此处绝不能设 http2）。
@@ -156,17 +176,10 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
   // ---- /pair/start：配对端点，HMAC 会话之前，限流 10 req/min per IP ----
   app.post('/pair/start', async (req, reply) => {
     const ip = req.ip || 'unknown'
-    const now = Date.now()
-    const bucket = rateBuckets.get(ip)
-    if (!bucket || now - bucket.windowStart >= PAIR_RATE_WINDOW_MS) {
-      rateBuckets.set(ip, { windowStart: now, count: 1 })
-    } else {
-      bucket.count++
-      if (bucket.count > PAIR_RATE_LIMIT) {
-        log('warn', `pair/start rate limited: ${ip}`)
-        void reply.code(429)
-        return { ok: false, code: 'RATE_LIMIT', msg: '请求过于频繁，请稍后再试', data: null }
-      }
+    if (rateExceeded(rateBuckets, ip, Date.now())) {
+      log('warn', `pair/start rate limited: ${ip}`)
+      void reply.code(429)
+      return { ok: false, code: 'RATE_LIMIT', msg: '请求过于频繁，请稍后再试', data: null }
     }
     const { deviceName } = (req.body ?? {}) as { deviceName?: unknown }
     if (typeof deviceName !== 'string' || deviceName.trim() === '') {
@@ -195,22 +208,15 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
       void reply.code(400)
       return { ok: false, code: 'VALIDATION', msg: '配对码无效', data: null }
     }
-    // 与 /pair/start 同级限流（防止穷举配对码）。
-    const ip = req.ip || 'unknown'
-    const nowMs = Date.now()
-    const bucket = rateBuckets.get(ip)
-    if (!bucket || nowMs - bucket.windowStart >= PAIR_RATE_WINDOW_MS) {
-      rateBuckets.set(ip, { windowStart: nowMs, count: 1 })
-    } else {
-      bucket.count++
-      if (bucket.count > PAIR_RATE_LIMIT) {
-        void reply.code(429)
-        return { ok: false, code: 'RATE_LIMIT', msg: '请求过于频繁，请稍后再试', data: null }
-      }
-    }
     const entry = pairResults.get(code)
     if (!entry) {
       // 码未知或已过期：不区分细节，统一 expired（不泄漏码是否曾经存在）。
+      // v1.4 修复（终审 B1）：只有未知码才计入穷举限流桶，合法轮询不计费；
+      // 与 /pair/start 分桶，避免 2s 轮询在 5min TTL 内撞满 10/min。
+      if (rateExceeded(probeRateBuckets, req.ip || 'unknown', Date.now())) {
+        void reply.code(429)
+        return { ok: false, code: 'RATE_LIMIT', msg: '请求过于频繁，请稍后再试', data: null }
+      }
       return { ok: true, code: 'OK', msg: '', data: { status: 'expired' } }
     }
     if (entry.status === 'granted') {

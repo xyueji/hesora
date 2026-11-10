@@ -232,6 +232,29 @@ describe('host server /rpc', () => {
     expect(json.ok).toBe(true)
     expect(json.data.pairingCode).toMatch(/^\d{6}$/)
   })
+
+  // v1.4 终审 B1 回归：合法配对轮询命中已知码，不占 /pair/start 限流桶、也不被
+  // 未知码限流桶误伤。2s 一次 × 5min TTL 约 150 次轮询必须全部 200。
+  it('/pair/result polling a KNOWN code is not rate limited (separate buckets)', async () => {
+    const started = await fx.app.inject({ method: 'POST', url: '/pair/start', payload: { deviceName: 'front-counter' }, remoteAddress: '10.0.0.7' })
+    const code = started.json().data.pairingCode as string
+    for (let i = 0; i < 15; i++) {
+      const res = await fx.app.inject({ method: 'GET', url: `/pair/result?code=${code}`, remoteAddress: '10.0.0.7' })
+      expect(res.statusCode).toBe(200)
+      expect(res.json().ok).toBe(true)
+      expect(res.json().data.status).toBe('pending')
+    }
+  })
+
+  // v1.4 终审 B1 回归：未知码穷举仍受独立 probe 桶 10/min/IP 限制，防暴力猜码不退化。
+  it('/pair/result unknown codes still rate limited (brute-force protection)', async () => {
+    let last
+    for (let i = 0; i < 11; i++) {
+      last = await fx.app.inject({ method: 'GET', url: `/pair/result?code=99999${i}`, remoteAddress: '10.0.0.8' })
+    }
+    expect(last!.statusCode).toBe(429)
+    expect(last!.json().code).toBe('RATE_LIMIT')
+  })
 })
 
 describe('host server misc', () => {

@@ -84,7 +84,7 @@ export function createHostEventsClient(deps: HostEventsClientDeps): HostEventsCl
   }
 
   async function connect(): Promise<void> {
-    if (closedByUs || revoked) return
+    if (closedByUs || revoked || socket) return
     const url = eventsUrl()
     if (!url) return
     clearRetry()
@@ -96,7 +96,8 @@ export function createHostEventsClient(deps: HostEventsClientDeps): HostEventsCl
       log(`ws module unavailable: ${String(e)}`)
       return
     }
-    if (closedByUs || revoked) return
+    // import('ws') 是异步的，期间可能已有另一路 connect() 建好连接：再查一次防双 WSS。
+    if (closedByUs || revoked || socket) return
     try {
       socket = new Ctor(url, {
         // 配对后已知主机指纹：握手放行自签证书，随后逐连接核对指纹。

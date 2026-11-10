@@ -64,11 +64,16 @@ export function createSplashWindow(): BrowserWindow {
 /**
  * 幂等关闭 splash：重复调用、或窗口已被系统销毁时都安全（isDestroyed 检查）。
  * 异常路径（initialize 抛错、app 退出兜底）也应调用，避免残留窗口阻塞退出。
+ *
+ * 必须用 destroy() 而不是 close()：splash 设置了 closable:false（防止用户手动关掉
+ * 过渡页），而 Windows/Electron 下对 closable:false 的窗口调用 close() 是 no-op，
+ * 会永久残留一个 alwaysOnTop 的置顶窗（v1.4 真机 bug）。destroy() 不受 closable
+ * 限制，且 splash 是纯静态过渡页、无未保存状态，可安全强制销毁。
  */
 export function closeSplashWindow(win: BrowserWindow | null | undefined): void {
   if (!win || win.isDestroyed()) return
   try {
-    win.close()
+    win.destroy()
   } catch (error: unknown) {
     console.warn('[splash] close failed:', error)
   }

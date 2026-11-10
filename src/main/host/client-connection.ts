@@ -304,7 +304,13 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
   }
 
   // ---- 配对流程 ----
-  async function startPairing(address: string, deviceName: string): Promise<Result<{ pairingCode: string; expiresAt: number }>> {
+  interface PairingStart {
+    pairingCode: string
+    expiresAt: number
+    /** 主机 TLS 证书指纹（/pair/start 下发）；granted 时必须非空且与 granted 一致。 */
+    fingerprintHex: string | null
+  }
+  async function startPairing(address: string, deviceName: string): Promise<Result<PairingStart>> {
     const res = await requestJson('POST', `${address}/pair/start`, { body: JSON.stringify({ deviceName }) })
     const r = parseResultBody(res.body)
     if (!r || !r.ok) {
@@ -316,8 +322,10 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
     const pairingCode = typeof data.pairingCode === 'string' ? data.pairingCode : ''
     const expiresAt = typeof data.expiresAt === 'number' ? data.expiresAt : now() + 300_000
     if (!pairingCode) return fail('E_PAIRING_FAILED', '主机未返回配对码')
-    const startFingerprint = typeof data.fingerprintHex === 'string' ? data.fingerprintHex.toLowerCase() : null
-    return ok({ pairingCode, expiresAt, fingerprintHex: startFingerprint } as { pairingCode: string; expiresAt: number })
+    const startFingerprint = typeof data.fingerprintHex === 'string' && data.fingerprintHex
+      ? data.fingerprintHex.toLowerCase()
+      : null
+    return ok({ pairingCode, expiresAt, fingerprintHex: startFingerprint })
   }
 
   /** 轮询 /pair/result 直到 granted/denied/expired。 */
@@ -340,6 +348,13 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
         return
       }
       if (!r.ok) {
+        // 主机限流（RATE_LIMIT / 429）是临时性失败：退避后续轮询，不终止配对。
+        // 5 分钟 TTL 内 2s 一趟合法轮询可能因瞬时拥塞撞上探测限流，
+        // 直接置 error 会让店长必须重新申请配对码（v1.4 终审 B1）。
+        if (r.code === 'RATE_LIMIT' || res.status === 429) {
+          pollTimer = setTimeout(() => void tick(), pollIntervalMs)
+          return
+        }
         setStatus('error', { code: r.code, msg: r.msg || '配对失败' })
         return
       }
@@ -375,9 +390,10 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
           setStatus('error', { code: 'E_PAIRING_FAILED', msg: '主机下发的配对凭据不完整' })
           return
         }
-        // 配对窗口内指纹一致性校验：/pair/start 与 granted 必须是同一张证书。
-        if (startFingerprint && grantedFingerprint && startFingerprint !== grantedFingerprint) {
-          setStatus('error', { code: 'E_FINGERPRINT_MISMATCH', msg: '主机证书指纹在配对过程中发生变化，请重新配对' })
+        // 指纹是后续 /rpc、/events pinning 的唯一信任锚，必须两端都非空且一致。
+        // 任一为空说明主机未下发或响应被篡改，禁止继续 /auth/session（会带明文口令）。
+        if (!startFingerprint || !grantedFingerprint || startFingerprint !== grantedFingerprint) {
+          setStatus('error', { code: 'E_FINGERPRINT_MISMATCH', msg: '主机证书指纹缺失或不一致，请重新配对' })
           return
         }
         state.deviceId = deviceId
@@ -388,8 +404,6 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
         creds.fingerprintHex = grantedFingerprint
         persistProfile()
         persistCredentials()
-        // 凭据落库后由调用方继续登录（pairing 阶段已拿到 secret）
-        pendingGrant = { deviceId, secretHex, fingerprintHex: grantedFingerprint }
         setStatus('connecting')
         void completeSession()
         return
@@ -398,10 +412,6 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
     }
     pollTimer = setTimeout(() => void tick(), pollIntervalMs)
   }
-
-  /** granted 之后的凭据（供 completeSession 使用）。 */
-  let pendingGrant: { deviceId: string; secretHex: string; fingerprintHex: string | null } | null = null
-  void pendingGrant
 
   /** 主机账号登录 → 会话 token → 建立 LanClient。 */
   async function completeSession(): Promise<Result> {
@@ -439,7 +449,9 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
     const r = parseResultBody(res.body)
     if (!r || !r.ok) {
       const code = r?.code ?? 'E_AUTH_FAILED'
-      const msg = r?.msg || '登录主机失败'
+      const msg = code === 'E_AUTH_FAILED'
+        ? '登录失败：账号密码错误或设备已被吊销，请重新输入或重新申请配对'
+        : r?.msg || '登录主机失败'
       setStatus('error', { code, msg })
       return fail(code, msg)
     }
@@ -452,6 +464,8 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
     const user = data.user as { username?: unknown } | undefined
     creds.token = token
     persistCredentials()
+    // 明文口令只在登录窗口内使用，成功后立即从内存清除。
+    clearPendingCredentials()
     if (typeof user?.username === 'string') state.hostName = user.username
     ensureClient()
     client?.setConnected(true)
@@ -459,11 +473,25 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
     state.configured = true
     setStatus('connected')
     connectEvents()
-    return ok({ token })
+    // token 只留在主进程（lan-client / events 用），绝不回传渲染层：
+    // /events 升级仅凭 bearer token，渲染层拿到即可从 LAN 任意机器订阅事件（v1.4 终审 S4）。
+    return ok(null)
   }
 
   let pendingUsername = ''
   let pendingPassword = ''
+
+  /** 授权门控异常 → Result 错误码/文案（pairStart/reconnect/restore/invoke 共用）。 */
+  function licenseError(e: unknown): { code: string; msg: string } {
+    const code = e && typeof e === 'object' && 'code' in e ? String((e as { code: unknown }).code) : 'E_FEATURE_PRO'
+    const msg = e instanceof Error ? e.message : '此功能为专业版专属，请升级授权'
+    return { code, msg }
+  }
+
+  function clearPendingCredentials(): void {
+    pendingUsername = ''
+    pendingPassword = ''
+  }
 
   function ensureClient(): LanClient {
     if (client) return client
@@ -485,7 +513,9 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
         }
       },
       onAuthFailed: () => {
-        markRevoked('与主机的连接已被吊销，请重新配对')
+        // E_AUTH_FAILED 只说明会话 token 失效/过期（8h TTL），不等于设备被吊销：
+        // 引导用户重新输账号密码登录即可，避免误进 revoked 需店长再确认（v1.4 终审 S3）。
+        markSessionExpired()
       }
     })
     return client
@@ -508,10 +538,33 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
   function markRevoked(msg: string): void {
     if (state.status === 'revoked') return
     stopPolling()
+    // 吊销后必须关掉 WS：否则 host-events-client 对非 4003/4001 关闭会无限后台重连。
+    events?.close()
+    events = null
+    client?.setConnected(false)
     client?.reconnect().stop()
     creds.token = null
+    clearPendingCredentials()
     persistCredentials()
     setStatus('revoked', { code: 'E_NOT_PAIRED', msg })
+  }
+
+  /** 会话过期/token 失效：可重新登录恢复，区别于真吊销（4003/revoked_at）。 */
+  function markSessionExpired(): void {
+    // 真吊销与在途 session:ping 的 401 会竞态：WS 4003 已置 revoked 时，
+    // 迟到的 E_AUTH_FAILED 不得把状态覆写成 error（否则 UI 显示「重连主机」
+    // 而非「已被吊销」，且会拿失效 secret 反复登录）。
+    if (state.status === 'revoked') return
+    stopPolling()
+    events?.close()
+    events = null
+    client?.setConnected(false)
+    client?.reconnect().stop()
+    creds.token = null
+    clearPendingCredentials()
+    persistCredentials()
+    // 'error' + configured=true → ClientConnectView 显示「重连主机」入口。
+    setStatus('error', { code: 'E_SESSION_EXPIRED', msg: '会话已过期，请重新输入主机账号密码重连' })
   }
 
   /** 重连成功后按原 requestId 幂等重发 pending（只有登记过的幂等通道才会进 pending）。 */
@@ -536,17 +589,16 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
     username: string
     password: string
   }): Promise<Result<{ pairingCode: string; expiresAt: number }>> {
+    if (state.status === 'pairing' || state.status === 'connecting') {
+      return fail('VALIDATION', '配对或连接正在进行中，请稍候')
+    }
     // 授权门控（v1.4 B9）：客户端模式需本机授权含 lan_collaboration（专业版）；试用期内放行。
     try {
       deps.assertLicensed?.()
     } catch (e) {
-      const code = e && typeof e === 'object' && 'code' in e ? String((e as { code: unknown }).code) : 'E_FEATURE_PRO'
-      const msg = e instanceof Error ? e.message : '此功能为专业版专属，请升级授权'
-      setStatus('error', { code, msg })
-      return fail(code, msg)
-    }
-    if (state.status === 'pairing') {
-      return fail('VALIDATION', '配对进行中，请等待主机确认')
+      const err = licenseError(e)
+      setStatus('error', err)
+      return fail(err.code, err.msg)
     }
     const address = normalizeHostAddress(input.address)
     if (!address) {
@@ -579,7 +631,12 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
       setStatus('error', { code: started.code, msg: started.msg })
       return started
     }
-    const data = started.data as unknown as { pairingCode: string; expiresAt: number; fingerprintHex: string | null }
+    const data = started.data
+    if (!data) {
+      const msg = '主机未返回配对信息'
+      setStatus('error', { code: 'E_PAIRING_FAILED', msg })
+      return fail('E_PAIRING_FAILED', msg)
+    }
     state.pairingCode = data.pairingCode
     state.pairingExpiresAt = data.expiresAt
     emit()
@@ -589,8 +646,18 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
   }
 
   async function reconnect(input: { username: string; password: string }): Promise<Result> {
+    try {
+      deps.assertLicensed?.()
+    } catch (e) {
+      const err = licenseError(e)
+      setStatus('error', err)
+      return fail(err.code, err.msg)
+    }
     if (!state.hostAddress || !creds.secretHex) {
       return fail('E_NOT_PAIRED', '尚未与主机配对，请先申请配对')
+    }
+    if (state.status === 'pairing' || state.status === 'connecting') {
+      return fail('VALIDATION', '配对或连接正在进行中，请稍候')
     }
     pendingUsername = String(input.username ?? '').trim()
     pendingPassword = String(input.password ?? '')
@@ -608,6 +675,7 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
     client?.setConnected(false)
     client?.reconnect().stop()
     creds.token = null
+    clearPendingCredentials()
     persistCredentials()
     state.pairingCode = null
     state.pairingExpiresAt = null
@@ -629,6 +697,7 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
     creds.secretHex = null
     creds.fingerprintHex = null
     creds.token = null
+    clearPendingCredentials()
     state.hostAddress = null
     state.deviceName = null
     state.deviceId = null
@@ -642,17 +711,43 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
   }
 
   async function invoke(channel: string, payload: unknown): Promise<Result> {
+    try {
+      deps.assertLicensed?.()
+    } catch (e) {
+      const err = licenseError(e)
+      return fail(err.code, err.msg)
+    }
     const c = client
     if (!c || !state.hostAddress) return fail('E_NOT_PAIRED', '尚未与主机配对')
+    // disconnect / 会话过期后 token 为空：直接拒绝，避免带空 token 的读请求
+    // 被主机判 401 再误判成「设备吊销」（v1.4 终审 S1）。
+    if (!creds.token) return fail('E_HOST_UNREACHABLE', '当前未连接主机，请先重连')
     const result = await c.invoke(channel, payload)
-    // 吊销判定：主机回 E_AUTH_FAILED（会话无效/设备已吊销）或 E_NOT_PAIRED。
-    if (!result.ok && (result.code === 'E_AUTH_FAILED' || result.code === 'E_NOT_PAIRED') && creds.secretHex) {
+    if (!result.ok && result.code === 'E_AUTH_FAILED') {
+      // 8h 会话过期 / token 失效 → 重新登录，不销毁配对。
+      markSessionExpired()
+    } else if (!result.ok && result.code === 'E_NOT_PAIRED' && creds.secretHex) {
+      // secret 已失效才是真吊销（主机侧 revoked_at / 设备被删）。
       markRevoked('与主机的连接已被吊销，请重新配对')
     }
     return result
   }
 
   async function restore(): Promise<Result> {
+    // 授权门控（按机授权 v1.4 定案）：试用到期/无 LAN 授权的机器不得进入客户端模式。
+    try {
+      deps.assertLicensed?.()
+    } catch {
+      // 不删持久化设置：激活后重启仍可恢复客户端配置。但必须把内存态清成
+      // idle + configured=false，否则 index.ts 的 onStateChanged 会把
+      // clientModeActive 置 true，连本地单机业务都被 E_CLIENT_MODE 挡住（v1.4 终审 S4）。
+      state.hostAddress = null
+      state.deviceName = null
+      state.deviceId = null
+      state.configured = false
+      setStatus('idle')
+      return ok(null)
+    }
     const address = deps.getSetting(SETTING_HOST_ADDRESS)
     const deviceName = deps.getSetting(SETTING_DEVICE_NAME)
     const deviceId = deps.getSetting(SETTING_DEVICE_ID)
@@ -667,6 +762,12 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
       setStatus('idle')
       return ok(null)
     }
+    if (!creds.token) {
+      // token 为空/会话过期：不要带空 token 去 session:ping（会被 401 误判吊销），
+      // 直接进 error 让用户重新输账号密码登录即可（v1.4 终审 S3）。
+      markSessionExpired()
+      return ok(null)
+    }
     ensureClient()
     setStatus('connecting')
     const r = await client?.invoke('session:ping', { probe: true })
@@ -676,6 +777,9 @@ export function createClientConnection(deps: ClientConnectionDeps): ClientConnec
       connectEvents()
       return ok(null)
     }
+    // session:ping 失败可能已触发 onAuthFailed→markSessionExpired / markRevoked，
+    // 状态已被改为 error/revoked，不要再覆写成 connecting（v1.4 终审 S2）。
+    if (state.status === 'error' || state.status === 'revoked') return ok(null)
     setStatus('connecting', { code: r?.code ?? 'E_HOST_UNREACHABLE', msg: '与主机的连接已断开，正在自动重连…' })
     return ok(null)
   }

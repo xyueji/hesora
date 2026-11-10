@@ -176,7 +176,12 @@ describe('client connection integration (T9)', () => {
     rig.secretRegistry.delete(deviceId)
 
     // 6. 客户端感知吊销（WS close(4003) → onRevoked → 'revoked'）
-    await waitFor(() => client.status().status === 'revoked', 15_000)
+    try {
+      await waitFor(() => client.status().status === 'revoked', 15_000)
+    } catch {
+      const seen = rig.states.map((s) => `${s.status}${s.lastErrorCode ? `(${s.lastErrorCode})` : ''}`).join(' → ')
+      throw new Error(`等待 revoked 超时；状态序列：${seen}`)
+    }
     expect(client.status().lastErrorCode).toBe('E_NOT_PAIRED')
     // 请求层也已拒绝
     const r2 = await client.invoke('product:query', { q: 'x' })

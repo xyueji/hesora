@@ -6,6 +6,7 @@ import { resolveDatabasePath } from './db/location'
 import { ensureProfileDir, resolveProfilePath } from './db/profile'
 import { seedDemoData, resetDemoData } from './db/seed'
 import { isTrialExpiredWrite, hasFeature } from '../shared/license'
+import { matchesPrefix, LOCAL_CHANNEL_PREFIXES, HOST_ONLY_PREFIXES } from '../shared/channels'
 import { assertMaxDevices, assertFeature } from './services/license-gate'
 import { effectiveLicensePayload } from './services/license/trial-payload'
 import { ALL_PERMISSIONS, ROLE_PRESETS } from '../shared/permissions'
@@ -339,11 +340,17 @@ function initialize(): void {
   const lanEnabledRow = getDb().prepare("SELECT value FROM app_setting WHERE key='host_lan_enabled'").pluck().get() as
     | string
     | undefined
+  // v1.4 终审 S5：主机/客户端角色互斥。本机已配置为 LAN 客户端（client.host_address 非空）时，
+  // 即便误开主机开关也不启动主机服务，避免远端请求把数据写进本机库造成双库分叉。
+  const clientConfiguredRow = getDb().prepare("SELECT value FROM app_setting WHERE key='client.host_address'").pluck().get() as
+    | string
+    | undefined
+  const canRunHost =
+    hasFeature(licensePayload, 'lan_collaboration') && lanEnabledRow === '1' && !clientConfiguredRow
   // v1.3 Task 8: Tray 门控复用的组合布尔（原 if 条件追加提炼，语义不变）。
-  const lanAllowed =
-    hasFeature(licensePayload, 'lan_collaboration') && lanEnabledRow === '1'
+  const lanAllowed = canRunHost
   lanAllowedRef = lanAllowed
-  if (hasFeature(licensePayload, 'lan_collaboration') && lanEnabledRow === '1') {
+  if (canRunHost) {
     // initialize() 同步——异步启动放进 IIFE，失败只记日志不阻断主进程。
     void (async () => {
       try {
@@ -356,7 +363,23 @@ function initialize(): void {
       const { createEventHub } = await import('./host/events')
       const { setHostEventSink } = await import('./host/event-bus')
       const cert = await ensureHostCertificate(join(app.getPath('userData'), 'host-cert'))
-      const handlers = new Map(buildAllHandlers(handlerDeps).map((h) => [h.channel, h]))
+      // v1.4 终审 S5：主机网关 handler 也做角色互斥（与本地 IPC 的 E_CLIENT_MODE 包装同口径）。
+      // 若运行中本机被配置为 LAN 客户端（clientModeActive=true），远端普通业务请求一律拒绝写本机库，
+      // 防止「一台机器既当主机又当客户端」造成双库分叉。
+      const handlers = new Map(
+        buildAllHandlers(handlerDeps).map((h) => [
+          h.channel,
+          {
+            channel: h.channel,
+            handler: (evt: unknown, payload: unknown, session?: unknown) => {
+              if (clientModeActive) {
+                throw new BizError('E_CLIENT_MODE', '本机已作为客户端连接到主机，业务操作需在主机上执行')
+              }
+              return h.handler(evt, payload, session)
+            }
+          }
+        ])
+      )
       // v1.4（B4/T5 修复）：客户端重连探测通道 session:ping——无副作用、不查业务表、
       // 不需要任何业务权限，仅要求有效会话 + 正确 HMAC 签名。
       // 注意：只注册到主机网关的 handler 表（不进 buildAllHandlers，避免污染 IPC 通道清单）。
@@ -605,14 +628,26 @@ function initialize(): void {
         try {
           const raw = readFileSync(pendingFilePath(), 'utf8')
           const parsed: unknown = JSON.parse(raw)
-          return Array.isArray(parsed) ? (parsed as import('./host/pending-registry').PendingEntry[]) : []
+          if (!Array.isArray(parsed)) return []
+          // v1.4 终审 S5：逐项校验，损坏/被篡改的文件不得把畸形条目灌进 pending Map
+          // （pending-registry 会直接 map.set(e.requestId, e)，缺字段会污染重发流程）。
+          return parsed.filter(
+            (e): e is import('./host/pending-registry').PendingEntry =>
+              !!e &&
+              typeof e === 'object' &&
+              typeof (e as { requestId?: unknown }).requestId === 'string' &&
+              (e as { requestId: string }).requestId.length > 0 &&
+              typeof (e as { channel?: unknown }).channel === 'string' &&
+              (e as { channel: string }).channel.length > 0 &&
+              'payload' in (e as object)
+          )
         } catch {
           return []
         }
       },
       save: (entries: import('./host/pending-registry').PendingEntry[]): void => {
         try {
-          const tmp = `${pendingFilePath()}.tmp`
+          const tmp = `${pendingFilePath()}.${process.pid}.tmp`
           writeFileSync(tmp, JSON.stringify(entries), 'utf8')
           renameSync(tmp, pendingFilePath())
         } catch (e) {
@@ -672,6 +707,17 @@ function initialize(): void {
       'lan:invoke': async (_evt, payload) => {
         const { channel, payload: inner } = (payload ?? {}) as { channel?: unknown; payload?: unknown }
         if (typeof channel !== 'string' || !channel) throw new BizError('VALIDATION', '缺少通道名')
+        // v1.4 终审 S4：本机 LAN 客户端转发口统一按「按机授权」判定，试用到期/基础版不得
+        // 借 restore/重连/lan:invoke 继续用 LAN 协作（与 pairStart 门控口径一致）。
+        assertClientLicensed()
+        // v1.4 终审 S4：通道白名单——本机专用（license:/host:/lan:/auth: 等）与主机专用
+        // （backup:/sync:）通道不得经转发口直达主进程/远端，避免 preload 路由被绕过。
+        if (
+          matchesPrefix(channel, LOCAL_CHANNEL_PREFIXES) ||
+          matchesPrefix(channel, HOST_ONLY_PREFIXES)
+        ) {
+          throw new BizError('NO_PERMISSION', `通道 ${channel} 不支持局域网转发`)
+        }
         const r = await clientConn.invoke(channel, inner)
         if (!r.ok) throw new BizError(r.code, r.msg || '主机请求失败')
         return r.data
