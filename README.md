@@ -14,7 +14,7 @@
 - **同步/备份**：手动备份/恢复、自动备份，WebDAV 或本地目录云盘同步（上传/下载/从云端恢复）
 - **权限**：RBAC 角色权限——内置管理员/收银员 + 自定义角色（47 个权限点按 8 组可视化勾选），菜单与操作级权限控制，多用户管理
 - **界面**：多标签页工作台（每页面一个 TAB，支持批量关闭/keep-alive 缓存）
-- **试用**：首次运行即 15 天全功能试用，激活后永久使用
+- **试用**：首次运行即 7 天全功能试用（含专业版功能，无延期），到期转只读，激活后恢复
 
 ## 安装
 
@@ -26,7 +26,7 @@
 
 ## 试用与激活
 
-- 未激活状态下首次运行开始 **15 天全功能试用**；到期后仅登录/激活可用。
+- 未激活状态下首次运行开始 **7 天全功能试用**（含专业版功能，无延期）；到期后进入只读模式（业务单据暂停新增与修改，查看、导出与备份不受影响），激活后恢复。
 - 激活：在软件激活页粘贴商家签发的激活码，由客户端离线验签：
   - 服务端工具位于 `tools/activation-server/`（Node + SQLite，部署到 VPS 或本机运行，详见该目录 README）。
   - 流程：商家使用签发工具生成激活码 → 客户粘贴到软件激活页。
@@ -43,19 +43,39 @@
 
 ## 升级（提示式更新）
 
-客户端每天最多检查一次更新（本地时间戳记录，检查失败静默跳过，不影响离线使用）。检查地址由环境变量 `HESORA_UPDATE_URL` 注入（默认留空＝关闭更新检查）：
+客户端每天最多检查一次更新（本地时间戳记录；检查失败静默跳过，不影响离线使用）。
+采用 **Gitee 优先、GitHub 回退** 的双渠道：按顺序拉取 `latest.json`（Gitee 优先），
+渠道失败（网络异常 / 非 2xx / JSON 非法 / 字段非法 / 下载链接不在白名单）才回退 GitHub；
+渠道有效但无更新则立即结束、不再回退。两处 manifest 必须同步为同一版本。
 
-```bash
-HESORA_UPDATE_URL=https://updates.example.com/hesora/latest.json
-```
+> 官方发布渠道（Gitee / GitHub 的 `xyueji/hesora`）**仅用于分发安装包与更新清单，
+> 不提供源码、禁止推送源码**；本地开发仓库不配置任何 git remote。
 
-发布新版本前把该常量改为你的真实地址，并在服务器放置 `latest.json`：
+检查地址默认内置（可被环境变量覆盖）：
+
+| 变量 | 默认值 |
+|---|---|
+| `HESORA_UPDATE_GITEE_URL` | `https://gitee.com/xyueji/hesora/raw/main/latest.json` |
+| `HESORA_UPDATE_GITHUB_URL` | `https://raw.githubusercontent.com/xyueji/hesora/main/latest.json` |
+| `HESORA_UPDATE_URL` | 兼容单渠道覆盖（设置后作为唯一渠道） |
+
+发布规范：release tag 恒为 `latest`、附件名恒为 `hesora-inventory-setup.exe`，
+每次发版覆盖同一 tag 的附件；两个仓库 `main` 分支的 `latest.json` 同步为同一版本
+（`version` 递增、`sha256` 必填、`url` 可省略）：
 
 ```json
-{ "version": "1.0.1", "notes": "修复若干问题", "url": "https://.../禾序进销存-1.0.1-setup.exe" }
+{ "version": "1.0.1", "notes": "修复若干问题", "sha256": "<64 位 hex>" }
 ```
 
-用户端发现新版本会弹出通知，点击后用系统浏览器打开 `url` 下载新安装包，覆盖安装即可（数据不丢失）。
+`url` 省略时，客户端按固定 tag + 固定包名拼接 Gitee release 附件地址；下载链接主机受
+域名白名单约束（github.com / *.githubusercontent.com / github.io / gitee.com / *.gitee.com / gitee.io）。
+`sha256` 在更新提示里展示前 8 位并支持复制全文，供下载后核对完整性。
+
+用户端发现新版本会弹出通知，点击后用系统浏览器打开**固定下载地址**下载安装包，
+**手动运行覆盖安装**（数据不丢失）。这是「提示式更新」，**不自动下载/安装**；
+真正一键自动更新需二期引入 electron-updater + 代码签名。
+
+详见 [更新渠道配置](docs/update-channels.md)。
 
 ## 开发者指南
 
@@ -84,7 +104,7 @@ pnpm dist:release:signed   # 购买代码签名证书后使用（forceCodeSignin
 - [ ] migrations 001-005 已随包打入 `resources/migrations`
 - [ ] `pnpm test` 全绿、`pnpm typecheck:node` / `pnpm typecheck:web` 通过
 - [ ] 安装包启动冒烟：进程可启动、数据库可建立、登录页可见
-- [ ] 修改 `src/main/update.ts` 的 `UPDATE_URL` 为真实更新地址
+- [ ] 按 [更新渠道配置](docs/update-channels.md) 在 Gitee / GitHub 同步 `latest.json` 与 `tag=latest` 附件；`HESORA_UPDATE_GITEE_URL` / `HESORA_UPDATE_GITHUB_URL` 默认已内置真实地址，通常无需改动
 - [x] 禾序 SVG、PNG、Windows ICO 已接入界面与安装配置；兼容保留历史 appId 和账套路径
 
 ## Windows SmartScreen 首次运行提示（未签名安装包）
