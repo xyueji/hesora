@@ -302,7 +302,8 @@ describe('host server misc', () => {
     expect(j.ok).toBe(true)
     expect(j.data).toEqual({ got: { q: 'h1' } })
     await fx.app.close()
-  })
+    // 该用例需真实生成 TLS 证书并起 https 服务，全量并发跑时可能超默认 5s
+  }, 20_000)
 })
 
 describe('host server /pair/result (T8 双审 A2)', () => {
