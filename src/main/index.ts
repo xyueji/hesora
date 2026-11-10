@@ -1,11 +1,13 @@
-import { app, shell, BrowserWindow, dialog } from 'electron'
+import { app, shell, BrowserWindow, dialog, ipcMain } from 'electron'
+import { readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join } from 'path'
 import { openDb, type DB } from './db'
 import { resolveDatabasePath } from './db/location'
 import { ensureProfileDir, resolveProfilePath } from './db/profile'
 import { seedDemoData, resetDemoData } from './db/seed'
 import { isTrialExpiredWrite, hasFeature } from '../shared/license'
-import { assertMaxDevices } from './services/license-gate'
+import { assertMaxDevices, assertFeature } from './services/license-gate'
+import { effectiveLicensePayload } from './services/license/trial-payload'
 import { ALL_PERMISSIONS, ROLE_PRESETS } from '../shared/permissions'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
 import { createHostPairIpc, shouldCreateTray } from './ipc/host-pair-ipc'
@@ -18,12 +20,39 @@ import { createDesktopLicenseService } from './license'
 import { applyPendingRestore } from './services/backup/backup.service'
 import { createAuditService } from './services/audit/audit.service'
 import { BizError } from '../shared/result'
+import { createClientConnection as createClientConnectionImpl } from './host/client-connection'
+import { createSplashWindow, closeSplashWindow } from './splash'
 
 // v1.3 Task 5: LAN 主机服务退出关闭引用（initialize 内 IIFE 赋值，window-all-closed 消费）。
 let hostServerRef: { close(): Promise<void> } | null = null
 // v1.3 Task 8: Tray 引用（仅 lanAllowed 创建；window-all-closed 隐藏语义 + before-quit 清理用）。
 // B6（T8 双审）：window-all-closed 按 lanAllowed 判断（模块级，Tray 创建失败也不误退）。
 let lanAllowedRef = false
+// v1.4 客户端接线：本机作为 LAN 客户端（连接主机）的状态机引用。
+// 用途：① 'lan:client*' IPC ② 'lan:client-state' 广播 ③ 退出时 flush 客户端 pending。
+// 注意：主机侧没有 pending 实例（主机不产生待重试请求），退出 flush 只针对客户端。
+let clientConnectionRef: import('./host/client-connection').ClientConnection | null = null
+// v1.4：本机是否处于"客户端角色"（已配置主机）——业务通道禁止落本机库（防主机/客户端数据分叉）。
+let clientModeActive = false
+// v1.4：主机自签证书指纹（配对握手下发给客户端做 pinning）。
+let hostFingerprintHexRef: string | null = null
+// 启动过渡页：app.whenReady() 后立即显示，主窗口 ready-to-show 或启动异常时关闭。
+// 不参与单实例锁、不监听 window-all-closed，也不阻止 app.quit()。
+let splashWindow: ReturnType<typeof createSplashWindow> | null = null
+// 安全网：若主窗口因渲染进程异常迟迟不触发 ready-to-show，20s 后也强制关闭过渡页，
+// 避免留下一个 alwaysOnTop + closable:false 的无法关闭置顶窗（质量预审 N-5）。
+let splashSafetyTimer: ReturnType<typeof setTimeout> | null = null
+function clearSplashSafety(): void {
+  if (splashSafetyTimer) {
+    clearTimeout(splashSafetyTimer)
+    splashSafetyTimer = null
+  }
+}
+function closeSplashSafely(): void {
+  clearSplashSafety()
+  closeSplashWindow(splashWindow)
+  splashWindow = null
+}
 import { createDocService } from './services/doc/doc.service'
 import { createPrintIpc } from './print'
 import { createCsvIpc } from './csv'
@@ -79,6 +108,8 @@ function createWindow(): BrowserWindow {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+    // 主窗口已绘制：幂等关闭过渡页（重复触发 / 已销毁都安全）。
+    closeSplashSafely()
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -105,16 +136,35 @@ if (!app.requestSingleInstanceLock()) {
     if (window?.isMinimized()) window.restore()
     window?.focus()
   })
-  void app.whenReady().then(initialize).catch((error: unknown) => {
+  void app.whenReady().then(() => {
+    // 过渡页在任何 SQLite 打开 / migration / renderer 加载之前立即显示。
+    splashWindow = createSplashWindow()
+    // 20s 安全网：即使主窗口渲染异常未触发 ready-to-show，也不留下无法关闭的置顶窗。
+    splashSafetyTimer = setTimeout(() => closeSplashSafely(), 20_000)
+    initialize()
+  }).catch((error: unknown) => {
+    // 异常兜底：先关过渡页，避免残留窗口阻塞退出；随后 app.quit() 强制收尾。
+    closeSplashSafely()
     dialog.showErrorBox('禾序进销存无法启动', error instanceof Error ? error.message : String(error))
     app.quit()
   })
 }
 
 function initialize(): void {
-  // 试用到期守卫：trial 且 daysLeft<=0 时，除 auth:*/license:* 外一律拒绝
+  // 试用到期守卫由 isTrialExpiredWrite 按 7 前缀白名单精判（到期仍允许 auth:/license:/backup:/sync: 等）。
   const licenseSvc = createDesktopLicenseService(getDb())
   licenseSvc.getStatus()
+  // v1.4 试用 7 天全功能：统一计算"当前生效授权载荷"，惰性重读以感知激活。
+  // expired 一律返回 null（防过期越权使用专业版功能）；
+  // trial/activated 返回真实授权（已激活）或试用全功能载荷（未激活试用中）。
+  const currentLicensePayload = () => {
+    const phase = licenseSvc.getStatus().phase
+    const fullAccess = phase === 'trial' || phase === 'activated'
+    const row = getDb().prepare("SELECT value FROM app_setting WHERE key='license.code'").pluck().get() as
+      | string
+      | undefined
+    return effectiveLicensePayload(row ? licenseSvc.verifyFormat(row) : null, fullAccess)
+  }
   const auditSvc = createAuditService(getDb())
   // 敏感操作审计：危险/敏感通道在执行后写 platform_log（AGENTS.md §5 红线要求）。
   const operator = () => getCurrentUser()?.username
@@ -135,7 +185,7 @@ function initialize(): void {
     if (channel.startsWith('auth:') || channel.startsWith('license:') || channel.startsWith('trial:') || channel.startsWith('update:')) return true
     if (!prevGuard(channel)) return false
     const status = licenseSvc.getStatus()
-    // 新试用策略：expired（超 14 天未激活）→ 只读模式，拦截业务单据写通道；
+    // 新试用策略：expired（试用 7 天期满未激活）→ 只读模式，拦截业务单据写通道；
     // isTrialExpiredWrite 内部放行 license:/trial:/backup:/sync:/csv:/auth:/update: 白名单。
     if (isTrialExpiredWrite(channel, status.phase, status.daysLeft)) {
       audit('trial.blocked', `试用到期只读拦截通道: ${channel}`)
@@ -157,17 +207,22 @@ function initialize(): void {
     attachmentsDir: () => join(app.getPath('userData'), 'attachments'),
     resetDemoData,
     licenseSvc: () => licenseSvc,
-    // v1.4 授权门控：激活后授权可变，惰性重读 license.code → verifyFormat。
-    licensePayload: () => {
-      const row = getDb().prepare("SELECT value FROM app_setting WHERE key='license.code'").pluck().get() as
-        | string
-        | undefined
-      return row ? licenseSvc.verifyFormat(row) : null
-    },
+    // v1.4 授权门控：激活后授权可变，惰性重读；试用 7 天全功能由 currentLicensePayload 统一包装。
+    licensePayload: () => currentLicensePayload(),
     auditSvc: () => auditSvc
   }
   for (const { channel, handler } of buildAllHandlers(handlerDeps)) {
-    registerIpc({ [channel]: handler })
+    registerIpc({
+      [channel]: (evt, payload) => {
+        // v1.4 客户端角色保护：本机已连接主机时，业务操作一律经 preload 路由到主机
+        // （'lan:invoke'）。若仍落到本机 handler（首屏竞态/异常路径）→ 明确拒绝，
+        // 避免把数据写进本机库造成主机/客户端数据分叉。
+        if (clientModeActive) {
+          throw new BizError('E_CLIENT_MODE', '本机已作为客户端连接到主机，业务操作需在主机上执行')
+        }
+        return handler(evt, payload)
+      }
+    })
   }
 
   // print:a4pdf 权限判定：复用 handlers.ts 导出的 canViewDocument（单一事实来源）
@@ -266,7 +321,7 @@ function initialize(): void {
     listen(): Promise<number>
     onConnection(cb: (ws: unknown, req: import('node:http').IncomingMessage) => void): void
     /** T8 双审 A2/A3：/pair/result 登记与按设备踢连接（server.ts 5.x 新增）。 */
-    setPairResult?(code: string, result: { status: 'pending' | 'granted' | 'denied'; deviceId?: string; secretHex?: string; deviceName?: string }): void
+    setPairResult?(code: string, result: { status: 'pending' | 'granted' | 'denied'; deviceId?: string; secretHex?: string; deviceName?: string; fingerprintHex?: string }): void
     /** T9：HTTP /pair/start 到达回调（同步进 host:pairPending 列表）。 */
     setPairRequestCb?(cb: (entry: { code: string; deviceName: string; expiresAt: number }) => void): void
     disconnectDevice?(deviceId: string, closeCode?: number): number
@@ -274,19 +329,12 @@ function initialize(): void {
   let hostServer: HostServerHandleLike | null = null
   // v1.3 Task 8: pairing 实例提升到模块级闭包（host:* IPC 需在主机 IIFE 外可调）。
   let pairingRef: import('./host/pairing').PairingService | null = null
-  const licenseCodeRow = getDb().prepare("SELECT value FROM app_setting WHERE key='license.code'").pluck().get() as
-    | string
-    | undefined
-  // verifyFormat 是 licenseSvc 的公开方法（parseCode 的包装），返回 payload|null。
-  const licensePayload = licenseCodeRow ? licenseSvc.verifyFormat(licenseCodeRow) : null
+  // v1.4 试用 7 天全功能：LAN 主机启动判定（启动时一次性决策）也用包装后的载荷。
+  const licensePayload = currentLicensePayload()
   // v1.4 maxDevices：pairGrant 前检查未吊销设备数是否已达授权上限（activation 之后授权可变，惰性重读）。
   const assertDeviceLimit = (): void => {
-    const row = getDb().prepare("SELECT value FROM app_setting WHERE key='license.code'").pluck().get() as
-      | string
-      | undefined
-    const payload = row ? licenseSvc.verifyFormat(row) : null
     const count = (getDb().prepare('SELECT COUNT(*) AS c FROM host_devices WHERE revoked_at IS NULL').get() as { c: number }).c
-    assertMaxDevices(payload, count)
+    assertMaxDevices(currentLicensePayload(), count)
   }
   const lanEnabledRow = getDb().prepare("SELECT value FROM app_setting WHERE key='host_lan_enabled'").pluck().get() as
     | string
@@ -309,6 +357,15 @@ function initialize(): void {
       const { setHostEventSink } = await import('./host/event-bus')
       const cert = await ensureHostCertificate(join(app.getPath('userData'), 'host-cert'))
       const handlers = new Map(buildAllHandlers(handlerDeps).map((h) => [h.channel, h]))
+      // v1.4（B4/T5 修复）：客户端重连探测通道 session:ping——无副作用、不查业务表、
+      // 不需要任何业务权限，仅要求有效会话 + 正确 HMAC 签名。
+      // 注意：只注册到主机网关的 handler 表（不进 buildAllHandlers，避免污染 IPC 通道清单）。
+      handlers.set('session:ping', {
+        channel: 'session:ping',
+        handler: async () => ({ pong: true, at: Date.now() })
+      })
+      // v1.4（A1）：主机自签证书指纹下发给客户端做 TLS pinning（客户端不采信 TOFU）。
+      hostFingerprintHexRef = cert.fingerprintHex
       const gw = createGateway({ getDb, handlers: handlers as never })
       const pairing = createPairingService(getDb() as never)
       pairingRef = pairing
@@ -323,6 +380,8 @@ function initialize(): void {
         tls: { keyPem: cert.keyPem, certPem: cert.certPem },
         port: 18650,
         getDeviceSecret: deviceSecretLookup,
+        // v1.4（A1）：/pair/start 与 /pair/result(granted) 响应带主机证书指纹 → 客户端 pinning。
+        getFingerprintHex: () => hostFingerprintHexRef,
         sessionLogin: (username, password) => {
           const userSvc = createUserService(getDb())
           const user = userSvc.verify(username, password)
@@ -489,7 +548,13 @@ function initialize(): void {
         if (r.ok && typeof code === 'string' && hostServer?.setPairResult) {
           const { deviceId } = r.data as { deviceId: string }
           const secretHex = deviceSecrets.get(deviceId)
-          hostServer.setPairResult(code.trim(), { status: 'granted', deviceId, secretHex })
+          // v1.4（A1）：granted 时一并下发主机证书指纹 → 客户端据此 pinning（不采信 TOFU）。
+          hostServer.setPairResult(code.trim(), {
+            status: 'granted',
+            deviceId,
+            secretHex,
+            fingerprintHex: hostFingerprintHexRef ?? undefined
+          })
         }
         return r
       },
@@ -508,6 +573,150 @@ function initialize(): void {
         return hostPairIpc.revokeDevice(deviceId)
       },
       'host:status': () => hostPairIpc.status()
+    },
+    () => getCurrentUser()?.role === 'admin'
+  )
+
+  // ── v1.4 客户端接线：本机作为 LAN 客户端（配对 / 会话 / 通道转发 / 写操作暂停） ──
+  // 授权门控（按更严格方向实现 licensed per device，用户裁决待定）：
+  // 客户端模式要求**本机**授权含 lan_collaboration（专业版）；试用 7 天内放行、试用到期拒绝。
+  // 与主进程其它门控统一经 currentLicensePayload()：trial → TRIAL_FULL_PAYLOAD（含 lan）、
+  // expired → null、activated → 真实授权，避免"硬编码试用放行"造成口径分叉。
+  const assertClientLicensed = (): void => {
+    assertFeature(currentLicensePayload(), 'lan_collaboration')
+  }
+
+  // 凭据存储（DPAPI）：safeStorage 只能动态 import，故用代理对象延后绑定；
+  // DPAPI 不可用时**不明文落盘**（client-credentials.ts 内部返回不可用 → 只降级内存态）。
+  let credentialStore: import('./host/client-credentials').HostCredentialStore | null = null
+  const credentialStoreProxy: import('./host/client-credentials').HostCredentialStore = {
+    available: () => credentialStore?.available() ?? false,
+    save: (hostAddress, cred) => credentialStore?.save(hostAddress, cred) ?? false,
+    load: (hostAddress) =>
+      credentialStore?.load(hostAddress) ?? { secretHex: '', fingerprintHex: '', token: '' },
+    remove: (hostAddress) => credentialStore?.remove(hostAddress)
+  }
+
+  // pending 幂等登记落盘（退出 flush → 持久化；重启后按原 requestId 重发，主机幂等表防重复过账）。
+  const pendingFilePath = (): string => join(app.getPath('userData'), 'client-pending.json')
+  const pendingPersist: import('./host/pending-registry').PendingRegistryDeps = {
+    persist: {
+      load(): import('./host/pending-registry').PendingEntry[] {
+        try {
+          const raw = readFileSync(pendingFilePath(), 'utf8')
+          const parsed: unknown = JSON.parse(raw)
+          return Array.isArray(parsed) ? (parsed as import('./host/pending-registry').PendingEntry[]) : []
+        } catch {
+          return []
+        }
+      },
+      save: (entries: import('./host/pending-registry').PendingEntry[]): void => {
+        try {
+          const tmp = `${pendingFilePath()}.tmp`
+          writeFileSync(tmp, JSON.stringify(entries), 'utf8')
+          renameSync(tmp, pendingFilePath())
+        } catch (e) {
+          console.warn('[client] pending persist failed:', e)
+        }
+      }
+    }
+  }
+
+  const clientConn = createClientConnectionImpl({
+    getSetting: (key: string) => {
+      const row = getDb().prepare('SELECT value FROM app_setting WHERE key=?').pluck().get(key) as
+        | string
+        | undefined
+      return row ?? null
+    },
+    setSetting: (key: string, value: string) => {
+      getDb()
+        .prepare(
+          'INSERT INTO app_setting (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+        )
+        .run(key, value)
+    },
+    credentialStore: credentialStoreProxy,
+    pendingPersist,
+    assertLicensed: assertClientLicensed,
+    onStateChanged: (state: import('./host/client-connection').ClientConnectionState) => {
+      clientModeActive = state.configured || state.status !== 'idle'
+      for (const win of BrowserWindow.getAllWindows()) win.webContents.send('lan:client-state', state)
+    },
+    log: (level: string, msg: string) => console.log(`[client:${level}] ${msg}`)
+  })
+  clientConnectionRef = clientConn
+
+  // 凭据存储就绪后恢复已保存的客户端配置（DPAPI 载入 secret/指纹/token）。
+  void (async () => {
+    try {
+      const { safeStorage } = await import('electron')
+      const { createHostCredentialStore } = await import('./host/client-credentials')
+      credentialStore = createHostCredentialStore({ userDataDir: app.getPath('userData'), safeStorage })
+      await clientConn.restore()
+    } catch (e) {
+      console.warn('[client] credential store unavailable (re-pair after restart):', e)
+    }
+  })()
+
+  // preload 首屏竞态消除：preload 同步拉一次客户端状态（必须在 createWindow 之前注册）。
+  ipcMain.on('lan:clientStatusSync', (event) => {
+    event.returnValue = clientConn.status()
+  })
+
+  // lan: 通道不进 PERMISSION_MAP（默认守卫会一律拒绝），故显式给守卫。
+  // 'lan:invoke' 是业务通道转发口——权限由**主机侧**按会话用户判定（server.ts 的 canFor）。
+  registerIpc(
+    {
+      'lan:clientStatus': () => clientConn.status(),
+      'lan:invoke': async (_evt, payload) => {
+        const { channel, payload: inner } = (payload ?? {}) as { channel?: unknown; payload?: unknown }
+        if (typeof channel !== 'string' || !channel) throw new BizError('VALIDATION', '缺少通道名')
+        const r = await clientConn.invoke(channel, inner)
+        if (!r.ok) throw new BizError(r.code, r.msg || '主机请求失败')
+        return r.data
+      }
+    },
+    () => true
+  )
+  // 客户端管理通道（配对/连接/断开/忘记）属本机管理功能：admin only。
+  registerIpc(
+    {
+      'lan:clientPairStart': async (_evt, payload) => {
+        const { address, deviceName, username, password } = (payload ?? {}) as {
+          address?: unknown
+          deviceName?: unknown
+          username?: unknown
+          password?: unknown
+        }
+        const r = await clientConn.pairStart({
+          address: String(address ?? ''),
+          deviceName: String(deviceName ?? ''),
+          username: String(username ?? ''),
+          password: String(password ?? '')
+        })
+        if (!r.ok) throw new BizError(r.code, r.msg)
+        return r.data
+      },
+      'lan:clientConnect': async (_evt, payload) => {
+        const { username, password } = (payload ?? {}) as { username?: unknown; password?: unknown }
+        const r = await clientConn.reconnect({
+          username: String(username ?? ''),
+          password: String(password ?? '')
+        })
+        if (!r.ok) throw new BizError(r.code, r.msg)
+        return r.data
+      },
+      'lan:clientDisconnect': () => {
+        const r = clientConn.disconnect()
+        if (!r.ok) throw new BizError(r.code, r.msg)
+        return r.data
+      },
+      'lan:clientForget': () => {
+        const r = clientConn.forget()
+        if (!r.ok) throw new BizError(r.code, r.msg)
+        return r.data
+      }
     },
     () => getCurrentUser()?.role === 'admin'
   )
@@ -545,8 +754,12 @@ function initialize(): void {
               {
                 label: '退出',
                 click: () => {
-                  // 彻底退出：先关 hostServer、清 Tray，再 app.exit（绕过 window-all-closed 隐藏逻辑）。
+                  // 彻底退出：先 flush 客户端 pending、关 hostServer、清 Tray，再 app.exit（绕过 window-all-closed 隐藏逻辑）。
                   void (async () => {
+                    // v1.4（B8）：app.exit 不触发 before-quit，pending flush 需在此显式执行。
+                    try {
+                      clientConnectionRef?.flushPending()
+                    } catch { /* ignore */ }
                     try {
                       if (hostServerRef) await hostServerRef.close()
                     } catch { /* ignore */ }
@@ -590,16 +803,21 @@ function initialize(): void {
 
 app.on('window-all-closed', () => {
   // v1.3 Task 5: 退出时关闭 LAN 主机服务（若已启动）。
-  // T8 双审勘误（I5）：退出时摘除主机事件 sink，防止退出途中再向已关闭的 hub 广播；
-  // pending 幂等登记 flush 留 TODO——pending-registry 目前在 lan-client（T9 客户端接线）
-  // 中实例化，本任务未实例化故无可 flush 对象。
+  // T8 双审勘误（I5）：退出时摘除主机事件 sink，防止退出途中再向已关闭的 hub 广播。
   void (async () => {
     try {
       const { setHostEventSink } = await import('./host/event-bus')
       setHostEventSink(null)
     } catch { /* ignore */ }
   })()
-  // TODO(T9): lan-client + PendingRegistry 在客户端接线时实例化，届时在此 flush()
+  // v1.4（B8，消除 TODO(T9)）：flush **客户端** 的 pending 幂等登记（落盘），
+  // 重启后按原 requestId 重发（主机幂等表保证只生效一次）。
+  // 主机侧没有 pending 实例（主机不产生待重试请求），此处只 flush 客户端。
+  try {
+    clientConnectionRef?.flushPending()
+  } catch (e) {
+    console.warn('[client] pending flush failed:', e)
+  }
   if (hostServerRef) {
     hostServerRef.close().catch(() => {})
   }
@@ -608,5 +826,14 @@ app.on('window-all-closed', () => {
     // 而非 trayRef——Tray 创建失败（如无图标）时窗口全关也不应 quit，主机留在后台持续可连。
     if (lanAllowedRef) return
     app.quit()
+  }
+})
+
+// v1.4（B8）：退出前再 flush 一次客户端 pending（window-all-closed 未触发时也覆盖到）。
+app.on('before-quit', () => {
+  try {
+    clientConnectionRef?.flushPending()
+  } catch (e) {
+    console.warn('[client] pending flush failed:', e)
   }
 })

@@ -33,6 +33,12 @@ export interface HostServerDeps {
   port?: number
   /** 设备明文 secret 查询（HMAC 校验用）。配对确认时由接线层记录（见 deviceSecrets）。 */
   getDeviceSecret?: (deviceId: string) => string | null
+  /**
+   * v1.4（A1）：主机自签证书指纹（sha256(DER).hex）——配对握手时随 /pair/start 与
+   * /pair/result(granted) 一并下发，客户端据此做 TLS pinning（不采信 TOFU）。
+   * 接线层来自 cert.ts ensureHostCertificate 的 fingerprintHex。
+   */
+  getFingerprintHex?: () => string | null
   /** /auth/session（spec §5.5）：员工密码校验 + 会话/权限解出。接线层注入（userSvc 复用）。 */
   sessionLogin?: (username: string, password: string) => {
     user: { id: number; username: string; role: string; roleName?: string; permissions?: string[] }
@@ -78,6 +84,8 @@ interface PairResultEntry {
   deviceName?: string
   deviceId?: string
   secretHex?: string
+  /** v1.4（A1）：主机证书指纹——granted 时随 secret 一次性下发，供客户端 pinning。 */
+  fingerprintHex?: string
 }
 
 function isLocalChannel(channel: string): boolean {
@@ -170,8 +178,10 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
     log('info', `pairing request from ${ip}: device "${deviceName}" code ${started.code}（T8 弹窗确认占位）`)
     pairResults.set(started.code, { status: 'pending', deviceName: deviceName.trim() })
     pairRequestCb?.({ code: started.code, deviceName: deviceName.trim(), expiresAt: started.expiresAt })
+    // v1.4（A1）：握手即下发主机证书指纹——客户端在 granted 阶段核对同一指纹后开始 pinning。
+    const fingerprintHex = deps.getFingerprintHex?.() ?? null
     return {
-      ok: true, code: 'OK', msg: '', data: { pending: true, pairingCode: started.code, expiresAt: started.expiresAt }
+      ok: true, code: 'OK', msg: '', data: { pending: true, pairingCode: started.code, expiresAt: started.expiresAt, fingerprintHex }
     }
   })
 
@@ -205,10 +215,12 @@ export async function createHostServer(deps: HostServerDeps): Promise<HostServer
     }
     if (entry.status === 'granted') {
       // 一次性下发：secret 随首个 granted 响应交出后作废（其余字段保留，status 仍 granted）。
+      // v1.4（A1）：同时下发主机证书指纹——客户端据此锁定 TLS pinning（不采信 TOFU）。
       const data: Record<string, unknown> = {
         status: 'granted',
         deviceName: entry.deviceName,
-        deviceId: entry.deviceId
+        deviceId: entry.deviceId,
+        fingerprintHex: entry.fingerprintHex ?? deps.getFingerprintHex?.() ?? null
       }
       if (entry.secretHex) {
         data.secret = entry.secretHex

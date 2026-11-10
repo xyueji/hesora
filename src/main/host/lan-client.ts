@@ -25,6 +25,11 @@ export interface LanClientDeps {
   /** 本机 deviceId（pairing 时主机分配/协商） */
   getDeviceId: () => string
   onStateChanged?: (connected: boolean) => void
+  /**
+   * v1.4：主机侧鉴权失败（会话无效 / 设备已吊销，主机返回 E_AUTH_FAILED）回调。
+   * 接线层据此把客户端状态机切到 'revoked'（B7 吊销检测）。
+   */
+  onAuthFailed?: (code: string) => void
   /** T8：pending 登记持久化（可选；默认内存。main 侧接线层可传 fs 实现） */
   pendingPersist?: PendingRegistryDeps
   /** T8：测试注入定时器（不传用真实 setTimeout） */
@@ -44,6 +49,21 @@ export interface LanClient {
 
 const TIMEOUT_MS = 8_000
 
+/**
+ * v1.4（B4 T5 红线修复）：重连探测通道。
+ * 旧实现用 `product:query` + payload=null 探测——payload null 会让主机侧
+ * product.service 的 query(q) 读 q.pageSize 抛 TypeError（网关兜底成 INTERNAL），
+ * 且 product:query 受 product.view 权限限制（收银员账号恒 NO_PERMISSION），
+ * 于是 attempt 恒 false → 自动重连永不成功。
+ * 现改为专用无副作用探测通道 session:ping：主机在 /rpc 路由里显式应答 pong
+ * （不查业务表、不需要任何业务权限，仅需有效会话 + HMAC）。
+ * 旧版主机不认识该通道 → 网关返回 NOT_FOUND，探测仍判定"主机可达"。
+ */
+export const PROBE_CHANNEL = 'session:ping'
+
+/** 探测结果判定：这些码说明"主机不可达或本机配置失效"，其余业务失败码说明主机在线。 */
+const UNREACHABLE_CODES = new Set(['E_HOST_UNREACHABLE', 'E_AUTH_FAILED', 'E_NOT_PAIRED', 'E_FINGERPRINT_MISMATCH'])
+
 function bodySha256hex(body: string): string {
   return createHash('sha256').update(body).digest('hex')
 }
@@ -52,29 +72,47 @@ export function createLanClient(deps: LanClientDeps): LanClient {
   let connected = false
 
   // T8：pending 幂等登记 + 重连状态机（断线由 setConnected(false) 触发退避循环；
-  // attempt 用一次最小探测 invoke（product:query 只读、无幂等副作用），成功即重置）。
+  // attempt 用专用探测通道 session:ping，见 PROBE_CHANNEL 注释）。
   const pendingRegistry = createPendingRegistry(deps.pendingPersist)
   const reconnectCtl = createReconnectController({
     attempt: async () => {
       const baseUrl = deps.getBaseUrl()
       if (!baseUrl) return false
-      const r = await rawInvoke(baseUrl, 'product:query', null)
-      return r.ok
+      const r = await rawInvoke(baseUrl, PROBE_CHANNEL, { probe: true })
+      if (r.ok) return true
+      // 主机在线但业务侧失败（旧版主机不识别 session:ping → NOT_FOUND；或权限不足）
+      // 同样说明主机可达——不能一律判失败，否则收银员等低权限账号永远重连不上。
+      return !UNREACHABLE_CODES.has(r.code)
     },
     schedule: deps.reconnectSchedule,
     cancel: deps.reconnectCancel
   })
 
-  function setConnected(v: boolean): void {
-    if (connected !== v) {
-      connected = v
-      deps.onStateChanged?.(v)
-      // T8 重连裁定：掉线 → 启动退避循环；恢复 → markConnected 重置。
-      // E_NOT_PAIRED / E_FINGERPRINT_MISMATCH 这类配置性失败不触发自动重连
-      // （重试无意义，需人工重新配对），由 rawInvoke 前置短路保证不会走到这里。
-      if (!v) reconnectCtl.markDisconnected()
-      else reconnectCtl.markConnected()
+  /**
+   * 连接状态翻转。
+   * retryable=false 用于配置性失败（证书指纹不符 / 未配对）：此时不启动退避重试——
+   * 重试无意义（需人工重新配对），否则会陷入无休止的退避循环。
+   */
+  function applyConnected(v: boolean, retryable: boolean): void {
+    if (connected === v) return
+    connected = v
+    deps.onStateChanged?.(v)
+    // T8 重连裁定：掉线 → 启动退避循环；恢复 → markConnected 重置。
+    if (!v) {
+      if (retryable) reconnectCtl.markDisconnected()
+    } else {
+      reconnectCtl.markConnected()
     }
+  }
+
+  function setConnected(v: boolean): void {
+    applyConnected(v, true)
+  }
+
+  /** 主机侧鉴权失败（会话无效/设备已吊销）→ 通知接线层切 'revoked'。 */
+  function notifyAuthFailure(result: Result): void {
+    if (result.ok) return
+    if (result.code === 'E_AUTH_FAILED') deps.onAuthFailed?.(result.code)
   }
 
   function rawInvoke(baseUrl: string, channel: string, payload: unknown, explicitRequestId?: string): Promise<Result> {
@@ -117,9 +155,9 @@ export function createLanClient(deps: LanClientDeps): LanClient {
 
     return new Promise<Result>((resolve) => {
       const req = mod(`${baseUrl}/rpc/${channel}`, opts, (res) => {
-        const finish = (r: Result): void => {
+        const finish = (r: Result, retryable: boolean): void => {
           res.destroy()
-          setConnected(false)
+          applyConnected(false, retryable)
           resolve(r)
         }
         if (isHttps) {
@@ -129,19 +167,33 @@ export function createLanClient(deps: LanClientDeps): LanClient {
           const actual = pc?.raw ? createHash('sha256').update(pc.raw).digest('hex') : null
           const expected = deps.getFingerprintHex()?.toLowerCase() ?? null
           if (!expected || !actual || actual !== expected) {
-            finish(fail('E_FINGERPRINT_MISMATCH', '主机证书指纹不匹配，请重新配对'))
+            // 配置性失败（指纹不符）→ 不触发自动重连（重试无意义，需重新配对）。
+            finish(fail('E_FINGERPRINT_MISMATCH', '主机证书指纹不匹配，请重新配对'), false)
             return
           }
         }
         const chunks: Buffer[] = []
         res.on('data', (c: Buffer) => chunks.push(c))
         res.on('end', () => {
-          setConnected(true)
+          let parsed: Result
           try {
-            resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as Result)
+            parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Result
           } catch {
+            applyConnected(true, true)
             resolve(fail('E_HOST_BAD_RESPONSE', '主机响应格式异常'))
+            return
           }
+          // 主机侧鉴权失败（会话无效 / 设备已吊销，主机回 401 E_AUTH_FAILED）：
+          // 不再标记为"已连接"，且不触发退避重试（重试无意义——需重新配对），
+          // 由 onAuthFailed 通知接线层把状态机切到 'revoked'。
+          if (!parsed.ok && parsed.code === 'E_AUTH_FAILED') {
+            applyConnected(false, false)
+            notifyAuthFailure(parsed)
+            resolve(parsed)
+            return
+          }
+          applyConnected(true, true)
+          resolve(parsed)
         })
       })
       req.on('timeout', () => {

@@ -12,7 +12,7 @@ describe('routeChannel 真值表', () => {
       expect(routeChannel(ch, false)).toBe('local')
       expect(routeChannel(ch, true)).toBe('local')
     }
-    expect(LOCAL_CHANNEL_PREFIXES.length).toBe(8)
+    expect(LOCAL_CHANNEL_PREFIXES.length).toBe(9)
   })
 
   it('backup:/sync:：lanConnected=false 走 local（主机本机备份），true 时 blocked（客户端不能备份到云盘）', () => {
@@ -30,7 +30,24 @@ describe('routeChannel 真值表', () => {
   })
 
   it('shared/channels.ts 与 host-protocol.ts 同源（下沉后唯一来源）', () => {
-    expect(LOCAL_CHANNEL_PREFIXES).toEqual(['license:', 'trial:', 'update:', 'host:', 'window:', 'print:', 'csv:', 'auth:'])
+    expect(LOCAL_CHANNEL_PREFIXES).toEqual([
+      'license:',
+      'trial:',
+      'update:',
+      'host:',
+      'window:',
+      'print:',
+      'csv:',
+      'auth:',
+      'lan:'
+    ])
     expect(HOST_ONLY_PREFIXES).toEqual(['backup:', 'sync:'])
+  })
+
+  it('客户端角色通道（lan: 前缀）恒走 local（本机状态通道，不进 LAN）', () => {
+    for (const ch of ['lan:clientStatus', 'lan:clientPairStart', 'lan:invoke']) {
+      expect(routeChannel(ch, false)).toBe('local')
+      expect(routeChannel(ch, true)).toBe('local')
+    }
   })
 })
