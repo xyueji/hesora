@@ -115,7 +115,7 @@ router.beforeEach(async (to) => {
     try {
       const { licenseApi } = await import('./api/license')
       const s = await licenseApi.check()
-      // 新试用策略：expired（试用+延期均用尽且未激活）→ 只读模式，强制进入激活页
+      // 新试用策略：expired（7 天试用期满未激活）→ 只读模式，强制进入激活页
       if (s.phase === 'expired') {
         return { path: '/activate' }
       }

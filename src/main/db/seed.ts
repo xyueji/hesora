@@ -29,7 +29,7 @@ export function seedDemoData(db: Database): boolean {
 
 /**
  * 重置演示数据：清空业务数据表后重灌初始演示态。
- * 保留：app_setting 中的 license.*（试用计时/延期标记）、guide.*、用户与角色表、
+ * 保留：app_setting 中的 license.*（试用计时/激活码）、guide.*、用户与角色表、
  * platform_log（审计红线：危险操作日志不得清除）。
  * 试用计时不受演示数据重置影响（first_run_at/license.start 落盘后不回退）。
  */

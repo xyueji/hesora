@@ -33,8 +33,14 @@ export function registerUpdateIpc(): void {
     },
     'update:openUrl': async (_event, url) => {
       if (!allowedUrl || url !== allowedUrl) return false
-      await shell.openExternal(allowedUrl)
-      return true
+      // shell.openExternal 可能因系统无默认浏览器/策略拦截而 reject；
+      // 不让异常穿透到渲染层变成未处理的 Promise rejection，明确返回失败由 UI 给出提示。
+      try {
+        await shell.openExternal(allowedUrl)
+        return true
+      } catch {
+        return false
+      }
     }
   })
 }

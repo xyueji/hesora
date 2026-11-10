@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   createUpdateService,
   isNewerVersion,
   resolveDownloadUrl,
-  DEFAULT_FETCH_INIT,
+  DEFAULT_REDIRECT,
   DEFAULT_FIXED_ASSET,
   DEFAULT_RELEASE_BASE_URL,
   UPDATE_PACKAGE_NAME,
@@ -54,33 +54,46 @@ describe('update.service — legacy single-URL cases', () => {
   })
 
   it('no update when remote older', async () => {
+    let called = false
     const svc = createUpdateService({
       currentVersion: '1.2.0',
-      updateUrl: 'u',
-      fetchImpl: okFetcher(JSON.stringify({ version: '1.1.9' }))
+      updateUrl: GITEE_URL,
+      fetchImpl: async () => {
+        called = true
+        return okResponse(JSON.stringify({ version: '1.1.9' }))
+      }
     })
     expect((await svc.check()).hasUpdate).toBe(false)
+    expect(called).toBe(true) // 真正走到版本比较，而非被 URL 校验提前拦掉
   })
 
   it('network failure returns hasUpdate false, never throws', async () => {
+    let called = false
     const svc = createUpdateService({
       currentVersion: '1.0.0',
-      updateUrl: 'u',
+      updateUrl: GITEE_URL,
       fetchImpl: async () => {
+        called = true
         throw new Error('ECONNREFUSED')
       }
     })
     const r = await svc.check()
     expect(r).toEqual({ hasUpdate: false })
+    expect(called).toBe(true)
   })
 
   it('invalid JSON returns hasUpdate false', async () => {
+    let called = false
     const svc = createUpdateService({
       currentVersion: '1.0.0',
-      updateUrl: 'u',
-      fetchImpl: okFetcher('not json {')
+      updateUrl: GITEE_URL,
+      fetchImpl: async () => {
+        called = true
+        return okResponse('not json {')
+      }
     })
     expect((await svc.check()).hasUpdate).toBe(false)
+    expect(called).toBe(true)
   })
 
   it('compares major/minor/patch numerically', async () => {
@@ -356,9 +369,65 @@ describe('update.service — download URL whitelist', () => {
 })
 
 describe('update.service — Gitee raw redirect (P0)', () => {
-  it('DEFAULT_FETCH_INIT follows redirects (never error) so Gitee raw 302 works', () => {
-    expect(DEFAULT_FETCH_INIT.redirect).toBe('follow')
-    expect(DEFAULT_FETCH_INIT.signal).toBeDefined()
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('DEFAULT_REDIRECT follows redirects (never error) so Gitee raw 302 works', () => {
+    expect(DEFAULT_REDIRECT).toBe('follow')
+  })
+
+  it('default fetch path uses a fresh, non-aborted AbortSignal on EVERY check (B-1 regression)', async () => {
+    // 质量审查 B-1：曾把 AbortSignal.timeout(10000) 提到模块级常量导出，进程运行 >10s 后
+    // signal 已 aborted，之后所有真实检查立即 reject 并被静默判为 { hasUpdate:false }。
+    // 全部注入 fetchImpl 的单测都抓不到，故这里 stub globalThis.fetch 走真实默认路径。
+    const inits: RequestInit[] = []
+    const fakeFetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      inits.push(init ?? {})
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ version: '9.9.9' })
+      } as unknown as Response
+    })
+    vi.stubGlobal('fetch', fakeFetch)
+
+    const svc = createUpdateService({ currentVersion: '1.0.0', updateUrls: [GITEE_URL] })
+    const r1 = await svc.check()
+    const r2 = await svc.check()
+
+    expect(r1.hasUpdate).toBe(true)
+    expect(r2.hasUpdate).toBe(true)
+    expect(inits).toHaveLength(2)
+    for (const init of inits) {
+      expect(init.redirect).toBe('follow')
+      expect(init.signal).toBeInstanceOf(AbortSignal)
+      expect(init.signal?.aborted).toBe(false)
+    }
+    // 两次必须是不同对象（若提到模块级常量会是同一个且第二次已 aborted）
+    expect(inits[0]!.signal).not.toBe(inits[1]!.signal)
+  })
+
+  it('default fetch path actually consumes redirect:follow on the real Gitee raw link', async () => {
+    const seen: { url: string; init: RequestInit }[] = []
+    vi.stubGlobal(
+      'fetch',
+      async (url: string, init?: RequestInit) => {
+        seen.push({ url, init: init ?? {} })
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ version: '1.1.0', sha256: VALID_SHA256 })
+        } as unknown as Response
+      }
+    )
+    const r = await createUpdateService({ currentVersion: '1.0.0', updateUrls: [GITEE_URL, GITHUB_URL] }).check()
+    expect(r.hasUpdate).toBe(true)
+    expect(r.source).toBe('gitee')
+    expect(seen).toHaveLength(1) // Gitee 有效即停，不回退 GitHub
+    expect(seen[0]!.url).toBe(GITEE_URL)
+    expect(seen[0]!.init.redirect).toBe('follow')
+    expect(seen[0]!.init.signal?.aborted).toBe(false)
   })
 
   it('accepts raw.giteeusercontent.com / *.giteeusercontent.com as download hosts', async () => {
@@ -378,11 +447,10 @@ describe('update.service — Gitee raw redirect (P0)', () => {
 
   it('simulates Gitee raw 302 → raw.giteeusercontent.com and still reports update', async () => {
     // 模拟 fetch 内部跟随 302 后的最终响应（FetchLike 抽象只暴露最终 ok/text）。
+    // 真正的 redirect:'follow' 由上面两个走 globalThis.fetch 的用例覆盖，本例只验链路结果。
     let seen: string | undefined
     const fetchImpl: FetchLike = async (u) => {
       seen = u
-      // 客户端注入的 fetch 使用 redirect:'follow'，Gitee 的 302 由运行时透明跟随，
-      // 这里直接返回跟随后的 200 JSON，模拟真实链路结果。
       return okResponse(JSON.stringify({ version: '1.1.0', sha256: VALID_SHA256 }))
     }
     const r = await createUpdateService({
@@ -554,5 +622,18 @@ describe('update.service — manifest field validation', () => {
       fetchImpl: okFetcher(JSON.stringify({ version: '1.1.0' }))
     })
     expect((await github.check()).source).toBe('github')
+  })
+
+  it('source is gitee for *.giteeusercontent.com manifest host (matches whitelist)', async () => {
+    // 白名单含 raw.giteeusercontent.com / *.giteeusercontent.com，source 分类须一致，
+    // 否则 Gitee raw 302 后的终态地址会被错标为 custom。
+    for (const host of ['raw.giteeusercontent.com', 'cdn.giteeusercontent.com']) {
+      const svc = createUpdateService({
+        currentVersion,
+        updateUrl: `https://${host}/o/r/raw/main/latest.json`,
+        fetchImpl: okFetcher(JSON.stringify({ version: '1.1.0' }))
+      })
+      expect((await svc.check()).source, host).toBe('gitee')
+    }
   })
 })

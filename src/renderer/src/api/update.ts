@@ -22,9 +22,12 @@ export const updateApi = {
   async checkDaily(): Promise<UpdateCheckResult | null> {
     const last = Number(localStorage.getItem(LAST_CHECK_KEY) ?? '0')
     if (Date.now() - last < DAY_MS) return null
-    localStorage.setItem(LAST_CHECK_KEY, String(Date.now()))
     try {
-      return await updateApi.check()
+      const result = await updateApi.check()
+      // 只在一次完整 IPC 往返成功后记录时间戳：检查本身抛错（主进程异常）时
+      // 不占用 24h 窗口，下一小时的定时检查还能重试。
+      localStorage.setItem(LAST_CHECK_KEY, String(Date.now()))
+      return result
     } catch {
       return null
     }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import brandIcon from '../assets/hesora.svg'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElNotification } from 'element-plus'
@@ -170,17 +170,57 @@ const visibleGroups = computed(() =>
     .map((g) => ({ ...g, items: g.items.filter(itemVisible) }))
 )
 
-// 提示式更新：每天最多检查一次，有新版本时弹通知，点击"下载"用系统浏览器打开
+// 提示式更新：每天最多检查一次，有新版本时弹通知，点击"下载"用系统浏览器打开。
+// manifest 提供 sha256 时展示前 8 位 + 复制全文（供下载后核对安装包完整性）。
 async function notifyUpdate() {
   const r = await updateApi.checkDaily()
   if (r && r.hasUpdate) {
+    const notifyMessage = () =>
+      h('div', [
+        h('div', r.notes || `新版本 ${r.latestVersion ?? ''} 已发布`),
+        r.sha256
+          ? h('div', { style: 'margin-top:6px;font-size:12px;opacity:.8' }, [
+              h('span', `SHA-256: ${r.sha256.slice(0, 8)}… `),
+              h(
+                'a',
+                {
+                  href: '#',
+                  onClick: (e: Event) => {
+                    e.preventDefault()
+                    e.stopPropagation() // 复制不要触发通知整体的"打开下载"行为
+                    const text = r.sha256 ?? ''
+                    if (!navigator.clipboard) {
+                      ElMessage.warning('当前环境不支持剪贴板，请手动记录')
+                      return
+                    }
+                    void navigator.clipboard
+                      .writeText(text)
+                      .then(() => ElMessage.success('已复制 SHA-256'))
+                      .catch(() => ElMessage.warning('复制失败，请手动记录'))
+                  }
+                },
+                '复制全文'
+              )
+            ])
+          : null
+      ])
     ElNotification({
       title: '发现新版本',
-      message: r.notes || `新版本 ${r.latestVersion ?? ''} 已发布`,
+      message: notifyMessage(),
       type: 'info',
       duration: 0,
       onClick: () => {
-        if (r.downloadUrl) void updateApi.openUrl(r.downloadUrl)
+        if (!r.downloadUrl) return
+        // openUrl 失败（返回 false 或抛错）必须给用户明确反馈（AGENTS.md §5），
+        // 且不能用 void 丢掉 Promise 造成未处理的 rejection。
+        void updateApi
+          .openUrl(r.downloadUrl)
+          .then((ok) => {
+            if (!ok) ElMessage.error('无法打开下载链接，请检查系统默认浏览器设置')
+          })
+          .catch(() => {
+            ElMessage.error('无法打开下载链接，请稍后重试')
+          })
       }
     })
   }

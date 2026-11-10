@@ -9,13 +9,13 @@ const $router = useRouter()
 // 试用引导条：第 1-2 天 onboarding、第 3-4 天价值提示、第 5 天起剩余提醒+激活入口
 const licenseStatus = ref<LicenseStatus | null>(null)
 const TRIAL_BANNER_DISMISS_KEY = 'trial_banner_dismissed_v1'
-const TRIAL_TOTAL_DAYS = 7
+const TRIAL_DAYS = 7
 
 const trialBanner = computed(() => {
   const s = licenseStatus.value
   if (!s || s.mode === 'licensed') return null
   const daysLeft = s.daysLeft ?? 0
-  const elapsed = TRIAL_TOTAL_DAYS - daysLeft
+  const elapsed = TRIAL_DAYS - daysLeft
   if (s.phase === 'expired') {
     return { type: 'error' as const, title: '试用期已结束（只读模式）', text: '业务单据已暂停新增与修改，查看、导出与备份不受影响。请购买激活恢复全部功能。', cta: '立即激活' as const }
   }
@@ -43,7 +43,7 @@ function onTrialCta(): void {
     void $router.push('/activate')
     return
   }
-  const elapsed = TRIAL_TOTAL_DAYS - (s.daysLeft ?? 0)
+  const elapsed = TRIAL_DAYS - (s.daysLeft ?? 0)
   if (elapsed < 2) {
     void $router.push('/sale/edit')
   } else if (elapsed < 4) {

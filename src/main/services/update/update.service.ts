@@ -60,15 +60,22 @@ const DEFAULT_ALLOW_HOSTS: readonly string[] = [
 ]
 
 /**
- * 默认 fetch 配置。Gitee 的 `/raw/<branch>/latest.json` 一定会 302 跳到
- * raw.giteeusercontent.com（带一次性签名 query），因此必须允许跟随重定向；
- * 若用 redirect:'error' 会让 Gitee 渠道每次都抛异常并回退 GitHub，令「Gitee 优先」形同虚设。
- * manifest 只解析为 JSON、不执行，且目标 URL 由内置/env 提供（https、无凭据），跟随一次跳转安全。
- * 抽成导出常量便于单测断言，防止回归到 'error'。
+ * Gitee 的 `/raw/<branch>/latest.json` 一定会 302 跳到 raw.giteeusercontent.com
+ * （带一次性签名 query），因此必须允许跟随重定向；若用 redirect:'error' 会让 Gitee 渠道
+ * 每次都抛异常并回退 GitHub，令「Gitee 优先」形同虚设。manifest 只解析为 JSON、不执行，
+ * 且目标 URL 由内置/env 提供（https、无凭据），跟随一次跳转安全。
+ * 导出该常量便于单测断言，防止回归到 'error'（值本身不含 signal）。
  */
-export const DEFAULT_FETCH_INIT: RequestInit = {
-  signal: AbortSignal.timeout(10000),
-  redirect: 'follow'
+export const DEFAULT_REDIRECT = 'follow' as const
+
+/**
+ * 默认 fetch：AbortSignal.timeout 必须**每次请求新建**。
+ * 若把 signal 提到模块级常量，进程运行超过 10s 后该 signal 已 aborted，
+ * 之后所有真实更新检查都会立即 reject 并被静默判为 { hasUpdate:false }，双渠道功能全废。
+ * 这是从 fe03745 之前的「内联 per-request signal」重构时极易引入的回归，故保留工厂形态。
+ */
+function defaultFetch(url: string): Promise<FetchLikeResponse> {
+  return fetch(url, { signal: AbortSignal.timeout(10000), redirect: DEFAULT_REDIRECT })
 }
 
 /**
@@ -163,7 +170,14 @@ function sourceFromUrl(updateUrl: string): UpdateSource {
   } catch {
     return 'custom'
   }
-  if (host === 'gitee.com' || host.endsWith('.gitee.com') || host === 'gitee.io' || host.endsWith('.gitee.io')) {
+  if (
+    host === 'gitee.com' ||
+    host.endsWith('.gitee.com') ||
+    host === 'gitee.io' ||
+    host.endsWith('.gitee.io') ||
+    host === 'giteeusercontent.com' ||
+    host.endsWith('.giteeusercontent.com')
+  ) {
     return 'gitee'
   }
   if (
@@ -191,9 +205,7 @@ export function createUpdateService(options: UpdateServiceOptions) {
         : []
   const allowHosts: readonly string[] = options.allowHosts ?? DEFAULT_ALLOW_HOSTS
   const fixedAsset: FixedAssetConfig = options.fixedAsset ?? DEFAULT_FIXED_ASSET
-  const fetchImpl: FetchLike =
-    options.fetchImpl ??
-    ((u: string) => fetch(u, DEFAULT_FETCH_INIT))
+  const fetchImpl: FetchLike = options.fetchImpl ?? defaultFetch
 
   async function checkChannel(updateUrl: string): Promise<ChannelOutcome> {
     // manifest 地址本身也必须是合法 https 且不带凭据；非法渠道直接判失败。
