@@ -44,7 +44,7 @@ import { createOpeningService } from '../services/opening/opening.service'
 import { createInventoryService } from '../services/inventory/inventory.service'
 import { createStockReportService } from '../services/inventory/stock-report.service'
 import { createSerialService } from '../services/inventory/serial.service'
-import { assertProEdition } from '../services/license-gate'
+import { assertProEdition, assertFeature } from '../services/license-gate'
 import { createPurchaseService } from '../services/purchase/purchase.service'
 import { createSaleService } from '../services/sale/sale.service'
 import { createRetailService } from '../services/retail/retail.service'
@@ -944,12 +944,16 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     { channel: 'user:query', handler: () => userSvc.query() },
     { channel: 'user:get', handler: (_evt, payload) => userSvc.getById(Number(payload)) },
     { channel: 'user:create', handler: (_evt, payload, session) => {
+      // v1.4 RBAC 门控：员工账号管理为专业版专属（admin 自身登录不受影响，仅拦管理通道）。
+      assertFeature(deps.licensePayload(), 'rbac')
       const input = payload as { username: string; password: string; role: string }
       const created = userSvc.create(input)
       audit('user:create', `操作员 ${input.username} 角色 ${input.role}`, undefined, { username: created.username, role: created.role }, session)
       return created
     } },
     { channel: 'user:update', handler: (_evt, payload, session) => {
+      // v1.4 RBAC 门控
+      assertFeature(deps.licensePayload(), 'rbac')
       const { id, patch } = payload as {
         id: number
         patch: { password?: string; role?: string; disabled?: number | boolean }
@@ -966,6 +970,8 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       return result
     } },
     { channel: 'user:remove', handler: (_evt, payload, session) => {
+      // v1.4 RBAC 门控
+      assertFeature(deps.licensePayload(), 'rbac')
       const id = Number(payload)
       const before = userSvc.getById(id)
       userSvc.remove(id)
@@ -975,6 +981,8 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     // 角色（RBAC）：自定义角色的增删改查，权限点由 roleHas 判定
     { channel: 'role:list', handler: () => userSvc.listRoles() },
     { channel: 'role:create', handler: (_evt, payload, session) => {
+      // v1.4 RBAC 门控
+      assertFeature(deps.licensePayload(), 'rbac')
       const { name, permissions } = payload as { name: string; permissions: string[] }
       const created = userSvc.createRole({
         name: String(name ?? ''),
@@ -984,6 +992,8 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       return created
     } },
     { channel: 'role:update', handler: (_evt, payload, session) => {
+      // v1.4 RBAC 门控
+      assertFeature(deps.licensePayload(), 'rbac')
       const { id, patch } = payload as {
         id: string
         patch: { name?: string; permissions?: string[] }
@@ -999,6 +1009,8 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
       return result
     } },
     { channel: 'role:remove', handler: (_evt, payload, session) => {
+      // v1.4 RBAC 门控
+      assertFeature(deps.licensePayload(), 'rbac')
       const id = String(payload)
       const before = userSvc.listRoles().find((r) => r.id === id) ?? null
       userSvc.removeRole(id)
