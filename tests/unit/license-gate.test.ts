@@ -38,7 +38,7 @@ describe('license-gate', () => {
 
   it('assertFeature: 未含特征位抛 E_FEATURE_PRO，含则放行', () => {
     expectBizError(() => assertFeature(standard, 'rbac'), E_FEATURE_PRO)
-    expectBizError(() => assertFeature(pro, 'device_handoff'), E_FEATURE_PRO) // pro payload 不含 serial_batch 类同场景
+    expectBizError(() => assertFeature(null, 'multi_warehouse'), E_FEATURE_PRO)
     expect(() => assertFeature(pro, 'multi_warehouse')).not.toThrow()
   })
 
