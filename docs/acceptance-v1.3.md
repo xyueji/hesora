@@ -36,5 +36,5 @@
 - 跨物理机（非 127.0.0.1）配对、真实路由器/防火墙环境、多客户端并发连接：**待真机验收**（E2E 与冒烟均在本机双实例完成）。
 - 时间同步依赖（x-ts ±120s 窗口）依赖各机 NTP 校时，无内建校时提示（spec R4）。
 - mDNS 主机自动发现未实现（spec TBD#7），当前以二维码/输码配对。
-- 试用版是否含 LAN 的商业决策未定（spec TBD#1）；当前试用版不含 lan_collaboration feature。
+- 试用版是否含 LAN 的商业决策已在 v1.4 定案：7 天试用即体验专业版全功能（含 `lan_collaboration` 等 6 个特征位），`TRIAL_FULL_PAYLOAD` 由 `effectiveLicensePayload` 统一注入门控；试用到期（expired）转只读并拒绝专业版功能。（v1.3 原 TBD#1「试用不含 LAN」已关闭，此处保留作历史记录。）
 - 卸载/重装后设备 secret（DPAPI 加密）随 profile 保留；跨机器迁移需重新配对（设计如此）。

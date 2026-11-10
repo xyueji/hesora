@@ -43,10 +43,14 @@
 - `sha256` 若提供必须是 64 位 hex（大小写均可），否则该渠道失败。
 - 显式 `url` 与拼接出的固定地址都必须是 `https:`、不含 username/password、主机在白名单内。
 - manifest 地址本身也必须是 `https:`、无凭据；`fetch` 使用 `redirect: 'follow'` 与
-  `AbortSignal.timeout(10000)`（每渠道 10s 超时）。**必须允许跟随重定向**：Gitee 的
-  `/raw/main/latest.json` 会 302 到 `raw.giteeusercontent.com`（带一次性签名 query），
-  若用 `redirect: 'error'` 会让 Gitee 渠道每次抛异常并回退 GitHub，令「Gitee 优先」失效。
-  manifest 只解析为 JSON、不执行，目标 URL 由内置/env 提供（https、无凭据），跟随一次跳转安全。
+  `AbortSignal.timeout(10000)`（**每次请求新建 signal**，即该次请求 10s 超时）。
+  signal 必须是 per-request：若把 `AbortSignal.timeout(10000)` 提到模块级常量复用，进程运行
+  超过 10s 后该 signal 已 aborted，之后所有真实检查都会立即 reject 并被静默判为无更新
+  （`DEFAULT_REDIRECT` 仅导出 `redirect` 值供单测断言，`defaultFetch()` 每次新建 signal）。
+  **必须允许跟随重定向**：Gitee 的 `/raw/main/latest.json` 会 302 到
+  `raw.giteeusercontent.com`（带一次性签名 query），若用 `redirect: 'error'` 会让 Gitee 渠道
+  每次抛异常并回退 GitHub，令「Gitee 优先」失效。manifest 只解析为 JSON、不执行，目标 URL
+  由内置/env 提供（https、无凭据），跟随一次跳转安全。
 
 ## 2. 固定下载约定（tag=latest / 固定包名）
 
@@ -64,6 +68,12 @@
 > 选 Gitee release 附件作固定地址的原因：实测 Gitee release 附件**免登录可匿名下载**
 > （302 → attach_files → 302 → `foruda.gitee.com` → 200 `application/zip`），
 > 且 `foruda.gitee.com` 被 `*.gitee.com` 白名单覆盖。早前「Gitee 附件需登录」的假设已被实测推翻。
+
+> **发版必读：安装包重命名与双仓库附件。** electron-builder 的 `artifactName` 产出的是
+> `dist/禾序进销存-<版本>-setup.exe`（如 `dist/禾序进销存-1.4.0-setup.exe`），与固定附件名
+> `hesora-inventory-setup.exe` **不同**。上传前务必把产物复制/重命名为固定名，且
+> **Gitee 与 GitHub 两个 release 都要上传同一份 `.exe`**（GitHub 的 manifest 示例 `url` 指向
+> GitHub release，而 `url` 省略时缺省拼接指向 Gitee）；否则用户从任一渠道点「下载」都会 404。
 
 ## 3. 双渠道语义（重要）
 
@@ -147,7 +157,7 @@ manifest 地址本身仍需 https + 无凭据（不限制主机，便于自定�
    `hesora-inventory-setup.exe` 的附件（覆盖同一 tag 的附件）。
 3. 用安装包实际哈希计算 `sha256`，更新**两个仓库 `main` 分支**的 `latest.json`：
    `version` 递增、`notes`、`sha256` 必填、`url` 可省略（走固定拼接）。
-4. Gitee 与 GitHub 两处内容保持一致；确认 `version` > 当前客户端版本（当前 `1.3.0`）。
+4. Gitee 与 GitHub 两处内容保持一致；确认 `version` > 当前客户端版本（当前 `1.4.0`）。
 5. 验收：用 `curl -L -o /dev/null -w '%{http_code}'` 检查两个 raw `latest.json` 均 200 且版本一致
    （**Gitee raw 不带 `-L` 会返回 302，必须跟随一次重定向**）；`curl -I` 固定下载地址可匿名 200。
 

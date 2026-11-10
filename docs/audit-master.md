@@ -67,7 +67,7 @@
 
 - ✅ 试用 7 天（全功能、无延期、到期只读）+ Ed25519 激活码（公钥内嵌，私钥仅 tools/activation-server，不入安装包）。
 - ✅ 备份（手动+启动自动保留 10 份+恢复前安全副本+relaunch）；云盘同步（WebDAV/本地目录，先备份后同步）。
-- ✅ 提示式更新（HESORA_UPDATE_URL 环境变量，默认关闭）。
+- ✅ 提示式更新：默认内置双渠道（Gitee 优先 / GitHub 回退，失败才回退；`HESORA_UPDATE_GITEE_URL` / `HESORA_UPDATE_GITHUB_URL` 可覆盖，旧 `HESORA_UPDATE_URL` 兼容单渠道）；仅提示并打开下载页，不自动下载/安装；固定 tag=`latest`、附件名 `hesora-inventory-setup.exe`（详见 docs/update-channels.md）。
 - ✅ 数据目录迁移：zhjs-erp → hesora-inventory（profile.ts，含占用回退）。
 
 ## 三、已知限制（上架可接受，1.2 迭代）
