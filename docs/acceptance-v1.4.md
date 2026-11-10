@@ -19,7 +19,7 @@
 |---|--------|------|------|
 | B1 | 桌面快捷方式默认创建 | ✅ 通过（构建配置 + 代理 NSIS 编译验证） | `package.json` `build.nsis.createDesktopShortcut:'always'` → `-DRECREATE_DESKTOP_SHORTCUT`；`createStartMenuShortcut:true`。**诚实披露**：assisted NSIS 无内建「桌面快捷方式」可见复选框，实现为「必然创建」而非「默认勾选的复选框」（与用户「默认勾选」意图等价但形态不同） |
 | B2 | 点「完成」不再卡半天 | ✅ 通过（构建配置） | `build.nsis.runAfterFinish:false` → `-DHIDE_RUN_AFTER_FINISH`，完成页不再有「运行程序」复选框，点完成安装器立即退出；根因是原先勾选「运行程序」触发 Electron 冷启动（37 个 migration + 界面加载）用户看不到反馈 |
-| B3 | 启动过渡页 | ✅ 通过（自动 + 待真机冒烟复核） | `src/main/splash.ts`：`createSplashWindow()`（420×280、frame:false、sandbox、loadFile 容错）/ `closeSplashWindow()`（幂等）；`resources/splash.html` 原创浅色「正在启动…」页；`package.json` `build.extraResources` 把 splash.html 放进 `resources/`；`src/main/index.ts` 接线：`app.whenReady().then(() => { splashWindow = createSplashWindow(); initialize() })`、主窗口 `ready-to-show` 时 `closeSplashWindow(splashWindow)`，主窗口保持 `show:false`；catch 分支先关过渡页再报错退出。不参与单实例锁 / `window-all-closed` / 不阻止 `app.quit` |
+| B3 | 启动过渡页 | ✅ 通过（自动 + 真机冒烟复核） | `src/main/splash.ts`：`createSplashWindow()`（420×280、frame:false、`closable:false`、`alwaysOnTop:true`、sandbox、loadFile 容错）/ `closeSplashWindow()`（幂等，**必须用 `destroy()` 而非 `close()`**）；`resources/splash.html` 原创浅色「正在启动…」页；`package.json` `build.extraResources` 把 splash.html 放进 `resources/`；`src/main/index.ts` 接线：`app.whenReady().then(() => { splashWindow = createSplashWindow(); initialize() })`、主窗口 `ready-to-show` 时 `closeSplashSafely()`，主窗口保持 `show:false`；catch 分支先关过渡页再报错退出；20s 安全网 `closeSplashSafely()`。不参与单实例锁 / `window-all-closed` / 不阻止 `app.quit`。**真机 bug 修复（用户 m05812「启动中窗口在程序打开后没消失啊」）**：原 `closeSplashWindow()` 用 `win.close()`，但 Windows/Electron 对 `closable:false` 的窗口调 `close()` 是 no-op（最小探针 `electron.exe tools/tmp-probe-closable.cjs` 实证 `isDestroyed()` 始终 false），导致 `alwaysOnTop` 置顶过渡页永久残留；改为 `win.destroy()`（不受 closable 限制，splash 无未保存状态可安全强制销毁），并新增 `tests/unit/splash.test.ts`（4 用例：非 closable 配置、断言用 destroy 不用 close、幂等/null 安全、destroy 抛错被吞）锁住回归 |
 | B4 | NSIS 自定义脚本可编译（含卸载器） | ✅ 通过（代理编译验证） | `installer.nsh`：`!ifndef BUILD_UNINSTALLER` + `!ifndef MUI_FINISHPAGE_TEXT` 守卫定义中文完成页说明，不重复定义 `MUI_PAGE_CUSTOMFUNCTION_PRE`（assistedInstaller.nsh:30 无条件定义，避 `-WX` 重复 define 失败）；代理用 electron-builder 缓存 makensis.exe 3.0.4.1 复刻 SHARED HEADER 顺序，`-WX -INPUTCHARSET UTF8`：安装器 INSTALL_EXIT=0、卸载器(BUILD_UNINSTALLER) UNINSTALL2_EXIT=0。UTF-8 无 BOM |
 
 ## C. 双渠道更新（Gitee 优先 / GitHub 回退）
@@ -42,18 +42,29 @@
 | # | 验收项 | 结论 | 证据 |
 |---|--------|------|------|
 | D1 | 主机下发证书指纹 /pair/start + /pair/result | ✅ 通过（自动） | `src/main/host/server.ts` granted 结果含 `fingerprintHex`；`src/main/host/client-credentials.ts`（DPAPI 按 host 存取，不明文落盘） |
-| D2 | 客户端状态机（6 态）+ 凭据持久化 + 自动重连 | ✅ 通过（自动） | `src/main/host/client-connection.ts`（715 行，`HOST_DEFAULT_PORT=18650`，idle/pairing/connecting/connected/revoked/error，pairStart → /pair/start → 轮询 /pair/result → /auth/session → WS 事件）；`src/main/host/host-events-client.ts`；`src/main/index.ts` 接线（`lan:invoke`、`lan:clientStatusSync`、双 flushPending） |
+| D2 | 客户端状态机（6 态）+ 凭据持久化 + 自动重连 | ✅ 通过（自动 + 终审修复） | `src/main/host/client-connection.ts`（`HOST_DEFAULT_PORT=18650`，idle/pairing/connecting/connected/revoked/error，pairStart → /pair/start → 轮询 /pair/result → /auth/session → WS 事件）；`src/main/host/host-events-client.ts`；`src/main/index.ts` 接线（`lan:invoke`、`lan:clientStatusSync`、**三处** `flushPending()`：Tray 退出 / `window-all-closed` / `before-quit`）。终审修复见文末「v1.4 终审修复」 |
 | D3 | 渲染层连接 UI + 断线禁写 | ✅ 通过（自动 + 人工核对） | `src/renderer/src/views/system/ClientConnectView.vue`（252 行：表单/配对码倒计时/五态 UI）、`src/renderer/src/lib/client-state.ts`（`clientWriteBlocked` computed）、`src/renderer/src/layouts/MainLayout.vue` 连接状态条、`src/renderer/src/views/retail/RetailView.vue`（收款按钮 `:disabled`）、`src/renderer/src/views/sale/SaleEditView.vue`（`canSave` 含 `!clientWriteBlocked.value` + el-alert）。单机模式不受影响 |
 | D4 | 端到端集成测试（配对→会话→调用→吊销→幂等重发） | ✅ 通过（自动） | `tests/unit/client-connection.test.ts`（2 用例：full flow + disconnect/pending 幂等重发，2/2 绿）。**修复记录**：第 2 用例 server2 曾传空 `handlers` 表 → /rpc 回 NOT_FOUND → pending 被判确定性失败删除 → 超时；改为 `handlers2` 同时传给 `createHostServer` 与 `createGateway` 后通过 |
 | D5 | 手册与验收文档 | ✅ 通过（人工核对） | `docs/user-manual-v1.3-lan.md` §2 整节重写为已实现版（入口、配对流程、断线禁写、DPAPI 重连、吊销、五态表）；`docs/errata-note.md` 两错误码并入 §3.2；本文件 |
 
 ## 测试与构建快照
 
-- 全量 `npx vitest run`：**102 测试文件 / 817 用例全绿**（含新增 45 例 `update.service.test.ts`、
-  271 行 `client-connection.test.ts` 2 例、`trial-payload.test.ts` 5 例、`trial-state.test.ts` 12 例）。
-- `npm run typecheck:node` / `npm run typecheck:web`：双绿（均带 `--composite false`）。
-- 打包冒烟（`pnpm dist`）：待执行，重点验证 splash.html 进 `resources/`、NSIS 完成页中文且点完成立即退出、桌面/开始菜单快捷方式、首启过渡页正常关闭。
-- 包产物：`dist/禾序进销存-1.4.0-setup.exe`（SHA256 待打包后填）。
+- 全量 `npx vitest run --reporter=dot`（v1.4 终审修复 + 单测补齐后最终复跑）：
+  **105 测试文件 / 831 用例全绿**（Duration 160.15s，VITEST_EXIT=0）。演进：
+  817 → 821（真机 splash bug 修复，新增 `tests/unit/splash.test.ts` 4 例）→ 831
+  （新增 `tests/unit/client-credentials.test.ts` 4 例、`tests/unit/host-events-client.test.ts` 3 例，
+  `host-server.test.ts` +2 例配对限流回归、`t8-modules.test.ts` +1 例 reconnect 复位）。
+- `npm run typecheck:node` / `npm run typecheck:web`：双绿（均带 `--composite false`，NODE_EXIT=0 / WEB_EXIT=0）。
+- 打包冒烟（`pnpm dist`，终审修复后**第二次重打包** BUILD_EXIT=0）：`hesora-smoke-140.js`
+  重跑 **PASS**（SMOKE_EXIT=0）——捕获到 splash.html 与主窗口 index.html 两个页面、
+  主窗口存活 6s 无崩溃、启动过渡页 `isClosed()===true`（`destroy()` 生效）。
+  冒烟脚本主动轮询 `app.context().pages()` + 全步骤超时，避免 `app.on('window')` 订阅竞态与挂起。
+- 包产物：`dist/禾序进销存-1.4.0-setup.exe`（**最终包 86,595,953 B，SHA256
+  `d11f39381f02b54c7b7184ffc457e35650dfc5b05710161617de721daf4c45e9`**）；
+  `dist/win-unpacked/resources/splash.html` 2379 B 已进 `resources/`；`app.asar` 内 `out/main/index.js`
+  已核实含 `win.destroy()`、`defaultFetch`、`probeRateBuckets`、`markSessionExpired`、
+  `clearPendingCredentials`（`grep -ao` 实证），确认终审修复确实打进包。
+- 未签名（`no signing info identified`），符合当前预期；SmartScreen 放行见 README。
 
 ## 本轮审查与修复记录
 
@@ -70,6 +81,14 @@
   - S-2 三条 `updateUrl:'u'` 空壳单测改合法 GITEE_URL 并断言 fetchImpl 真被调用；S-3 302 用例补
     真实 `globalThis.fetch` 链路断言；N-1 `sourceFromUrl` 补 `*.giteeusercontent.com` 归类；
     N-4 过时注释清理；N-5 splash 加 20s 安全网 `closeSplashSafely()`（防 alwaysOnTop 置顶窗残留）。
+- 真机冒烟发现（用户 m05812「启动中窗口在程序打开后没消失啊」）：**启动过渡页不消失**。
+  根因不是 20s 安全网缺失，而是 `splash.ts` 的 `closable:false` 与 `closeSplashWindow()` 用
+  `win.close()` 冲突——Windows/Electron 下 `close()` 对 `closable:false` 窗口是 no-op，
+  安全网调同一个 `closeSplashWindow()` 同样无效。最小探针实证后把 `closeSplashWindow()`
+  改为 `win.destroy()`（不受 closable 限制、splash 无未保存状态可安全强制销毁），
+  补 `tests/unit/splash.test.ts`（4 用例）回归锁，并重写 `hesora-smoke-140.js`
+  （主动轮询 `app.context().pages()`、全步骤超时、断言 splash `isClosed()`）。
+  修复后**重新打包**（main 源码改动需重建 asar）并重跑冒烟。
 
 ## 已知限制 / 待真机验收
 
@@ -78,5 +97,27 @@
 - 提示式更新非自动下载安装；真一键需 electron-updater + 代码签名（二期）。
 - 安装包未签名，Windows SmartScreen 可能拦截（README 已给 4 步放行说明）。
 - 时间同步依赖（x-ts ±120s）；mDNS 主机自动发现未实现。
-- 客户端授权口径：当前按机授权（每台客户端需各自的专业版/试用许可），「主机授权覆盖多机」为待用户裁决项。
+- 客户端授权口径（用户已裁决）：**按机授权**——每台客户端各自需专业版授权或处于 7 天试用期内；不采用「主机授权覆盖多机」。
+- **LAN 主动中间人（MITM）**：本版适用于可信小局域网（3 台以内设备）。配对阶段（`/pair/start`、`/pair/result`）与登录（`/auth/session`）采用 TOFU，无证书鉴证；配对完成后的 `/rpc`、`/events` 虽核对 `sha256(peerCert.raw)`，但比对发生在 HTTP 响应回调 / WS `open` 回调，**请求体（含登录口令、会话 token、HMAC 签名业务报文）已经发出**。能主动实施 ARP 欺骗或架设恶意热点者可在配对窗口冒充主机并窃取口令与设备密钥。普通被动嗅探/改 UI 无法绕过（Ed25519 授权、HMAC × 时间戳 × nonce、DPAPI）。彻底加固（自定义 `https.Agent`/`tls.connect` 在写 body 前先验指纹、WSS upgrade 前校验、`/auth/session` 走 pinning 通道、向导显示主机指纹供人工核对）列入 **v1.4.1 专项**，本期按用户裁决「如实披露后发 v1.4」。
+- **发版阻塞项（必须处理）**：`resources/license-public-key.txt` 目前只是占位注释（无真实 Ed25519 公钥），`loadInjectedPublicKey()` 返回 undefined → `parseCode()` 恒 null → 激活码永远校验失败，7 天后用户无法解锁。发行前须用 `tools/activation-server/gen.js` 生成密钥对，把**公钥**注入 `HESORA_LICENSE_PUBLIC_KEY` 环境变量或替换占位文件后重新构建，**私钥仅存发行端、绝不入包**，并真机验证「到期 → 输码 → 解锁」。
+- **防逆向边界**：Ed25519 非对称验签 + 单调时钟能防普通用户改 UI/删库重置试用；但客户端是 Electron + 明文 JS 打进 `app.asar`（`build` 仅 `{asar:true, files:['out/**/*']}`，未启用 fuses / `EnableEmbeddedAsarIntegrityValidation` / `onlyLoadAppFromAsar` / 字节码 / 混淆 / 代码签名），会改 asar 的逆向者可 patch `isTrialExpiredWrite` / `currentLicensePayload`、替换公钥自签自发码。彻底防需代码签名 + Electron fuses + 授权判定下沉原生 `.node` + 在线心跳（后两项与「完全离线」冲突）。本期未纳入，按用户裁决留待后续版本。
 - 用户待办：自行保管 Gitee 私人令牌 + GitHub PAT、建 tag=latest release 上传固定包名附件、两仓库 main 分支 latest.json 同步（version 递增、sha256 必填、url 可省略）；**严禁把源码推上去**。
+
+## v1.4 终审修复（用户拍板：修必需项 + 廉价加固 + MITM 限制披露后发版）
+
+两路只读终审（1303b755 功能合规 / ee60c8f2 质量安全）发现必修缺陷，按用户裁决范围修复：
+
+| 项 | 修复 | 证据 |
+|---|---|---|
+| 配对轮询撞限流（2s × 5min TTL 第 11 次 429 → 轮询终止） | `server.ts` 拆出 `probeRateBuckets`：`/pair/result` 命中已知码不计费，仅未知码走独立限流；客户端对 `RATE_LIMIT` 退避续轮询 | `host-server.test.ts` 新增 2 用例（15 次已知码轮询全 200 / 11 次未知码 429），22/22 绿 |
+| `reconnect.stop()` 不可逆（断开/吊销后自动重连永久死亡） | `markConnected()` 复位 `stopped=false` | `t8-modules.test.ts` 新增回归用例，11/11 绿 |
+| 8h 会话过期误判为「设备吊销」 | 新增 `markSessionExpired()`（error + `E_SESSION_EXPIRED` → UI 显示「重连主机」），`E_AUTH_FAILED` 不再一律 `markRevoked`；真吊销仍走 WS 4003 / `E_NOT_PAIRED` | `client-connection.ts`；`user-manual-v1.3-lan.md` §3.2 |
+| 吊销与在途 401 竞态（`error` 覆盖 `revoked`） | `markSessionExpired()` 在 `status==='revoked'` 时早返回 | 批量复跑 55/55 绿（含 full flow 吊销用例） |
+| 首次配对成功建立 2 条 WSS / 吊销后 WS 无限重连 | `host-events-client.connect()` 加 `socket` 幂等守卫（含 `import('ws')` 异步二次检查）；`markRevoked`/`markSessionExpired`/`disconnect`/`forget` 均关 WS 并置空 | `host-events-client.ts`、`client-connection.ts` |
+| 试用门控只覆盖 `pairStart` | `reconnect` / `restore` / `invoke` 各加 `assertLicensed` 守卫；`index.ts` 的 `lan:invoke` 也调 `assertClientLicensed()`；`restore` 失败时清内存 `configured` 防 `clientModeActive` 误挡本地业务 | `client-connection.ts`、`src/main/index.ts` |
+| 主机/客户端角色无互斥（双库分叉） | 主机启动条件加 `!clientConfiguredRow`；网关 handlers 每通道包 `E_CLIENT_MODE` 包装 | `src/main/index.ts` |
+| `lan:invoke` 无通道白名单 + 8h token 回传渲染层 | 加 `LOCAL_CHANNEL_PREFIXES`/`HOST_ONLY_PREFIXES` 白名单拒绝；`completeSession()` 改 `ok(null)` 不回传 token | `src/main/index.ts`、`client-connection.ts` |
+| 配对指纹可被空值静默放行 / 双重 `as` 断言 | `PairingStart` 接口显式声明 `fingerprintHex`；granted 要求 start 与 granted 指纹**都非空且相等**，否则 `E_FINGERPRINT_MISMATCH` | `client-connection.ts` |
+| 明文口令常驻内存 / DPAPI 不可用时 forget 删不掉凭据 | 新增 `clearPendingCredentials()`（登录成功/断开/忘记/吊销/过期均清）；`client-credentials.remove()` 去掉 `!available()` 早返回；tmp 文件名加 pid+随机后缀 | `client-connection.ts`、`client-credentials.ts` |
+| `client-pending.json` 畸形条目灌入 pending | `pendingPersist.load()` 逐项校验 requestId/channel/payload | `src/main/index.ts` |
+| 死代码 / 空壳断言 | 删除 `pendingGrant` 死变量；更新通知 UI 与更新服务单测补真实路径覆盖（见质量预审记录） | 全库 grep 无 `pendingGrant` |
