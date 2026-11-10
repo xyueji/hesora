@@ -1,10 +1,15 @@
 import { call } from './call'
 
+export type UpdateSource = 'gitee' | 'github' | 'custom'
+
 export interface UpdateCheckResult {
   hasUpdate: boolean
   latestVersion?: string
   notes?: string
   downloadUrl?: string
+  source?: UpdateSource
+  /** 安装包的 sha256（64 位 hex），manifest 提供时透出供 UI 展示。 */
+  sha256?: string
 }
 
 const LAST_CHECK_KEY = 'update.lastCheckAt'
