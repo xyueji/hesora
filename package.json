@@ -79,6 +79,10 @@
       {
         "from": "resources/license-public-key.txt",
         "to": "license-public-key.txt"
+      },
+      {
+        "from": "resources/splash.html",
+        "to": "splash.html"
       }
     ],
     "win": {
@@ -93,7 +97,11 @@
       "shortcutName": "禾序进销存",
       "uninstallDisplayName": "禾序进销存",
       "installerIcon": "resources/hesora.ico",
-      "uninstallerIcon": "resources/hesora.ico"
+      "uninstallerIcon": "resources/hesora.ico",
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "runAfterFinish": false,
+      "include": "installer.nsh"
     }
   }
 }
