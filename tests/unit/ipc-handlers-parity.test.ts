@@ -125,6 +125,7 @@ const stubDeps: HandlerDeps = {
   attachmentsDir: () => join(tmpRoot, 'attachments'),
   resetDemoData: () => false,
   licenseSvc: () => stubLicense,
+  licensePayload: () => null, // v1.4 门控：parity 测试不触发业务（standard null → 仅多仓第二仓起拒）
   auditSvc: () => stubAudit
 }
 

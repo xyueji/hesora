@@ -11,6 +11,7 @@ import { roleHas } from '../../shared/permissions'
 import { isPermissionKey, type PermissionKey, type RoleInput } from '../../shared/permissions'
 import { WORKFLOW_KINDS, type FulfillmentRequest, type WorkflowKind } from '../../shared/types/workflow'
 import type { Product } from '../../shared/types/product'
+import type { LicensePayload } from '../../shared/license'
 import type { DocQuery, DocType } from '../../shared/types/doc'
 import type { PaymentCreateInput, PaymentType } from '../../shared/types/payment'
 import type { FundTransferInput } from '../../shared/types/fund-ledger'
@@ -43,6 +44,7 @@ import { createOpeningService } from '../services/opening/opening.service'
 import { createInventoryService } from '../services/inventory/inventory.service'
 import { createStockReportService } from '../services/inventory/stock-report.service'
 import { createSerialService } from '../services/inventory/serial.service'
+import { assertProEdition } from '../services/license-gate'
 import { createPurchaseService } from '../services/purchase/purchase.service'
 import { createSaleService } from '../services/sale/sale.service'
 import { createRetailService } from '../services/retail/retail.service'
@@ -80,6 +82,8 @@ export interface HandlerDeps {
   resetDemoData(db: DB): boolean
   /** 桌面授权服务（index.ts initialize 中构建，含试用守卫状态） */
   licenseSvc(): LicenseService
+  /** v1.4 授权门控：当前 licensePayload（index.ts verifyFormat 结果，激活后惰性取） */
+  licensePayload(): LicensePayload | null
   /** 审计服务（index.ts initialize 中构建） */
   auditSvc(): ReturnType<typeof createAuditService>
 }
@@ -481,7 +485,13 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     { channel: 'supplier:enable', handler: (_evt, payload) => supplierSvc.enable(Number(payload)) },
 
     // ── warehouse ──
-    { channel: 'warehouse:create', handler: (_evt, payload) => warehouseSvc.create(payload as never) },
+    { channel: 'warehouse:create', handler: (_evt, payload) => {
+      // v1.4 多仓门控：standard（resolveLicenseFeatures edition!=='professional'）下
+      // 若 create 将导致 >1 个有效仓（现有仓数 ≥1）则拒绝 E_FEATURE_PRO；首仓允许。
+      const existing = Number((getDb().prepare('SELECT COUNT(*) AS c FROM warehouse').get() as { c: number }).c)
+      if (existing >= 1) assertProEdition(deps.licensePayload())
+      return warehouseSvc.create(payload as never)
+    } },
     { channel: 'warehouse:update', handler: (_evt, payload) => {
       const { id, p } = payload as { id: number; p: Record<string, unknown> }
       warehouseSvc.update(id, p)
@@ -843,6 +853,9 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
 
     // ── transfer ──
     { channel: 'transfer:create', handler: (_evt, payload, session) => {
+      // v1.4 多仓门控：standard 下有效仓 >1（多仓场景）的调拨拒绝 E_FEATURE_PRO；单仓调拨无意义但保持一致口径。
+      const activeWh = Number((getDb().prepare('SELECT COUNT(*) AS c FROM warehouse WHERE disabled=0').get() as { c: number }).c)
+      if (activeWh > 1) assertProEdition(deps.licensePayload())
       const doc = transferSvc.create(payload as never)
       auditSvc.record('transfer:create', operator(session), `库存调拨 ${doc.no}`, undefined, JSON.stringify({ id: doc.id }))
       emitDocChanged(doc.no)

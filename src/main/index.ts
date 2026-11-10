@@ -157,6 +157,13 @@ function initialize(): void {
     attachmentsDir: () => join(app.getPath('userData'), 'attachments'),
     resetDemoData,
     licenseSvc: () => licenseSvc,
+    // v1.4 授权门控：激活后授权可变，惰性重读 license.code → verifyFormat。
+    licensePayload: () => {
+      const row = getDb().prepare("SELECT value FROM app_setting WHERE key='license.code'").pluck().get() as
+        | string
+        | undefined
+      return row ? licenseSvc.verifyFormat(row) : null
+    },
     auditSvc: () => auditSvc
   }
   for (const { channel, handler } of buildAllHandlers(handlerDeps)) {
