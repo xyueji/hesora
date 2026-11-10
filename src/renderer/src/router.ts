@@ -78,7 +78,9 @@ const routes: RouteRecordRaw[] = [
   { path: '/sync', name: 'sync', component: () => import('./views/sync/SyncView.vue'), meta: { title: '同步备份' } },
   // v1.3 Task 8: LAN 主机配对与设备管理
   { path: '/host/connect', name: 'host-connect', component: () => import('./views/system/HostConnectView.vue'), meta: { title: '设备配对' } },
-  { path: '/host/devices', name: 'host-devices', component: () => import('./views/system/HostDevicesView.vue'), meta: { title: '已配对设备' } }
+  { path: '/host/devices', name: 'host-devices', component: () => import('./views/system/HostDevicesView.vue'), meta: { title: '已配对设备' } },
+  // v1.4 T9：客户端连接（本机作为客户端加入主机协作；system/* 前缀自动纳入 admin 守卫）
+  { path: '/system/client-connect', name: 'system-client-connect', component: () => import('./views/system/ClientConnectView.vue'), meta: { title: '客户端连接' } }
 ]
 
 const router = createRouter({

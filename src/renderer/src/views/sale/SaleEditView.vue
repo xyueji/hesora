@@ -11,6 +11,7 @@ import { customerApi } from '../../api/customer'
 import { productApi } from '../../api/product'
 import { warehouseApi } from '../../api/warehouse'
 import { workflowApi } from '../../api/workflow'
+import { clientWriteBlocked, clientWriteBlockedReason } from '../../lib/client-state'
 import { customerPriceApi } from '../../api/customer-price'
 import { watch } from 'vue'
 import { hasPermission } from '../../stores/auth'
@@ -71,7 +72,7 @@ function emptyLine(): Line {
 
 const saving = ref(false)
 const canPost = computed(() => hasPermission('doc.approve'))
-const canSave = computed(() => hasPermission('doc.sale') && (canPost.value || hasPermission('doc.workflow')))
+const canSave = computed(() => hasPermission('doc.sale') && (canPost.value || hasPermission('doc.workflow')) && !clientWriteBlocked.value)
 
 const grossAmount = computed(() =>
   lines.value.reduce((sum, l) => sum + lineAmount(l), 0)
@@ -337,7 +338,9 @@ useDocumentScanner({ onProduct: fillScanned })
         </div>
       </div>
 
-      <el-alert v-if="!canSave" type="info" show-icon :closable="false"
+      <el-alert v-if="clientWriteBlocked" type="warning" show-icon :closable="false"
+        :title="clientWriteBlockedReason" style="margin-bottom: 8px" />
+      <el-alert v-if="!canSave && !clientWriteBlocked" type="info" show-icon :closable="false"
         title="保存销售单需要草稿或审核权限，请联系管理员分配权限。" />
 
       <el-form label-width="90px" class="form" inline>

@@ -9,6 +9,7 @@ import { fundApi } from '../../api/fund'
 import { customerApi } from '../../api/customer'
 import type { Customer } from '../../../../shared/types/customer'
 import { printApi } from '../../api/print'
+import { clientWriteBlocked, clientWriteBlockedReason } from '../../lib/client-state'
 import { resolveScannedProduct } from '../../composables/useDocumentScanner'
 import type { Product } from '../../../../shared/types/product'
 import type { FundAccount } from '../../../../shared/types/fund'
@@ -310,6 +311,11 @@ function onPayCustomerChange(id: number | null): void {
 
 async function savePay(): Promise<void> {
   if (saving.value) return
+  // v1.4 T9：客户端断线/被吊销时禁写（主机库为准，防数据分叉；单机模式不受影响）。
+  if (clientWriteBlocked.value) {
+    ElMessage.warning(clientWriteBlockedReason.value)
+    return
+  }
   const d = Number(payForm.discount)
   if (!Number.isFinite(d) || d <= 0 || d > 1) {
     ElMessage.warning('整单折扣率需在 (0, 1] 之间')
@@ -413,6 +419,10 @@ function onCashShortcut(event: KeyboardEvent): void {
   // F2=收款/结算；F4=取单（唤出挂单列表）；F9=挂单。
   if (event.key === 'F2') {
     event.preventDefault()
+    if (clientWriteBlocked.value) {
+      ElMessage.warning(clientWriteBlockedReason.value)
+      return
+    }
     openPay()
   } else if (event.key === 'F4') {
     event.preventDefault()
@@ -484,7 +494,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onCashShortcut))
         <div class="total">
           合计：<span class="total-num">¥{{ fmt(totalAmount) }}</span>
         </div>
-        <el-button type="primary" size="large" class="pay-btn" @click="openPay">收款 (F2)</el-button>
+        <el-button type="primary" size="large" class="pay-btn" :disabled="clientWriteBlocked"
+          :title="clientWriteBlocked ? clientWriteBlockedReason : ''" @click="openPay">
+          {{ clientWriteBlocked ? '写操作暂停' : '收款 (F2)' }}
+        </el-button>
         <el-button :disabled="lines.length === 0" :loading="holding" @click="holdCart">挂单 (F9)</el-button>
         <el-button @click="showHeldCarts">取单 (F4)</el-button>
         <el-button size="large" :disabled="lastReceiptDocId === null" :loading="printingReceipt" @click="reprintReceipt">打印小票</el-button>

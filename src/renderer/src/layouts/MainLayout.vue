@@ -145,6 +145,8 @@ const groups: MenuGroup[] = [
       // v1.3 Task 8: LAN 主机（本机管理功能，host:* 通道 IPC 端另有 admin 守卫）
       { path: '/host/connect', label: '设备配对', perm: 'system.setting' },
       { path: '/host/devices', label: '已配对设备', perm: 'system.setting' },
+      // v1.4 T9：客户端连接（本机作为客户端加入主机协作）
+      { path: '/system/client-connect', label: '客户端连接', perm: 'system.setting' },
       { path: '/guide?replay=1', label: '重新查看引导' },
       { path: '/about', label: '关于禾序' }
     ]
