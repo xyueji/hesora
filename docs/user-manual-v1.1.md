@@ -674,10 +674,10 @@
 
 ## 10.6 试用与激活
 
-- **简介**：软件内置 15 天试用期（从首次启动起算）；到期后需激活。激活码与本机设备绑定，换机需重新激活。激活支持在线方式；完全离线时试用到期会限制使用。
+- **简介**：软件内置 7 天试用期（从首次启动起算），试用期内可使用全部功能（含专业版功能），无延期；到期后转为只读模式（业务单据暂停新增与修改，查看、导出与备份不受影响），需激活恢复。激活码与本机设备绑定，换机需重新激活。激活支持在线方式。
 - **操作步骤**：`系统与数据 → 关于禾序` 查看当前授权状态（试用剩余天数 / 已激活），并输入激活码激活。
 - **注意**：
-  > - 试用期倒计时机制在异常时间回拨下有防回退限制。
+  > - 试用期倒计时机制在异常时间回拨下有防回退限制；试用期不提供延期，请及时激活。
   > - 激活服务依赖联网；**当前版本未提供离线激活通道**（在线激活需 HTTPS 访问激活服务，超时或失败会提示"无法连接激活服务，请稍后重试"；兑换码与设备绑定，跨设备需联系供应商解绑）。离线激活如后续版本提供，以实际版本为准。
 
 ## 10.7 软件更新
@@ -718,8 +718,8 @@ A：不建议。它按"当前移动加权成本"近似估算（见 9.3 已知局
 **Q10：换了电脑数据还在吗？**
 A：数据在原电脑的用户数据目录中。换机请先在旧机 `同步备份` 上传快照（或拷贝备份文件），新机恢复。激活码与设备绑定，换机需重新激活。
 
-**Q11：试用期 15 天从什么时候开始算？**
-A：从首次启动开始倒计时，防回拨；到期需激活。见 10.6。
+**Q11：试用期 7 天从什么时候开始算？**
+A：从首次启动开始倒计时，防回拨；7 天内全功能可用（含专业版功能）、不提供延期，到期转只读并需激活。见 10.6。
 
 **Q12：序列号商品能做组合商品的子件吗？**
 A：暂不支持。含序列号子件的组合商品无法销售拆解（报错提示）。
@@ -774,7 +774,7 @@ A：说明云端有比本机新的备份。请先"恢复"再进行新的上传�
 | 权限判定 | `roleHas(role, perm, permissions)`；管理员专属键：`system.user`、`system.role` |
 | 关键服务 | `src/main/services/product/customer-price.service.ts`（resolvePrice：专属价 > price_level 等级价 > retail_price）、`src/main/services/doc/reversal.service.ts`（reverse：仅 done、一单一冲、cost_log 取反回退）、`src/main/services/retail/retail.service.ts`（payments 多腿收款、discount∈(0,1]）、`src/main/services/sale/sale.service.ts`（combo 拆解，kind='combo' 且 tracking_type='none'）、`src/main/services/stocktake/stocktake.service.ts`（importSheet：code,qty,batch_no 三列）、`src/main/services/assemble/assemble.service.ts`（resolveUsage：formula_item.qty/output_qty 或 bom.qty） |
 | 员工业绩 | `stats/report.service.ts` operatorPerformance（毛利 ≈ amount − qty×rate×当前 inventory.moving_cost，近似口径） |
-| 激活 | `src/main/services/license/license.service.ts`（mode trial/licensed，`TRIAL_DAYS = 15`，机器码绑定，防回拨 rollback 限制） |
+| 激活 | `src/main/services/license/license.service.ts`（mode trial/licensed，`TRIAL_DAYS = 7`，7 天全功能试用、到期只读，无延期；机器码绑定，防回拨 rollback 限制） |
 | 首次登录 | 默认账号 admin/admin123，首次登录强制改密；新密码 8–128 位且不得等于初始默认密码 |
 
 ---
@@ -791,7 +791,7 @@ A：说明云端有比本机新的备份。请先"恢复"再进行新的上传�
 | 2 | 序列号商品暂不支持作为组合商品子件参与**拆解销售** | 开单会明确报错；此类组合请拆开按普通商品卖 |
 | 3 | 红冲为整单全额冲销，原核销关系整体作废，不按比例冲减 | 部分更正需红冲后重开 |
 | 4 | 红冲"原入库"按当前结存成本扣回，成本口径可能与原入库时点有细微差异 | 核对成本用成本变动明细 |
-| 5 | 激活/试用机制：15 天试用、激活码绑定设备、防时间回拨 | 换机需重新激活 |
+| 5 | 激活/试用机制：7 天全功能试用（含专业版功能）、无延期、到期只读、激活码绑定设备、防时间回拨 | 换机需重新激活 |
 
 ## D.2 待验证（真机项）
 

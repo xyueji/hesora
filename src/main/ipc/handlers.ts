@@ -324,11 +324,6 @@ export function buildAllHandlers(deps: HandlerDeps): IpcChannelHandler[] {
     { channel: 'license:activate', handler: (_evt, payload) => licenseSvc.activate(String(payload)) },
     { channel: 'license:activateOnline', handler: (_evt, payload) => licenseSvc.activateOnline(String(payload)) },
     { channel: 'trial:check', handler: () => licenseSvc.getStatus() },
-    { channel: 'trial:extend', handler: () => {
-      licenseSvc.extendTrial()
-      audit('trial.extend', '试用本地延期 7 天（trial_extended=1）')
-      return licenseSvc.getStatus()
-    } },
     { channel: 'trial:resetDemo', handler: () => {
       const ok = deps.resetDemoData(getDb())
       audit('trial.resetDemo', '重置演示数据为初始演示态（试用计时不受影响）')

@@ -10,7 +10,7 @@ const form = reactive({ code: '' })
 
 const onlineAvailable = ref(false)
 const online = ref(false)
-// D16（T8 商用闭环）：过期进入本页时提示数据只读语义，而非继续展示 15 天试用文案。
+// D16（T8 商用闭环）：过期进入本页时提示数据只读语义，而非继续展示 7 天试用文案。
 const expired = ref(false)
 onMounted(async () => {
   const status = await licenseApi.check().catch(() => null)
@@ -49,7 +49,7 @@ async function submit() {
         :title="expired ? '试用已结束' : '试用说明'"
         :description="expired
           ? '试用已结束，数据只读——仍可查询/备份，激活后恢复。请向供应商获取激活码完成激活。'
-          : '本软件免费试用 15 天，到期后需输入激活码继续使用。请向供应商获取激活码。在线激活绑定本机设备，成功后可离线使用。'"
+          : '本软件免费试用 7 天（含专业版全部功能），到期后需输入激活码继续使用。请向供应商获取激活码。在线激活绑定本机设备，成功后可离线使用。'"
         style="margin-bottom: 16px"
       />
       <el-form @submit.prevent>

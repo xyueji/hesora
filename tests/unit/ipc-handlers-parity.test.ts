@@ -12,7 +12,7 @@ import type { DB } from '../../src/main/db'
 // 从 index.ts 抽出的全部通道（print:* / csv:* / backup:* / sync:* / update:* 留在 index.ts 本地，不在其中）
 const EXPECTED_CHANNELS: string[] = [
   // license/trial
-  'license:check', 'license:activate', 'license:activateOnline', 'trial:check', 'trial:extend', 'trial:resetDemo',
+  'license:check', 'license:activate', 'license:activateOnline', 'trial:check', 'trial:resetDemo',
   // workflow
   'workflow:list', 'workflow:save', 'workflow:approve', 'workflow:convert', 'workflow:cancel',
   // product

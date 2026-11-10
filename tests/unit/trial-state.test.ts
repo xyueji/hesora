@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { generateKeyPairSync } from 'node:crypto'
-import { generateLicenseCode, TRIAL_DAYS, TRIAL_TOTAL_DAYS, TRIAL_EXPIRED_BLOCKED_CHANNELS, isTrialExpiredWrite } from '../../src/shared/license'
+import { generateLicenseCode, TRIAL_DAYS, TRIAL_EXPIRED_BLOCKED_CHANNELS, isTrialExpiredWrite } from '../../src/shared/license'
 import { createLicenseService } from '../../src/main/services/license/license.service'
 import { openMemDb } from '../helpers/mem-db'
 import { seedDemoData, resetDemoData } from '../../src/main/db/seed'
@@ -32,19 +32,26 @@ function daySvc(startOffsetDays: number) {
   }
 }
 
-describe('trial state machine (7 天试用 + 7 天延期 + 到期只读)', () => {
-  it('第 1-6 天为 trial，daysLeft 递减', () => {
-    const { svc, setDay } = daySvc(0)
-    expect(svc.getStatus().phase).toBe('trial')
-    expect(svc.getStatus().daysLeft).toBe(TRIAL_DAYS)
-    setDay(3)
+describe('trial state machine (7 天全功能试用，到期只读，无延期)', () => {
+  it('第 0 天 phase=trial 且 daysLeft=TRIAL_DAYS', () => {
+    const { svc } = daySvc(0)
     const s = svc.getStatus()
+    expect(s.mode).toBe('trial')
     expect(s.phase).toBe('trial')
-    expect(s.daysLeft).toBe(TRIAL_DAYS - 3)
-    expect(s.extended).toBe(false)
+    expect(s.daysLeft).toBe(TRIAL_DAYS)
   })
 
-  it('第 7 天起未延期 → expired 只读', () => {
+  it('第 1-6 天 phase=trial 且 daysLeft 正确递减', () => {
+    const { svc, setDay } = daySvc(0)
+    for (const d of [1, 3, 6]) {
+      setDay(d)
+      const s = svc.getStatus()
+      expect(s.phase).toBe('trial')
+      expect(s.daysLeft).toBe(TRIAL_DAYS - d)
+    }
+  })
+
+  it('第 7 天 → expired（daysLeft=0）', () => {
     const { svc, setDay } = daySvc(6)
     expect(svc.getStatus().phase).toBe('trial')
     setDay(7)
@@ -53,62 +60,30 @@ describe('trial state machine (7 天试用 + 7 天延期 + 到期只读)', () =>
     expect(s.daysLeft).toBe(0)
   })
 
-  it('第 7 天申请延期 → extended，8-13 天可写，第 14 天起 expired', () => {
-    const { svc, setDay } = daySvc(7)
-    svc.extendTrial()
-    setDay(8)
-    const s = svc.getStatus()
-    expect(s.phase).toBe('extended')
-    expect(s.extended).toBe(true)
-    expect(s.daysLeft).toBe(TRIAL_TOTAL_DAYS - 8)
-    setDay(13)
-    expect(svc.getStatus().phase).toBe('extended')
-    setDay(15)
-    expect(svc.getStatus().phase).toBe('expired')
-    expect(svc.getStatus().daysLeft).toBe(0)
-  })
-
-  it('重复延期拒绝（BizError）', () => {
-    const { svc } = daySvc(7)
-    svc.extendTrial()
-    expect(() => svc.extendTrial()).toThrow(/已经申请过延期/)
-    try {
-      svc.extendTrial()
-    } catch (e) {
-      expect((e as { code?: string }).code).toBe('TRIAL_ALREADY_EXTENDED')
+  it('第 7 天之后始终 expired，daysLeft 恒为 0', () => {
+    const { svc, setDay } = daySvc(0)
+    for (const d of [7, 10, 30]) {
+      setDay(d)
+      const s = svc.getStatus()
+      expect(s.phase).toBe('expired')
+      expect(s.daysLeft).toBe(0)
     }
   })
 
-  it('过期后（未延期且 < 14 天）仍允许一次性延期补位', () => {
-    const { svc, setDay } = daySvc(10)
-    expect(svc.getStatus().phase).toBe('expired')
-    svc.extendTrial()
-    setDay(11)
-    expect(svc.getStatus().phase).toBe('extended')
-    setDay(15)
-    expect(svc.getStatus().phase).toBe('expired')
-  })
-
-  it('超过 14 天后延期拒绝', () => {
-    const { svc, setDay } = daySvc(15)
-    setDay(15)
-    expect(() => svc.extendTrial()).toThrow(/无法申请延期/)
-  })
-
-  it('激活后 phase=activated，延期不再需要且拒绝重复操作无副作用', () => {
-    const { svc } = daySvc(7)
+  it('激活后 phase=activated，不受 7 天限制（永远可用）', () => {
+    const { svc, setDay } = daySvc(7)
     const code = generateLicenseCode({ customer: '客户甲', issuedAt: '2026-01-01T00:00:00Z' }, privPem)
     svc.activate(code)
+    setDay(60)
     const s = svc.getStatus()
     expect(s.phase).toBe('activated')
     expect(s.mode).toBe('licensed')
-    expect(() => svc.extendTrial()).toThrow(/已激活/)
+    expect(s.customer).toBe('客户甲')
   })
 
   it('试用状态兼容字段：mode=trial + daysLeft（渲染层路由守卫沿用）', () => {
-    const { svc, setDay } = daySvc(8)
-    expect(() => svc.extendTrial()).not.toThrow()
-    setDay(15)
+    const { svc, setDay } = daySvc(3)
+    setDay(8)
     const s = svc.getStatus()
     expect(s.mode).toBe('trial')
     expect(s.daysLeft).toBe(0)
@@ -141,11 +116,11 @@ describe('expired 拦截清单（shared，主进程 guard 使用）', () => {
     expect(isTrialExpiredWrite('product:create', 'expired', 0)).toBe(false)
     expect(isTrialExpiredWrite('customer:update', 'expired', 0)).toBe(false)
     expect(isTrialExpiredWrite('setting:set', 'expired', 0)).toBe(false)
-    expect(isTrialExpiredWrite('trial:extend', 'expired', 0)).toBe(false)
-    // 试用期内（含延期）一律放行
+    expect(isTrialExpiredWrite('trial:check', 'expired', 0)).toBe(false)
+  })
+
+  it('isTrialExpiredWrite：对 phase=trial / activated 一律放行', () => {
     expect(isTrialExpiredWrite('sale:create', 'trial', 3)).toBe(false)
-    expect(isTrialExpiredWrite('sale:create', 'extended', 2)).toBe(false)
-    // 激活后放行一切
     expect(isTrialExpiredWrite('sale:create', 'activated', undefined)).toBe(false)
   })
 })
@@ -161,19 +136,18 @@ describe('演示数据重置（不影响试用计时）', () => {
     expect(docs).toBeGreaterThan(0)
   })
 
-  it('resetDemoData 不清空 license.* 与试用延期标记（不重置计时）', () => {
+  it('resetDemoData 不清空 license.*（不重置计时）', () => {
     const db = openMemDb()
     let t = T0
     const svc = createLicenseService(db, pubPem, { now: () => t })
     svc.getStatus()
     t = T0 + 5 * DAY_MS
-    svc.extendTrial()
     expect(resetDemoData(db)).toBe(true)
     const start = db.prepare("SELECT value FROM app_setting WHERE key='license.start'").pluck().get() as string
     expect(Date.parse(start)).toBe(T0)
-    expect(db.prepare("SELECT value FROM app_setting WHERE key='license.trial_extended'").pluck().get()).toBe('1')
-    // 状态机延续：重置后仍是 extended 阶段
-    expect(svc.getStatus().phase).toBe('extended')
+    // 状态机延续：重置后仍是 trial 阶段（第 5 天）
+    expect(svc.getStatus().phase).toBe('trial')
+    expect(svc.getStatus().daysLeft).toBe(TRIAL_DAYS - 5)
   })
 
   it('resetDemoData 保留 platform_log 审计记录', () => {

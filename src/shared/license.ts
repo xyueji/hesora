@@ -16,17 +16,13 @@ export interface LicensePayload {
 export const LICENSE_CODE_PREFIX = 'ZHJS1.'
 export const TRIAL_DAYS = 7
 
-/** 试用期总长（含一次 7 天延期后）：15 天 = 7 天试用 + 7 天延期 + 1 天缓冲边界。 */
-export const TRIAL_TOTAL_DAYS = 15
-
 /**
  * 试用状态阶段：
- * - trial     第 1-7 天全功能试用
- * - extended  已使用一次 7 天延期（第 8-14 天）
- * - expired   超过可用天数 → 只读模式（禁止业务单据写操作）
+ * - trial     第 1-7 天全功能试用（含专业版功能）
+ * - expired   超过 7 天 → 只读模式（禁止业务单据写操作）
  * - activated 已激活正式授权
  */
-export type TrialPhase = 'trial' | 'extended' | 'expired' | 'activated'
+export type TrialPhase = 'trial' | 'expired' | 'activated'
 
 /**
  * 只读模式（expired）下拦截的业务单据写通道清单。
@@ -62,9 +58,9 @@ export const TRIAL_EXPIRED_BLOCKED_CHANNELS: readonly string[] = [
  * phase 非 expired 一律放行；expired 时按拦截清单 + 明确白名单判定。
  */
 export function isTrialExpiredWrite(channel: string, phase: TrialPhase, daysLeft?: number): boolean {
-  if (phase === 'activated' || phase === 'trial' || phase === 'extended') return false
+  if (phase === 'activated' || phase === 'trial') return false
   void daysLeft
-  // 白名单：激活 / 试用延期 / 备份恢复 / 同步 / 导出 / 引导设置不受只读限制
+  // 白名单：激活 / 试用状态 / 备份恢复 / 同步 / 导出 / 引导设置不受只读限制
   if (channel.startsWith('license:') || channel.startsWith('trial:') || channel.startsWith('backup:') ||
       channel.startsWith('sync:') || channel.startsWith('csv:') || channel.startsWith('auth:') ||
       channel.startsWith('update:')) return false

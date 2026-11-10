@@ -5,12 +5,10 @@ import brandIcon from '../assets/hesora.svg'
 import { licenseApi, type LicenseStatus } from '../api/license'
 
 const status = ref<LicenseStatus | null>(null)
-const extending = ref(false)
 const resetting = ref(false)
 
 const phaseText: Record<string, string> = {
   trial: '全功能试用',
-  extended: '延期试用',
   expired: '试用结束（只读）',
   activated: '已激活'
 }
@@ -20,27 +18,6 @@ async function loadStatus(): Promise<void> {
     status.value = await licenseApi.check()
   } catch {
     status.value = null
-  }
-}
-
-async function onExtend(): Promise<void> {
-  try {
-    await ElMessageBox.confirm('试用可免费延长 7 天（仅一次），延长后全部功能继续可用。确定申请延期吗？', '申请试用延期', {
-      confirmButtonText: '申请延期',
-      cancelButtonText: '取消',
-      type: 'info'
-    })
-  } catch {
-    return
-  }
-  extending.value = true
-  try {
-    status.value = await licenseApi.extendTrial()
-    ElMessage.success('已延长试用 7 天，全部功能继续可用')
-  } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : String(e))
-  } finally {
-    extending.value = false
   }
 }
 
@@ -76,25 +53,17 @@ onMounted(loadStatus)
       <el-divider />
       <div class="about-values"><section><h3>日常业务，本地运行</h3><p>经营记录保存在本机，日常开单与查账无需持续联网。</p></section><section><h3>经营数据，由你掌握</h3><p>按需导出与备份，恢复前核对数据，妥善保管异盘副本。</p></section><section><h3>从单据，看清经营</h3><p>连接货物与款项记录，为库存、往来和经营决策提供依据。</p></section></div>
 
-      <!-- 试用状态与延期（7 天试用 + 一次 7 天延期） -->
+      <!-- 试用状态（7 天全功能试用，到期只读） -->
       <el-divider />
       <div v-if="status" class="trial-box">
         <div class="trial-info">
           <span class="trial-phase" :class="'phase-' + status.phase">{{ phaseText[status.phase] ?? status.phase }}</span>
           <span v-if="status.mode === 'trial' && status.daysLeft !== undefined" class="trial-days">
             剩余 {{ status.daysLeft }} 天
-            <template v-if="status.extended">（已使用延期）</template>
           </span>
           <span v-if="status.mode === 'licensed'" class="trial-days">授权用户：{{ status.customer ?? '—' }}</span>
         </div>
         <div class="trial-actions">
-          <el-button
-            v-if="status.mode === 'trial' && !status.extended && status.phase !== 'expired'"
-            type="primary"
-            plain
-            :loading="extending"
-            @click="onExtend"
-          >免费延长 7 天</el-button>
           <el-button type="warning" plain :loading="resetting" @click="onResetDemo">重置演示数据</el-button>
         </div>
       </div>
