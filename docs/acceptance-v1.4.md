@@ -49,9 +49,13 @@
 
 
 
+## 追加：关闭窗口最小化到托盘（用户 m06828，2026-11-11）
+
+用户要求：点 X 关窗不退出，应用保留在系统托盘（隐藏图标区），右键托盘图标可「退出」。实现：`src/main/index.ts`——①托盘由「仅 lanAllowed 创建」改为**无条件创建**（`shouldCreateTray` 门控移除，LAN 主机状态菜单项在未启用时显示「主机状态：未启用」）；②新增模块级 `trayRef`；③`mainWindow.on('close')` 在 `trayRef` 存在时 `preventDefault()+hide()`（托盘创建失败回退原直接退出语义）；④托盘右键菜单：主机状态 / 已连接设备 / 分隔线 / 打开主窗口 / **退出**（退出=flush pending → 关 hostServer → 摘事件 sink → destroy tray → app.exit(0)，v1.3 已有逻辑不变）。冒烟同步更新：托盘常驻下 `app.close()` 不再退出进程属预期，改 `taskkill /T /F` 收尾，SMOKE PASS。最终包 86,596,466 B、SHA256 `924044e1…988646`。
+
 ## 追加：安装完成页两复选框（用户 m06629，2026-11-11）
 
-用户要求完成页显示「创建桌面快捷方式」「运行程序」两个可选复选框且**默认勾选**。实现：`build.nsis.createDesktopShortcut:false`（关掉安装段自动创建与模板卸载清理）、删除 `runAfterFinish:false`（恢复内建运行框）；`installer.nsh` 重写——`MUI_FINISHPAGE_RUN_TEXT`/`MUI_FINISHPAGE_SHOWREADME`+TEXT/FUNCTION 借 MUI2 两槽位，`HesoraCreateDesktopShortcut` 函数体只用核心指令+内置 System 插件（SHARED HEADER 编译顺序约束：早于 LogicLib/WinShell 插件/Var 声明）；卸载清理走 `customUnInstall` 宏。重打包 BUILD_EXIT=0，最终包 86,596,016 B、SHA256 403e021e…75c8e85。真机验证待用户安装时确认。
+用户要求完成页显示「创建桌面快捷方式」「运行程序」两个可选复选框且**默认勾选**。实现：`build.nsis.createDesktopShortcut:false`（关掉安装段自动创建与模板卸载清理）、删除 `runAfterFinish:false`（恢复内建运行框）；`installer.nsh` 重写——`MUI_FINISHPAGE_RUN_TEXT`/`MUI_FINISHPAGE_SHOWREADME`+TEXT/FUNCTION 借 MUI2 两槽位，`HesoraCreateDesktopShortcut` 函数体只用核心指令+内置 System 插件（SHARED HEADER 编译顺序约束：早于 LogicLib/WinShell 插件/Var 声明）；卸载清理走 `customUnInstall` 宏。重打包 BUILD_EXIT=0，最终包 86,596,466 B、SHA256 403e021e…75c8e85。真机验证待用户安装时确认。
 ## 测试与构建快照
 
 - 全量 `npx vitest run --reporter=dot`（v1.4 终审修复 + 单测补齐后最终复跑）：
@@ -64,8 +68,8 @@
   重跑 **PASS**（SMOKE_EXIT=0）——捕获到 splash.html 与主窗口 index.html 两个页面、
   主窗口存活 6s 无崩溃、启动过渡页 `isClosed()===true`（`destroy()` 生效）。
   冒烟脚本主动轮询 `app.context().pages()` + 全步骤超时，避免 `app.on('window')` 订阅竞态与挂起。
-- 包产物：`dist/禾序进销存-1.4.0-setup.exe`（**最终包 86,596,016 B，SHA256
-  `403e021e196d8efffecacbf18802c34b3c30f93eb7bf7a3250055e5ef75c8e85`**）；
+- 包产物：`dist/禾序进销存-1.4.0-setup.exe`（**最终包 86,596,466 B，SHA256
+  `924044e17562cfb0542e5a7c93a07a277b1fe65c78117f3dda8c9419a0988646`**）；
   `dist/win-unpacked/resources/splash.html` 2379 B 已进 `resources/`；`app.asar` 内 `out/main/index.js`
   已核实含 `win.destroy()`、`defaultFetch`、`probeRateBuckets`、`markSessionExpired`、
   `clearPendingCredentials`（`grep -ao` 实证），确认终审修复确实打进包。

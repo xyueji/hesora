@@ -11,7 +11,7 @@ import { assertMaxDevices, assertFeature } from './services/license-gate'
 import { effectiveLicensePayload } from './services/license/trial-payload'
 import { ALL_PERMISSIONS, ROLE_PRESETS } from '../shared/permissions'
 import { registerIpc, setDefaultPermissionGuard } from './ipc/register'
-import { createHostPairIpc, shouldCreateTray } from './ipc/host-pair-ipc'
+import { createHostPairIpc } from './ipc/host-pair-ipc'
 import { buildAllHandlers, canViewDocument, type HandlerDeps } from './ipc/handlers'
 import { PERMISSION_MAP } from './permissions-map'
 import { can, getCurrentUser, installUserLookup, canFor } from './auth'
@@ -37,6 +37,9 @@ let clientConnectionRef: import('./host/client-connection').ClientConnection | n
 let clientModeActive = false
 // v1.4：主机自签证书指纹（配对握手下发给客户端做 pinning）。
 let hostFingerprintHexRef: string | null = null
+// v1.4.1（用户 m06828）：系统托盘引用——改为无条件创建（关闭窗口=最小化到托盘，
+// 托盘右键「退出」才真正退出）。托盘创建失败时为 null，关窗回退为直接退出。
+let trayRef: import('electron').Tray | null = null
 // 启动过渡页：app.whenReady() 后立即显示，主窗口 ready-to-show 或启动异常时关闭。
 // 不参与单实例锁、不监听 window-all-closed，也不阻止 app.quit()。
 let splashWindow: ReturnType<typeof createSplashWindow> | null = null
@@ -111,6 +114,17 @@ function createWindow(): BrowserWindow {
     mainWindow.show()
     // 主窗口已绘制：幂等关闭过渡页（重复触发 / 已销毁都安全）。
     closeSplashSafely()
+  })
+
+  // v1.4.1（用户 m06828）：点 X 关窗不退出——最小化到托盘（隐藏窗口），托盘右键「退出」才真正退出。
+  // 依托上方无条件创建的系统托盘；LAN 主机/客户端断连的 pending flush 在真正退出路径（tray 退出 /
+  // before-quit / window-all-closed）已有覆盖，隐藏不触发退出故无需额外处理。
+  mainWindow.on('close', (event) => {
+    if (trayRef) {
+      event.preventDefault()
+      mainWindow.hide()
+    }
+    // trayRef 为 null（托盘创建失败等异常环境）时保持原语义：正常关闭退出。
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -767,78 +781,80 @@ function initialize(): void {
     () => getCurrentUser()?.role === 'admin'
   )
 
-  // ── v1.3 Task 8: Tray（仅 lanAllowed 创建，D4） ──
-  if (shouldCreateTray(lanAllowed)) {
-    void (async () => {
-      try {
-        const { Tray, Menu, nativeImage } = await import('electron')
-        const iconPath = app.isPackaged
-          ? join(process.resourcesPath, 'hesora.png')
-          : join(app.getAppPath(), 'resources/hesora.png')
-        const tray = new Tray(nativeImage.createFromPath(iconPath))
-        const rebuildMenu = (): void => {
-          const deviceCount = pairingRef
-            ? pairingRef.listDevices().filter((d) => d.revoked_at === null).length
-            : 0
-          tray.setContextMenu(
-            Menu.buildFromTemplate([
-              { label: hostServer ? '主机状态：运行中 (18650)' : '主机状态：未运行', enabled: false },
-              { label: `已连接设备：${deviceCount}`, enabled: false },
-              { type: 'separator' },
-              {
-                label: '打开主窗口',
-                click: () => {
-                  const win = BrowserWindow.getAllWindows()[0]
-                  if (win) {
-                    win.show()
-                    win.focus()
-                  } else {
-                    createWindow()
-                  }
-                }
-              },
-              {
-                label: '退出',
-                click: () => {
-                  // 彻底退出：先 flush 客户端 pending、关 hostServer、清 Tray，再 app.exit（绕过 window-all-closed 隐藏逻辑）。
-                  void (async () => {
-                    // v1.4（B8）：app.exit 不触发 before-quit，pending flush 需在此显式执行。
-                    try {
-                      clientConnectionRef?.flushPending()
-                    } catch { /* ignore */ }
-                    try {
-                      if (hostServerRef) await hostServerRef.close()
-                    } catch { /* ignore */ }
-                    try {
-                      const { setHostEventSink } = await import('./host/event-bus')
-                      setHostEventSink(null)
-                    } catch { /* ignore */ }
-                    tray.destroy()
-                    app.exit(0)
-                  })()
+  // ── 系统托盘（v1.4.1 用户 m06828：无条件创建——关闭窗口=最小化到托盘，托盘右键「退出」才真正退出。
+  // v1.3 Task 8 的 LAN 主机状态菜单项保留（lanAllowed=false 时该两项显示「主机未启用」）。 ──
+  void (async () => {
+    try {
+      const { Tray, Menu, nativeImage } = await import('electron')
+      const iconPath = app.isPackaged
+        ? join(process.resourcesPath, 'hesora.png')
+        : join(app.getAppPath(), 'resources/hesora.png')
+      const tray = new Tray(nativeImage.createFromPath(iconPath))
+      tray.setToolTip('禾序进销存')
+      trayRef = tray
+      const rebuildMenu = (): void => {
+        const deviceCount = pairingRef
+          ? pairingRef.listDevices().filter((d) => d.revoked_at === null).length
+          : 0
+        tray.setContextMenu(
+          Menu.buildFromTemplate([
+            { label: hostServer ? '主机状态：运行中 (18650)' : '主机状态：未启用', enabled: false },
+            { label: `已连接设备：${deviceCount}`, enabled: false },
+            { type: 'separator' },
+            {
+              label: '打开主窗口',
+              click: () => {
+                const win = BrowserWindow.getAllWindows()[0]
+                if (win) {
+                  win.show()
+                  win.focus()
+                } else {
+                  createWindow()
                 }
               }
-            ])
-          )
+            },
+            {
+              label: '退出',
+              click: () => {
+                // 彻底退出：先 flush 客户端 pending、关 hostServer、清 Tray，再 app.exit（绕过 window-all-closed 隐藏逻辑）。
+                void (async () => {
+                  // v1.4（B8）：app.exit 不触发 before-quit，pending flush 需在此显式执行。
+                  try {
+                    clientConnectionRef?.flushPending()
+                  } catch { /* ignore */ }
+                  try {
+                    if (hostServerRef) await hostServerRef.close()
+                  } catch { /* ignore */ }
+                  try {
+                    const { setHostEventSink } = await import('./host/event-bus')
+                    setHostEventSink(null)
+                  } catch { /* ignore */ }
+                  trayRef = null
+                  tray.destroy()
+                  app.exit(0)
+                })()
+              }
+            }
+          ])
+        )
+      }
+      rebuildMenu()
+      // 设备数随配对/吊销变化：定时刷新菜单（3 台设备规模，30s 足够）。
+      const trayTimer = setInterval(rebuildMenu, 30_000)
+      trayTimer.unref?.()
+      tray.on('click', () => {
+        const win = BrowserWindow.getAllWindows()[0]
+        if (win) {
+          win.show()
+          win.focus()
+        } else {
+          createWindow()
         }
-        rebuildMenu()
-        // 设备数随配对/吊销变化：定时刷新菜单（3 台设备规模，30s 足够）。
-        const trayTimer = setInterval(rebuildMenu, 30_000)
-        trayTimer.unref?.()
-        tray.on('click', () => {
-          const win = BrowserWindow.getAllWindows()[0]
-          if (win) {
-            win.show()
-            win.focus()
-          } else {
-            createWindow()
-          }
-        })
+      })
       } catch (e) {
         console.warn('[tray] create failed:', e)
       }
     })()
-  }
 
   createWindow()
 
