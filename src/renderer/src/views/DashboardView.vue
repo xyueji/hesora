@@ -148,6 +148,7 @@ onMounted(() => {
     >
       <span>{{ trialBanner.text }}</span>
       <el-button size="small" type="primary" link @click="onTrialCta">{{ trialBanner.cta }}</el-button>
+      <a href="https://hesora.xclock.online/buy/" target="_blank" rel="noopener noreferrer" style="margin-left:8px;font-size:12px">购买授权 →</a>
     </el-alert>
     <template v-if="summary">
       <div class="card-row">

@@ -67,6 +67,7 @@ async function submit() {
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="loading" data-test="activate-submit" @click="submit">激活</el-button>
+          <a href="https://hesora.xclock.online/buy/" target="_blank" rel="noopener noreferrer" style="margin-left:12px">还没有激活码？去官网购买 →</a>
         </el-form-item>
       </el-form>
     </el-card>

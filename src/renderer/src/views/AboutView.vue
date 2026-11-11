@@ -65,6 +65,7 @@ onMounted(loadStatus)
         </div>
         <div class="trial-actions">
           <el-button type="warning" plain :loading="resetting" @click="onResetDemo">重置演示数据</el-button>
+          <a href="https://hesora.xclock.online/buy/" target="_blank" rel="noopener noreferrer">购买授权 →</a>
         </div>
       </div>
 
