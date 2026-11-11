@@ -98,10 +98,9 @@
       "uninstallDisplayName": "禾序进销存",
       "installerIcon": "resources/hesora.ico",
       "uninstallerIcon": "resources/hesora.ico",
-      "createDesktopShortcut": "always",
+      "createDesktopShortcut": false,
       "createStartMenuShortcut": true,
-      "runAfterFinish": false,
-      "include": "installer.nsh"
+          "include": "installer.nsh"
     }
   }
 }

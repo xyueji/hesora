@@ -17,10 +17,10 @@
 
 | # | 验收项 | 结论 | 证据 |
 |---|--------|------|------|
-| B1 | 桌面快捷方式默认创建 | ✅ 通过（构建配置 + 代理 NSIS 编译验证） | `package.json` `build.nsis.createDesktopShortcut:'always'` → `-DRECREATE_DESKTOP_SHORTCUT`；`createStartMenuShortcut:true`。**诚实披露**：assisted NSIS 无内建「桌面快捷方式」可见复选框，实现为「必然创建」而非「默认勾选的复选框」（与用户「默认勾选」意图等价但形态不同） |
-| B2 | 点「完成」不再卡半天 | ✅ 通过（构建配置） | `build.nsis.runAfterFinish:false` → `-DHIDE_RUN_AFTER_FINISH`，完成页不再有「运行程序」复选框，点完成安装器立即退出；根因是原先勾选「运行程序」触发 Electron 冷启动（37 个 migration + 界面加载）用户看不到反馈 |
+| B1 | 完成页两复选框（v1.4.0 追加需求，用户 m06629）| ✅ 通过（重打包 BUILD_EXIT=0）| `installer.nsh` 借用 MUI2 内建 `MUI_FINISHPAGE_RUN`（文本改「运行 ${PRODUCT_NAME}」）与 `MUI_FINISHPAGE_SHOWREADME`（文本改「创建桌面快捷方式」）两个复选框槽位，均不定义 `*_NOTCHECKED` → **默认勾选、可取消**；SHOWREADME 的 LEAVE 回调 `HesoraCreateDesktopShortcut` 用 `CreateShortCut "$DESKTOP\${SHORTCUT_NAME}.lnk"`（-D define 现场拼路径，因 SHARED HEADER 先于 Var 声明编译，warning 6000 → -WX 失败的教训已注释）；`build.nsis.createDesktopShortcut:false` → 安装段不自动建桌面快捷方式、`customUnInstall` 钩子补删卸载清理；`runAfterFinish:false` 已删除 → assistedInstaller 恢复内建「运行程序」复选框 + `StartApp`（ExecShellAsUser） |
+| B2 | 点「完成」不再卡半天 | ✅ 通过（配置 + 设计） | 「运行程序」复选框现由内建 `MUI_FINISHPAGE_RUN` + `StartApp`（`StdUtils.ExecShellAsUser` 异步启动，不阻塞安装器进程）承载；且首启动有 splash 过渡页兜底冷启动观感 |
 | B3 | 启动过渡页 | ✅ 通过（自动 + 真机冒烟复核） | `src/main/splash.ts`：`createSplashWindow()`（420×280、frame:false、`closable:false`、`alwaysOnTop:true`、sandbox、loadFile 容错）/ `closeSplashWindow()`（幂等，**必须用 `destroy()` 而非 `close()`**）；`resources/splash.html` 原创浅色「正在启动…」页；`package.json` `build.extraResources` 把 splash.html 放进 `resources/`；`src/main/index.ts` 接线：`app.whenReady().then(() => { splashWindow = createSplashWindow(); initialize() })`、主窗口 `ready-to-show` 时 `closeSplashSafely()`，主窗口保持 `show:false`；catch 分支先关过渡页再报错退出；20s 安全网 `closeSplashSafely()`。不参与单实例锁 / `window-all-closed` / 不阻止 `app.quit`。**真机 bug 修复（用户 m05812「启动中窗口在程序打开后没消失啊」）**：原 `closeSplashWindow()` 用 `win.close()`，但 Windows/Electron 对 `closable:false` 的窗口调 `close()` 是 no-op（最小探针 `electron.exe tools/tmp-probe-closable.cjs` 实证 `isDestroyed()` 始终 false），导致 `alwaysOnTop` 置顶过渡页永久残留；改为 `win.destroy()`（不受 closable 限制，splash 无未保存状态可安全强制销毁），并新增 `tests/unit/splash.test.ts`（4 用例：非 closable 配置、断言用 destroy 不用 close、幂等/null 安全、destroy 抛错被吞）锁住回归 |
-| B4 | NSIS 自定义脚本可编译（含卸载器） | ✅ 通过（代理编译验证） | `installer.nsh`：`!ifndef BUILD_UNINSTALLER` + `!ifndef MUI_FINISHPAGE_TEXT` 守卫定义中文完成页说明，不重复定义 `MUI_PAGE_CUSTOMFUNCTION_PRE`（assistedInstaller.nsh:30 无条件定义，避 `-WX` 重复 define 失败）；代理用 electron-builder 缓存 makensis.exe 3.0.4.1 复刻 SHARED HEADER 顺序，`-WX -INPUTCHARSET UTF8`：安装器 INSTALL_EXIT=0、卸载器(BUILD_UNINSTALLER) UNINSTALL2_EXIT=0。UTF-8 无 BOM |
+| B4 | NSIS 自定义脚本可编译（含卸载器） | ✅ 通过（完整 pnpm dist 权威验证） | `installer.nsh` 编译约束（实测）：SHARED HEADER 先于 `LogicLib.nsh`（MUI2 引入）与 WinShell 插件注入、先于 `installer.nsi` 的 Var 声明 → 函数体禁 `${If}`/`WinShell::`/Var 引用；卸载器清理走 `customUnInstall` 宏（插入点编译，插件可用）。首跑复刻管道报 `Bad text encoding`（!include 不走 -INPUTCHARSET，按 ANSI 读）与 warning 6000 → 均以完整 pnpm dist 作权威验证 |
 
 ## C. 双渠道更新（Gitee 优先 / GitHub 回退）
 
@@ -47,6 +47,11 @@
 | D4 | 端到端集成测试（配对→会话→调用→吊销→幂等重发） | ✅ 通过（自动） | `tests/unit/client-connection.test.ts`（2 用例：full flow + disconnect/pending 幂等重发，2/2 绿）。**修复记录**：第 2 用例 server2 曾传空 `handlers` 表 → /rpc 回 NOT_FOUND → pending 被判确定性失败删除 → 超时；改为 `handlers2` 同时传给 `createHostServer` 与 `createGateway` 后通过 |
 | D5 | 手册与验收文档 | ✅ 通过（人工核对） | `docs/user-manual-v1.3-lan.md` §2 整节重写为已实现版（入口、配对流程、断线禁写、DPAPI 重连、吊销、五态表）；`docs/errata-note.md` 两错误码并入 §3.2；本文件 |
 
+
+
+## 追加：安装完成页两复选框（用户 m06629，2026-11-11）
+
+用户要求完成页显示「创建桌面快捷方式」「运行程序」两个可选复选框且**默认勾选**。实现：`build.nsis.createDesktopShortcut:false`（关掉安装段自动创建与模板卸载清理）、删除 `runAfterFinish:false`（恢复内建运行框）；`installer.nsh` 重写——`MUI_FINISHPAGE_RUN_TEXT`/`MUI_FINISHPAGE_SHOWREADME`+TEXT/FUNCTION 借 MUI2 两槽位，`HesoraCreateDesktopShortcut` 函数体只用核心指令+内置 System 插件（SHARED HEADER 编译顺序约束：早于 LogicLib/WinShell 插件/Var 声明）；卸载清理走 `customUnInstall` 宏。重打包 BUILD_EXIT=0，最终包 86,596,016 B、SHA256 403e021e…75c8e85。真机验证待用户安装时确认。
 ## 测试与构建快照
 
 - 全量 `npx vitest run --reporter=dot`（v1.4 终审修复 + 单测补齐后最终复跑）：
@@ -59,8 +64,8 @@
   重跑 **PASS**（SMOKE_EXIT=0）——捕获到 splash.html 与主窗口 index.html 两个页面、
   主窗口存活 6s 无崩溃、启动过渡页 `isClosed()===true`（`destroy()` 生效）。
   冒烟脚本主动轮询 `app.context().pages()` + 全步骤超时，避免 `app.on('window')` 订阅竞态与挂起。
-- 包产物：`dist/禾序进销存-1.4.0-setup.exe`（**最终包 86,595,953 B，SHA256
-  `d11f39381f02b54c7b7184ffc457e35650dfc5b05710161617de721daf4c45e9`**）；
+- 包产物：`dist/禾序进销存-1.4.0-setup.exe`（**最终包 86,596,016 B，SHA256
+  `403e021e196d8efffecacbf18802c34b3c30f93eb7bf7a3250055e5ef75c8e85`**）；
   `dist/win-unpacked/resources/splash.html` 2379 B 已进 `resources/`；`app.asar` 内 `out/main/index.js`
   已核实含 `win.destroy()`、`defaultFetch`、`probeRateBuckets`、`markSessionExpired`、
   `clearPendingCredentials`（`grep -ao` 实证），确认终审修复确实打进包。
@@ -93,7 +98,7 @@
 ## 已知限制 / 待真机验收
 
 - 跨物理机（非 127.0.0.1）配对、真实路由器/防火墙、多客户端并发：**待真机验收**（集成测试为进程内双实例）。
-- 可见「桌面快捷方式」复选框未落地（assisted NSIS 无内建），以必然创建替代；如需复选框需完全自定义 MUI 完成页（二期）。
+- ~~可见「桌面快捷方式」复选框未落地~~（v1.4.0 追加需求已落地：借用 MUI_FINISHPAGE_SHOWREADME 槽位实现「创建桌面快捷方式」复选框，默认勾选可取消；运行复选框由内建 MUI_FINISHPAGE_RUN 承载，同样默认勾选可取消）。
 - 提示式更新非自动下载安装；真一键需 electron-updater + 代码签名（二期）。
 - 安装包未签名，Windows SmartScreen 可能拦截（README 已给 4 步放行说明）。
 - 时间同步依赖（x-ts ±120s）；mDNS 主机自动发现未实现。
