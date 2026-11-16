@@ -137,8 +137,13 @@ manifest 地址本身仍需 https + 无凭据（不限制主机，便于自定�
 > **🔴 红线：发布仓库仅用于分发安装包与更新清单，禁止推送源码。**
 > Gitee / GitHub 的 `xyueji/hesora` 只允许放 `latest.json` 与 `tag=latest` 的 release 附件（安装包）；
 > **严禁 `git push` 源码、严禁上传 `src/` 或任何源码文件**。本仓库是纯分发渠道，**不是源码仓库**。
-> 本地开发仓库 `D:/xiong/project/x-sofware/hesora-inventory` **没有配置任何 git remote**（已核实
-> `git remote -v` 为空），请保持这样；本文档与脚本中**不要出现** `git remote add` / `git push` 之类指令。
+> 本地开发仓库 `D:/xiong/project/x-sofware/hesora-inventory` 配置了三个 remote：`github` / `origin`
+> 指向两个公开发行仓库（仅用于推送白名单内容：`README.md`、`latest.json`、`docs/**`）；
+> `real` 指向私有仓库 `https://github.com/xyueji/hesora-real`（全量开发历史备份，**必须保持 private**）。
+> 仓库已启用 `core.hooksPath=tools/git-hooks`：`pre-push` 钩子对发往两个公开发行仓库的**每个待推提交**
+> 逐个校验白名单，命中其他路径直接拒绝；发往 `real` 放行。**不得用 `--no-verify` 绕过。**
+> 公开发行仓库历史是「仅文档单提交」，后续清单/文档变更直接在其上追加提交即可
+> （完整流程见 `AGENTS.md` 第 9、10 节）。
 > **官方渠道只提供安装包，不提供源码。**
 
 > **SSH 公钥 ≠ 发布凭证，务必区分（用户已配置 SSH 公钥，但那不能用于发布）：**
@@ -161,24 +166,25 @@ manifest 地址本身仍需 https + 无凭据（不限制主机，便于自定�
 5. 验收：用 `curl -L -o /dev/null -w '%{http_code}'` 检查两个 raw `latest.json` 均 200 且版本一致
    （**Gitee raw 不带 `-L` 会返回 302，必须跟随一次重定向**）；`curl -I` 固定下载地址可匿名 200。
 
-## 8. 常见问题 / 验收依据（2026-11-10 实测）
+## 8. 验收依据（2026-11-16 发布 1.5.10 实测）
 
-- **GitHub `xyueji/hesora`**：公开仓库，默认分支 `main`；`GET /releases/tags/latest` 返回 200
-  （id=440192256，tag=`latest`，assets=0，upload_url 可用）——**latest release 已存在但还没有附件**。
-- **Gitee `xyueji/hesora`**：仓库存在，默认分支 `main`；releases 列表为空，
-  `/raw/main/latest.json` 当前 404，`/releases/tags/latest` 返回 null——**Gitee 侧还没建
-  latest release 与 manifest**（对应第 7 节步骤 2、3 待办）。
-- **Gitee 附件下载免登录已实测通过**：302 → attach_files → 302 → `foruda.gitee.com` → 200
-  `application/zip`，故固定地址指向 Gitee release 可用。
-- **Gitee raw 必 302（实测）**：
-  `curl -o /dev/null -w "%{http_code} %{redirect_url}" https://gitee.com/oschina/git-osc/raw/master/README.md`
-  → `302 https://raw.giteeusercontent.com/oschina/git-osc/raw/master/README.md?signature=...`，
-  `curl -L` 后 200（`num_redirects=1`）。因此客户端**允许跟随重定向**（见第 1 节
-  `redirect: 'follow'`）；若企业网络拦截 `raw.giteeusercontent.com`，Gitee 渠道会静默失败并回退 GitHub。
+- **GitHub `xyueji/hesora`**：`GET /releases/tags/latest` 返回 id=440192256，附件
+  `hesora-inventory-setup.exe` size=86,643,015、state=uploaded；匿名
+  `curl -L -r 0-1023 https://github.com/xyueji/hesora/releases/download/latest/hesora-inventory-setup.exe`
+  → 206（跟随 1 次跳转，`application/octet-stream`）。
+- **Gitee `xyueji/hesora`**：release id=1314256（tag=`latest`），附件 id=3713394、size=86,643,015；
+  匿名下载 `https://gitee.com/xyueji/hesora/releases/download/latest/hesora-inventory-setup.exe`
+  → 200（跟随 2 次跳转，`application/vnd.microsoft.portable-executable`）——Gitee 附件**免登录可下**。
+- **两个 manifest 均为 1.5.10**：`sha256=810ca1e6…`、`size=86643015`。Gitee
+  `https://gitee.com/xyueji/hesora/raw/main/latest.json` 匿名 GET 302（需 `-L`）；GitHub
+  `https://raw.githubusercontent.com/xyueji/hesora/main/latest.json` 匿名 GET 200。
+- **Gitee raw 必 302（实测）**：`curl -o /dev/null -w "%{http_code} %{redirect_url}"` 得
+  `302 https://raw.giteeusercontent.com/...?signature=...`，`curl -L` 后 200（1 次跳转）。
+  客户端 `fetch` 必须 `redirect:'follow'`（见第 1 节）。
 - **本机 `raw.githubusercontent.com` DNS 解析失败（curl exit 6），但 `api.github.com` 正常**：
-  这是**本机网络环境问题，不是代码缺陷**；`raw.githubusercontent.com` 在国内可能被 DNS 污染，
-  因此「Gitee 优先 + GitHub 回退」是必要设计——Gitee 快且稳，GitHub 作为冗余。
-- **配了 SSH 公钥为什么还要 token？** 见第 7 节：SSH 只管 `git push`，release 附件上传用 HTTPS API + token。
+  属本机网络环境问题，不是代码缺陷；因此「Gitee 优先 + GitHub 回退」是必要设计。
+- **配了 SSH 公钥为什么还要 token？** SSH 只能 `git push`；release 附件上传必须走 HTTPS API + token
+  （见第 7 节）。
 
 ## 9. 待主会话接线：MainLayout 更新提示（sha256 展示）
 
